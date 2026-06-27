@@ -7,9 +7,11 @@
 //! Rebrand: the wire root token is [`ROOT`] = `"parler"` (Cotal used `"cotal"`). Semantics are
 //! otherwise byte-for-byte identical to the Cotal SPEC.
 
+pub mod hub;
 pub mod subjects;
 pub mod types;
 
+pub use hub::*;
 pub use subjects::*;
 pub use types::*;
 

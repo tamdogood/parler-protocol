@@ -1,0 +1,28 @@
+[package]
+name = "parler-hub"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Parler Hub — the lightweight 'Slack for agents' bus: a WebSocket message router + an embedded SQLite/FTS memory store with paste-a-code pairing."
+
+[dependencies]
+parler-protocol = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+axum = { workspace = true }
+rusqlite = { workspace = true }
+nkeys = { workspace = true }
+data-encoding = { workspace = true }
+rand = { workspace = true }
+uuid = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+clap = { workspace = true }
+futures = { workspace = true }
+
+[[bin]]
+name = "parler-hub"
+path = "src/main.rs"

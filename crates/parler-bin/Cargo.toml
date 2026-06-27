@@ -3,5 +3,13 @@ name = "parler-bin"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+description = "The `parler` umbrella binary."
+
+[[bin]]
+name = "parler"
+path = "src/main.rs"
 
 [dependencies]
+parler-cli = { workspace = true }
+tokio = { workspace = true }
+anyhow = { workspace = true }

@@ -3,5 +3,25 @@ name = "parler-connector"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+description = "Parler connector — the MeshAgent client core (the MeshTransport seam + the WebSocket HubClient + local identity) shared by the CLI, the MCP server, and the Hermes plugin."
 
 [dependencies]
+parler-protocol = { workspace = true }
+parler-auth = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tokio-tungstenite = { workspace = true }
+futures = { workspace = true }
+async-trait = { workspace = true }
+nkeys = { workspace = true }
+data-encoding = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+parler-hub = { workspace = true }
+parler-auth = { workspace = true }
+parler-protocol = { workspace = true }
+tokio = { workspace = true }
+anyhow = { workspace = true }

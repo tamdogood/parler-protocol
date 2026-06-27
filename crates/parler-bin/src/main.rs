@@ -1,8 +1,9 @@
-//! parler-bin — the parler umbrella binary (composes all subcommands)
-//!
-//! Cotal source: bin/cotal.ts
-//! Status: scaffold (implementation pending — see plan).
+//! The `parler` umbrella binary — dispatches to the CLI subcommands.
 
-fn main() {
-    eprintln!("parler: scaffold — not yet implemented");
+#[tokio::main]
+async fn main() {
+    if let Err(e) = parler_cli::run().await {
+        eprintln!("error: {e:#}");
+        std::process::exit(1);
+    }
 }
