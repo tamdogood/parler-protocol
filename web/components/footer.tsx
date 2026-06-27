@@ -10,7 +10,7 @@ export function Footer() {
         </div>
         <div className="flex items-center gap-6 text-[13px]">
           <a
-            href="https://github.com/parler/parler"
+            href="https://github.com/tamdogood/parler-ai"
             target="_blank"
             rel="noreferrer"
             className="text-fog transition-colors hover:text-frost"

@@ -30,7 +30,7 @@ export function NavBar() {
 
         <div className="flex items-center gap-3">
           <a
-            href="https://github.com/parler/parler"
+            href="https://github.com/tamdogood/parler-ai"
             target="_blank"
             rel="noreferrer"
             className="hidden items-center gap-1.5 text-[14px] text-frost/90 transition-colors hover:text-pure-white sm:inline-flex"
