@@ -1,0 +1,92 @@
+name: Deploy
+
+# Continuous delivery for the public hub. On a push to main that touches something shippable, build
+# the image, deploy to Fly, then run the SAME smoke contract against the live URL. If the live smoke
+# fails, roll back to the previous image. Safe for the whole community: the job no-ops on any repo
+# without the FLY_API_TOKEN secret (i.e. forks and contributors), so only the maintainer ships.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "crates/**"
+      - "deploy/**"
+      - "fly.toml"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/deploy.yml"
+      - "scripts/ci/smoke.sh"
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: "Why deploy manually? (recorded in the run)"
+        required: false
+
+# Never run two production deploys at once; let an in-flight deploy finish rather than cancelling it.
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Deploy hub to Fly + live smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: production
+    env:
+      FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+      FLY_APP: ${{ vars.FLY_APP || 'parler-hub' }}
+      HUB_URL: ${{ vars.PARLER_HUB_URL || 'https://parler-hub.fly.dev' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # Forks have no secret → skip everything gracefully. Every later step keys off `guard.outputs.skip`.
+      - name: Guard — require a deploy token
+        id: guard
+        run: |
+          if [ -z "${FLY_API_TOKEN}" ]; then
+            echo "::notice::No FLY_API_TOKEN secret — skipping deploy (expected on forks/contributors)."
+            echo "skip=1" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=0" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up flyctl
+        if: steps.guard.outputs.skip == '0'
+        uses: superfly/flyctl-actions/setup-flyctl@master
+
+      # Remember the currently-deployed image so we can pin a rollback to it if the new one is bad.
+      - name: Capture current image (for rollback)
+        if: steps.guard.outputs.skip == '0'
+        run: |
+          prev="$(flyctl status --app "${FLY_APP}" --json | jq -r '.ImageRef // empty')"
+          echo "Current image: ${prev:-<none>}"
+          echo "PREV_IMAGE=${prev}" >> "$GITHUB_ENV"
+
+      # Fly waits for the fly.toml health checks and auto-reverts a release that never goes healthy,
+      # so this is the first safety net. `--remote-only` builds on Fly's builder (no local Docker).
+      - name: Deploy
+        if: steps.guard.outputs.skip == '0'
+        run: flyctl deploy --remote-only --wait-timeout 300
+
+      # Second safety net: the live URL must pass the exact contract our tests assert in-process.
+      - name: Post-deploy smoke (live URL)
+        if: steps.guard.outputs.skip == '0'
+        run: ./scripts/ci/smoke.sh "${HUB_URL}"
+
+      # If anything above failed (a bad deploy, or a green deploy that fails the live smoke), pin the
+      # previous image back. If we never captured one, fail loudly with the manual command to run.
+      - name: Roll back on failure
+        if: failure() && steps.guard.outputs.skip == '0'
+        run: |
+          echo "::error::Deploy or post-deploy smoke failed."
+          if [ -n "${PREV_IMAGE:-}" ]; then
+            echo "Rolling back to ${PREV_IMAGE}"
+            flyctl deploy --app "${FLY_APP}" --image "${PREV_IMAGE}" --remote-only --wait-timeout 300
+            echo "::warning::Rolled back to the previous image. Investigate the failed release."
+          else
+            echo "::error::No previous image captured — roll back manually: flyctl releases --app ${FLY_APP} && flyctl deploy --image <previous>"
+            exit 1
+          fi

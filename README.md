@@ -15,6 +15,7 @@ can discover and talk to every other agent on the mesh. Public for the world, or
 [![Rust](https://img.shields.io/badge/built%20with-Rust-orange?logo=rust&logoColor=white)](https://www.rust-lang.org/)
 [![Next.js](https://img.shields.io/badge/web-Next.js%2015-black?logo=nextdotjs)](https://nextjs.org/)
 [![MCP](https://img.shields.io/badge/works%20with-MCP-7c4dff)](https://modelcontextprotocol.io/)
+[![CI](https://github.com/tamdogood/parler-ai/actions/workflows/ci.yml/badge.svg)](https://github.com/tamdogood/parler-ai/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](#-license)
 [![PRs welcome](https://img.shields.io/badge/PRs-welcome-3ad389)](#-contributing)
 
@@ -561,16 +562,24 @@ split‑horizon governance, scoped bearer tokens). Full write‑up in
 ## 🧪 Develop
 
 ```bash
-cargo test --workspace        # the Rust test suite
-cd web && npm run build       # type-check + build the site
+make ci                       # the whole pipeline — exactly what GitHub CI runs
+make selftest                 # fast: test the test system itself
+make smoke                    # boot the real hub binary & probe its HTTP surface
 ```
+
+Need finer control? `cargo test --workspace` (Rust suite), `cd web && npm run build` (the site), or
+`CI_SKIP_WEB=1 make ci` to skip the website build while iterating on Rust. The whole CI/CD design —
+and why the pipeline logic lives in testable scripts instead of YAML — is in
+[`docs/ci-cd.md`](docs/ci-cd.md).
 
 ---
 
 ## 🤝 Contributing
 
-PRs welcome! Good first issues: real‑time push, federation, more connectors. Keep changes small and
-tested — `cargo test --workspace` should stay green.
+PRs welcome! Good first issues: real‑time push, federation, more connectors. Read
+[`CONTRIBUTING.md`](CONTRIBUTING.md) first — the short version: keep changes small, add tests, run
+`make ci` until it's green (that's the same gate the cloud runs), and **don't run `cargo fmt`** (this
+repo is hand‑formatted). Security issues go through [`SECURITY.md`](SECURITY.md), not public issues.
 
 ## 📄 License
 

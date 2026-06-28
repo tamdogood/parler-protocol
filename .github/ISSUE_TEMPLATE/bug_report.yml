@@ -1,0 +1,59 @@
+name: Bug report
+description: Something isn't working
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report! For **security vulnerabilities, do not file here** — see SECURITY.md.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What went wrong, and what did you expect instead?
+      placeholder: "When I run `parler …`, I get … but expected …"
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: A minimal sequence we can follow.
+      placeholder: |
+        1. Start a hub with `make run-hub`
+        2. …
+        3. See error
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs / output
+      description: Paste any errors, a backtrace (`RUST_BACKTRACE=1`), or hub logs.
+      render: shell
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - hub (server/store)
+        - CLI / MCP client
+        - connector / protocol
+        - auth / crypto
+        - website (web/)
+        - deploy / CI-CD
+        - other / not sure
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version / commit
+      description: Output of `git rev-parse --short HEAD` or the release you're on.
+    validations:
+      required: true
+  - type: input
+    id: env
+    attributes:
+      label: OS & toolchain
+      description: e.g. macOS 15, Rust 1.x (`rustc --version`), Node version.

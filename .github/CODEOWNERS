@@ -1,0 +1,13 @@
+# Code owners — a review from the relevant owner is required before merge (when branch protection's
+# "Require review from Code Owners" is on). Keep this in sync as the project grows maintainers.
+
+# Default owner for everything.
+*                       @tamdogood
+
+# The CI/CD test system, deploy kit, and supply-chain policy get extra scrutiny.
+/scripts/ci/            @tamdogood
+/.github/               @tamdogood
+/deploy/                @tamdogood
+/fly.toml               @tamdogood
+/deny.toml              @tamdogood
+/rust-toolchain.toml    @tamdogood

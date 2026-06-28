@@ -1,0 +1,5 @@
+# ShellCheck config for the CI scripts. `source-path=SCRIPTDIR` makes each `# shellcheck source=lib.sh`
+# directive resolve relative to the script's own directory, so linting works no matter what directory
+# shellcheck is invoked from (CI runs it from the repo root; selftest runs it by absolute path).
+external-sources=true
+source-path=SCRIPTDIR

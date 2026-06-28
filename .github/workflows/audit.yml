@@ -1,0 +1,28 @@
+name: Security audit
+
+# A daily supply-chain scan independent of PR traffic — a CVE published against an already-merged
+# dependency gets caught here even when nobody is pushing. Same script as the CI gate, so the rules
+# never drift. Failures notify the maintainer (and can be wired to issues if desired).
+on:
+  schedule:
+    - cron: "17 6 * * *" # 06:17 UTC daily
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    name: cargo-deny (scheduled)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
+      - name: Audit dependencies
+        run: ./scripts/ci/audit.sh

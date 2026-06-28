@@ -1,0 +1,10 @@
+# Pin the toolchain so every contributor and CI build with the same Rust. `rustup` reads this on any
+# cargo invocation in the repo and installs the channel if needed — no "works on my machine" drift.
+#
+# Channel is `stable` (not a frozen version) so security patches land automatically; clippy is the
+# only extra component we gate on. Note: there is intentionally NO rustfmt gate — this repo is
+# hand-formatted, so `cargo fmt` is never run across it (see CONTRIBUTING.md).
+[toolchain]
+channel = "stable"
+components = ["clippy"]
+profile = "minimal"

@@ -68,7 +68,7 @@ pub struct SysMaterial {
     #[serde(rename = "pub")]
     pub public: String,
     pub jwt: String,
-    /// In-memory only; never persisted (stripped by [`save_space_auth`]).
+    /// In-memory only; never persisted (stripped by [`strip_space_auth`]).
     #[serde(rename = "signingSeed", default, skip_serializing_if = "Option::is_none")]
     pub signing_seed: Option<String>,
 }

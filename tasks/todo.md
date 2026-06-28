@@ -307,3 +307,59 @@ Full-parity Rust rewrite of [Cotal](https://github.com/Cotal-AI/Cotal). Plan:
     **Python plugin** ported faithfully under `plugin/parler/` (adapter/hooks/tools/bridge_client,
     rebranded). The live mesh plugs into the `MeshHandle` trait in `serve.rs` once `parler-connector`
     lands; the unix-socket server is compiled glue around the tested state machine.
+
+---
+
+# Task: Contributor-grade test system + resilient CI/CD (2026-06-28)
+
+**User ask:** we'll have many open-source contributors — build a detailed test system that catches
+bugs/issues *before* deploying, a resilient CI/CD pipeline, and "anything necessary". Everything we
+build must itself be **testable**.
+
+**Design principle:** GitHub Actions YAML is not testable. So all pipeline *logic* lives in small,
+composable, self-tested shell scripts under `scripts/ci/`; the workflows are thin wrappers that call
+them. A contributor runs `make ci` locally and gets the *same* gates as the cloud. The test system
+is itself tested by `scripts/ci/selftest.sh` ("test the test system").
+
+### Plan
+
+- [x] Pin the toolchain — `rust-toolchain.toml` (stable + clippy) so every contributor + CI match.
+- [x] Testable pipeline scripts (`scripts/ci/`): `lib.sh` (step runner), `rust.sh`, `web.sh`,
+      `audit.sh`, `smoke.sh`, `all.sh`, and `selftest.sh` (the meta-test).
+- [x] HTTP smoke **contract test** — `crates/parler-hub/tests/smoke.rs` boots the real hub and
+      asserts `/health`, `/api/hub`, `/api/directory`, `/` (dependency-free raw HTTP client).
+- [x] Supply chain — `deny.toml` (cargo-deny: vulns + sources blocking, licenses tunable) +
+      `.github/dependabot.yml` (cargo / npm / actions).
+- [x] Workflows — rewrite `ci.yml` (concurrency, least-priv perms, timeouts, jobs via the scripts +
+      lint the pipeline with actionlint/shellcheck), add `deploy.yml` (CD → Fly + post-deploy live
+      smoke + auto-rollback, secret-guarded so forks are no-ops) and `audit.yml` (daily CVE scan).
+- [x] Contributor scaffolding — `CONTRIBUTING.md`, `SECURITY.md`, `CODE_OF_CONDUCT.md`,
+      `.github/CODEOWNERS`, PR template, issue forms.
+- [x] `make ci|selftest|audit|smoke|coverage` + README pointer + `docs/ci-cd.md` (the architecture).
+- [x] **Verify** — run `make selftest`, `make ci`, the new smoke test, and `scripts/ci/smoke.sh`
+      against a live local hub; prove green.
+
+**How each piece is testable:** scripts → `selftest.sh` (`bash -n`, exec bits, unit-tests `lib.sh`
+helpers) + shellcheck in CI · workflows → actionlint + a YAML parse in selftest · smoke contract →
+`cargo test -p parler-hub --test smoke` + `scripts/ci/smoke.sh <url>` · deny.toml → `make audit` +
+TOML parse in selftest · Dockerfile → hadolint + the real build in `deploy.yml` · whole pipeline →
+`make ci` reproduces the cloud.
+
+### Review (done)
+
+**Verified by installing & running the real tools** (shellcheck 0.11, actionlint 1.7.12, cargo-deny
+0.19.9), not by reasoning about their output — which caught & fixed **4 genuine bugs**:
+
+1. **Broken rustdoc link** in `crates/parler-auth/src/provision.rs` (`save_space_auth` →
+   `strip_space_auth`) — surfaced by the new `cargo doc -D warnings` gate.
+2. **shellcheck self-trip**: a comment starting `# shellcheck,` was parsed as a directive
+   (SC1072/1073) — would have failed the pipeline job.
+3. **Invalid GitHub Actions expression**: `join(needs.*.result, ",")` — GHA expressions only allow
+   single-quoted strings, so it had to be `','`. Would have broken the `CI passed` gate at runtime.
+4. **`deny.toml`**: cargo-deny 0.19 requires `license-files` in a `[[licenses.clarify]]` block (mine
+   omitted it → the whole config failed to parse); the tree also needs `CDLA-Permissive-2.0`
+   (webpki-roots) allowed, and the `ring` OpenSSL exception was unneeded. Now licenses pass **strict**.
+
+Final state: `make ci` fully green (selftest 41 · rust build/clippy/test/doc · web · audit), plus
+shellcheck/actionlint/cargo-deny all clean. Clean tree on branch `ci-cd-pipeline`; not committed/PR'd.
+(Heavy compiles filled the disk to 100% mid-run; reclaimed with `brew cleanup`.)

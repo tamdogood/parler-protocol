@@ -1,64 +1,120 @@
 name: CI
 
-# Build, lint, and test the Rust workspace (the hub, CLI/MCP, connector, protocol, …) and the
-# Next.js directory site. Runs on pushes to the main branches and on every pull request.
+# Every gate here is a thin wrapper around a script in scripts/ci/, so `make ci` reproduces this
+# pipeline exactly on a contributor's machine. Runs on PRs and pushes to main.
 on:
   push:
-    branches: [main, curitiba]
+    branches: [main]
   pull_request:
+
+# Cancel superseded runs on the same branch/PR — fast feedback, no wasted queue.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+# Least privilege: CI only needs to read the checkout.
+permissions:
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
-  RUSTFLAGS: -D warnings
 
 jobs:
-  rust:
-    name: Rust · build · clippy · test
+  # The test system testing itself: selftest (bash -n + lib.sh unit tests + config sanity),
+  # shellcheck on the CI scripts, and actionlint on these very workflows.
+  pipeline:
+    name: Pipeline · selftest · shellcheck · actionlint
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+      - name: Selftest (test the test system)
+        run: ./scripts/ci/selftest.sh
+      - name: ShellCheck the CI scripts
+        # severity=warning fails on real bugs (bad quoting, unchecked cd, …) but not style nits.
+        run: shellcheck -x --severity=warning scripts/ci/*.sh
+      - name: actionlint (lint the workflows)
+        uses: reviewdog/action-actionlint@v1
+        with:
+          reporter: local # no checks/PR-write permissions needed; fails the step on findings
+          fail_level: error
 
+  rust:
+    name: Rust · build · clippy · test · doc · smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
       - name: Install Rust toolchain (stable + clippy)
         uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
-
       - name: Cache cargo registry + build
         uses: Swatinem/rust-cache@v2
-
-      - name: Build (all targets)
-        run: cargo build --workspace --all-targets --locked
-
-      - name: Clippy (deny warnings)
-        run: cargo clippy --workspace --all-targets --locked -- -D warnings
-
-      # The whole suite, incl. the in-process-hub e2e tests (mesh_e2e / discovery_e2e) and the MCP
-      # session-layer unit tests. The legacy `auth_live` test self-skips when `nats-server` is
-      # absent, so it's green here without installing the broker.
-      - name: Test
-        run: cargo test --workspace --locked
+      - name: Build · clippy · test · doc
+        run: ./scripts/ci/rust.sh
+      # Prove the *real* compiled binary boots and serves the HTTP contract (reuses the artifact
+      # rust.sh just built, so it's near-instant). The in-process twin runs inside `cargo test`.
+      - name: Smoke the real binary
+        run: ./scripts/ci/smoke.sh --boot
 
   web:
     name: Web · type-check · build
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: web
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
-
       - name: Install Node
         uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: npm
           cache-dependency-path: web/package-lock.json
+      - name: Build the site
+        run: ./scripts/ci/web.sh
 
-      - name: Install dependencies
-        run: npm ci
+  supply-chain:
+    name: Supply chain · cargo-deny
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
+      - name: Audit dependencies (vulnerabilities + sources block)
+        run: ./scripts/ci/audit.sh
 
-      # `next build` type-checks the whole app and compiles every route, so it fails on any TS/JSX
-      # error (e.g. the live-sessions section). The site has no ESLint config, so we don't run
-      # `next lint` here.
-      - name: Build
-        run: npm run build
+  dockerfile:
+    name: Deploy · Dockerfile lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      # Catches genuinely-broken Dockerfiles before the (slow) real build in deploy.yml. Only
+      # error-level findings fail, so it never flaps the pipeline on style nits.
+      - name: hadolint
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: deploy/Dockerfile
+          failure-threshold: error
+
+  # One check to rule them all: branch protection requires just "CI passed", and this fails if any
+  # gate above failed or was cancelled. Adding a gate never means reconfiguring branch protection.
+  ci-passed:
+    name: CI passed
+    if: always()
+    needs: [pipeline, rust, web, supply-chain, dockerfile]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify all gates succeeded
+        run: |
+          results='${{ join(needs.*.result, ',') }}'
+          echo "gate results: ${results}"
+          case "${results}" in
+            *failure*|*cancelled*) echo "::error::a required gate failed"; exit 1 ;;
+            *) echo "all gates green" ;;
+          esac

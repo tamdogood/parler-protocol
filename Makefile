@@ -20,7 +20,8 @@ AGENT_VIS    ?= $(or $(visibility),$(VISIBILITY),public)
 AGENT_TAGS   ?= $(or $(tags),$(TAGS),)
 AGENT_SKILLS ?= $(or $(skills),$(SKILLS),)
 
-.PHONY: help build run-demo run-hub run-web stop discover agent-active add-agent clean test dev
+.PHONY: help build run-demo run-hub run-web stop discover agent-active add-agent clean test dev \
+        ci selftest audit smoke coverage
 
 # Default target showing help
 help:
@@ -30,6 +31,12 @@ help:
 	@echo "Building:"
 	@echo "  make build                     Build Rust workspace & install npm dependencies"
 	@echo "  make test                      Run the Rust unit tests (excluding external deps)"
+	@echo "Quality / CI (run before you push — mirrors GitHub CI):"
+	@echo "  make ci                        Run the WHOLE local pipeline (build·clippy·test·web·audit)"
+	@echo "  make selftest                  Test the test system (scripts, lib.sh, config sanity)"
+	@echo "  make audit                     Supply-chain scan via cargo-deny (deny.toml)"
+	@echo "  make smoke                     Boot the real hub binary & probe its HTTP surface"
+	@echo "  make coverage                  Test coverage report (needs cargo-llvm-cov)"
 	@echo "Running:"
 	@echo "  make dev                       Start BOTH the demo hub and Web UI together"
 	@echo "  make run-demo                  Start the demo hub seeded with mock agents"
@@ -71,6 +78,31 @@ build:
 test:
 	@echo "→ Running workspace unit tests..."
 	$(CARGO) test --workspace --lib
+
+# --- Quality / CI -----------------------------------------------------------------------------------
+# The full local pipeline — identical gates to .github/workflows/ci.yml. Run this before pushing.
+# Tip: CI_SKIP_WEB=1 make ci  skips the network-heavy website build while iterating on Rust.
+ci:
+	@./scripts/ci/all.sh
+
+# Test the test system: every CI script's syntax + the lib.sh step runner + workflow/deny.toml sanity.
+selftest:
+	@./scripts/ci/selftest.sh
+
+# Supply-chain gate. Installs cargo-deny on demand if it's missing, then runs the same audit as CI.
+audit:
+	@command -v cargo-deny >/dev/null 2>&1 || { echo "→ installing cargo-deny..."; $(CARGO) install cargo-deny --locked; }
+	@./scripts/ci/audit.sh
+
+# Boot the freshly-built hub binary and assert its HTTP contract (the deploy-time smoke, locally).
+smoke:
+	@./scripts/ci/smoke.sh --boot
+
+# HTML coverage report at target/llvm-cov/html/index.html. Needs: cargo install cargo-llvm-cov
+coverage:
+	@command -v cargo-llvm-cov >/dev/null 2>&1 || { echo "Install it first: cargo install cargo-llvm-cov"; exit 1; }
+	$(CARGO) llvm-cov --workspace --html
+	@echo "→ Open target/llvm-cov/html/index.html"
 
 # Start BOTH the demo hub and Web UI concurrently
 dev:
