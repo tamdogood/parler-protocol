@@ -205,6 +205,18 @@ impl Deref for ConnRef<'_> {
 impl Store {
     /// Open the store at `path`, or in-memory (lost on exit) when `path` is `None`. Runs migrations.
     pub fn open(path: Option<&Path>) -> Result<Store> {
+        // Decide the reader-pool size *first*, so the page-cache budget can be split across every
+        // connection (writer + readers) rather than handed to each in full. In-memory can't share a
+        // file across connections ⇒ no pool (reads fall back to the writer).
+        let n_readers = match path {
+            Some(_) => std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).clamp(1, 8),
+            None => 0,
+        };
+        // `cache_size` is *per connection*, so a fixed per-connection value silently multiplies by the
+        // pool size (1 writer + N readers). Split one total budget instead, so the hub's resident page
+        // cache stays bounded no matter how many cores (hence readers) the host has.
+        let cache_kib = (TOTAL_CACHE_KIB / (1 + n_readers as i64)).max(MIN_CACHE_KIB_PER_CONN);
+
         let writer = match path {
             Some(p) => {
                 // Create the parent directory if it's missing, so a fresh DB path opens instead of
@@ -217,7 +229,7 @@ impl Store {
             }
             None => Connection::open_in_memory()?,
         };
-        configure_conn(&writer)?;
+        configure_conn(&writer, cache_kib)?;
         writer.execute_batch(MIGRATION)?;
         // Evolve tables created by an older schema without a destructive rebuild.
         add_column_if_missing(&writer, "blobs", "last_fetched", "INTEGER")?;
@@ -225,14 +237,13 @@ impl Store {
         add_column_if_missing(&writer, "invites", "require_approval", "INTEGER NOT NULL DEFAULT 0")?;
 
         // Read-only pool for a file-backed DB (the writer has already created the -wal/-shm files, so
-        // read-only connections can attach). In-memory has no shared file ⇒ no pool, reads use writer.
+        // read-only connections can attach).
         let mut readers = Vec::new();
         if let Some(p) = path {
-            let n = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).clamp(1, 8);
             let flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX;
-            for _ in 0..n {
+            for _ in 0..n_readers {
                 let rc = Connection::open_with_flags(p, flags)?;
-                configure_conn(&rc)?;
+                configure_conn(&rc, cache_kib)?;
                 readers.push(Mutex::new(rc));
             }
         }
@@ -1116,23 +1127,36 @@ fn add_column_if_missing(conn: &Connection, table: &str, col: &str, decl: &str) 
     Ok(())
 }
 
+/// Total SQLite page-cache budget shared across the whole connection pool (1 writer + N readers), in
+/// KiB. SQLite's `cache_size` is *per connection*, so this is divided by the connection count in
+/// [`Store::open`] — otherwise a generous per-connection cache multiplies by the pool size (a
+/// 9-connection pool at 64 MiB each reserved ~576 MiB of resident cache that filled the longer the hub
+/// ran). 64 MiB total is ample for this workload and keeps the hub inside a small (256 MB) VM.
+const TOTAL_CACHE_KIB: i64 = 65_536; // 64 MiB total across the pool
+/// Floor on each connection's slice of the cache, so a large pool still leaves every connection a
+/// usable working set rather than shrinking toward zero.
+const MIN_CACHE_KIB_PER_CONN: i64 = 4_096; // 4 MiB
+
 /// Per-connection pragmas. These are *not* persisted in the database file, so they must be set on
-/// every connection that is opened (the single writer today; each reader once the pool lands).
-/// `journal_mode = WAL` is a database-level setting and stays in `MIGRATION` (applied once).
+/// every connection that is opened (the writer + each pooled reader). `journal_mode = WAL` is a
+/// database-level setting and stays in `MIGRATION` (applied once).
 ///
 /// `synchronous = NORMAL` is the documented WAL "sweet spot": atomic, never-corrupting commits that
 /// only risk losing the *last* transaction on OS/power loss — in exchange for a large write speedup
-/// over the default `FULL` (which fsyncs on every commit). The cache/mmap/temp_store knobs cut disk
-/// I/O as the database grows; `foreign_keys = ON` enforces referential integrity for future cascades.
-fn configure_conn(conn: &Connection) -> Result<()> {
-    conn.execute_batch(
+/// over the default `FULL` (which fsyncs on every commit). `cache_size` is the per-connection page
+/// cache (a slice of [`TOTAL_CACHE_KIB`], so the pool's total stays bounded); the mmap/temp_store knobs
+/// cut disk I/O; `foreign_keys = ON` enforces referential integrity for future cascades. The 128 MiB
+/// mmap is file-backed and shared across connections mapping the same file (and reclaimable under
+/// pressure), so unlike the page cache it doesn't multiply per connection.
+fn configure_conn(conn: &Connection, cache_kib: i64) -> Result<()> {
+    conn.execute_batch(&format!(
         "PRAGMA busy_timeout = 5000;
          PRAGMA synchronous  = NORMAL;
-         PRAGMA cache_size   = -65536;
+         PRAGMA cache_size   = -{cache_kib};
          PRAGMA temp_store   = MEMORY;
-         PRAGMA mmap_size    = 268435456;
+         PRAGMA mmap_size    = 134217728;
          PRAGMA foreign_keys = ON;",
-    )?;
+    ))?;
     Ok(())
 }
 
@@ -1354,6 +1378,36 @@ mod tests {
 
             s.sweep_expired(1).unwrap();
             s.quick_check().unwrap();
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn pool_total_page_cache_stays_bounded() {
+        // The regression guard: `cache_size` is per-connection, so the pool's *summed* page-cache
+        // budget — writer + every reader — must stay within the one shared budget, not 64 MiB × pool.
+        let dir = std::env::temp_dir().join(format!("parler-cache-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = dir.join("hub.sqlite");
+        {
+            let s = Store::open(Some(&db)).unwrap();
+            // `cache_size` is stored as the negative KiB we set; sum |value| over every connection.
+            let read_kib = |c: &Connection| -> i64 {
+                let v: i64 = c.query_row("PRAGMA cache_size", [], |r| r.get(0)).unwrap();
+                assert!(v < 0, "expected a KiB-denominated (negative) cache_size, got {v}");
+                -v
+            };
+            let mut total = read_kib(&s.inner.writer.lock().unwrap());
+            for rc in &s.inner.readers {
+                let per = read_kib(&rc.lock().unwrap());
+                assert!(per >= MIN_CACHE_KIB_PER_CONN, "each connection keeps a usable working set");
+                total += per;
+            }
+            assert!(
+                total <= TOTAL_CACHE_KIB,
+                "pool cache {total} KiB exceeds the {TOTAL_CACHE_KIB} KiB budget ({} readers)",
+                s.inner.readers.len()
+            );
         }
         std::fs::remove_dir_all(&dir).ok();
     }

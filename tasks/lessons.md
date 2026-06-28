@@ -56,3 +56,9 @@ Format: `- **<short trigger>:** <the rule>. <why, in a clause>`
   `members` table (Invite, Redeem, Serve, resolve_target's DM/Service), not just the new one** — a
   bypass elsewhere makes the gate cosmetic. (Caught by writing the "verify the security" step as a real
   threat-model pass, not a formality.)
+
+- **SQLite `cache_size` is per-connection:** the WAL reader pool opens 1 writer + up to 8 readers, so a
+  generous per-connection `cache_size` (was `-65536` = 64 MiB) silently multiplies by the pool → ~576 MiB
+  of resident page cache that fills the longer the hub runs. Budget *one total* and divide by the
+  connection count in `Store::open` (see `TOTAL_CACHE_KIB`). Same trap applies if more pooled
+  connections are ever added — re-divide, don't re-add. (Root cause of the "parler eats memory" report.)
