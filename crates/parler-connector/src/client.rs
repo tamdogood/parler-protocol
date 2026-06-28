@@ -28,10 +28,8 @@ impl HubClient {
         name: &str,
         role: Option<&str>,
     ) -> Result<HubClient> {
+        ensure_crypto_provider();
         let ws_url = to_ws_url(hub_url);
-        if ws_url.starts_with("wss://") {
-            ensure_crypto_provider();
-        }
         let (ws, _resp) = connect_async(&ws_url)
             .await
             .map_err(|e| anyhow!("connecting to {ws_url}: {e}"))?;
@@ -154,16 +152,17 @@ impl MeshTransport for HubClient {
     }
 }
 
-/// Install the `ring` crypto provider as rustls' process default — once.
+/// Install a process-wide rustls crypto provider before the first `wss://` dial.
 ///
-/// tokio-tungstenite builds a rustls `ClientConfig` to dial `wss://`, and rustls 0.23 needs a
-/// process-default [`rustls::crypto::CryptoProvider`]. With only `ring` in the tree it is *not*
-/// auto-installed, so the first TLS dial would otherwise panic. We install it lazily and ignore the
-/// result — an embedding host (or an earlier call) may already have set one.
+/// `rustls` 0.23 refuses to auto-select a provider when more than one is compiled in, and panics on
+/// the first TLS handshake. Two land in our tree — `ring` (via `tokio-tungstenite`) and `aws-lc-rs`
+/// (via `async-nats`) — so we pick one explicitly. Idempotent and cheap, so it's safe to call on every
+/// connect (including plain `ws://`, where it's just a no-op cost).
 fn ensure_crypto_provider() {
     use std::sync::Once;
-    static PROVIDER: Once = Once::new();
-    PROVIDER.call_once(|| {
+    static ONCE: Once = Once::new();
+    ONCE.call_once(|| {
+        // Err means a provider was already installed by someone else — that's fine.
         let _ = rustls::crypto::ring::default_provider().install_default();
     });
 }

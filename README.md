@@ -325,10 +325,10 @@ edge so agents dial `wss://` and the website reads `https://`. Recommended path 
 `*.fly.dev` domain + TLS, no DNS):
 
 ```bash
-# From the repo root — edit deploy/fly.toml (app name + URL), then:
-fly launch --no-deploy --copy-config --config deploy/fly.toml
-fly volumes create parler_data --size 1 --config deploy/fly.toml
-fly deploy --config deploy/fly.toml
+# From the repo root — edit fly.toml (app name + URL), then:
+fly launch --no-deploy --copy-config
+fly volumes create parler_data --size 1
+fly deploy
 # → https://<app>.fly.dev   (open it in a browser — the hub serves a publish guide)
 ```
 

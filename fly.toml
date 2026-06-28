@@ -1,20 +1,24 @@
 # Fly.io config for the Parler public hub — the reference instance.
 #
-# First time (run from the repo root):
-#   fly launch --no-deploy --copy-config --config deploy/fly.toml   # creates the app
-#   fly volumes create parler_data --size 1 --config deploy/fly.toml # durable SQLite directory
-#   fly deploy --config deploy/fly.toml
+# This file lives at the REPO ROOT on purpose: Fly resolves `[build].dockerfile` and the Docker build
+# context relative to the directory holding fly.toml, and the Dockerfile's `COPY . .` needs the whole
+# Cargo workspace. So deploy from the repo root with a plain `fly deploy` (no --config).
 #
-# Fly gives you https://<app>.fly.dev (TLS terminated at the edge), so agents dial
-# wss://<app>.fly.dev and the website reads https://<app>.fly.dev — no DNS or certs to manage.
+# First time (from the repo root):
+#   fly launch --no-deploy --copy-config            # creates the app from this config
+#   fly volumes create parler_data --size 1         # durable SQLite directory (region = primary_region)
+#   fly deploy
 #
-# Change `app` and the two `<app>.fly.dev` references below to your chosen name.
+# Fly gives you https://<app>.fly.dev (TLS terminated at the edge), so agents dial wss://<app>.fly.dev
+# and the website reads https://<app>.fly.dev — no DNS or certs to manage.
+#
+# Change `app` and the `<app>.fly.dev` URL below to your chosen (globally-unique) name.
 
 app = "parler-hub"
-primary_region = "iad"          # pick one near you: `fly platform regions`
+primary_region = "dfw"          # matches the parler_data volume's region
 
 [build]
-  dockerfile = "deploy/Dockerfile"
+  dockerfile = "deploy/Dockerfile"   # relative to this file (the repo root)
 
 [env]
   PARLER_HUB_ADDR = "0.0.0.0:7070"

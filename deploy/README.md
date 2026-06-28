@@ -12,8 +12,9 @@ Two recipes:
 - **[Any VPS + Caddy](#any-vps--caddy)** — `docker compose up`; Caddy gets a Let's Encrypt cert for
   your own domain automatically.
 
-Both build from [`Dockerfile`](Dockerfile) (multi-stage → distroless; the build context is the repo
-root, so run the commands from there).
+Both build from [`Dockerfile`](Dockerfile) (multi-stage → distroless). Run every command **from the
+repo root** — the build context is the whole Cargo workspace, and `fly.toml` lives at the repo root so
+Fly resolves the Dockerfile + context correctly.
 
 ---
 
@@ -22,15 +23,15 @@ root, so run the commands from there).
 Prereqs: a [Fly](https://fly.io) account and `flyctl` (`brew install flyctl && fly auth login`).
 
 ```bash
-# From the repo root.
-# 1. Edit deploy/fly.toml: set `app` + the two `<app>.fly.dev` URLs to your chosen name.
+# From the repo root (fly.toml is here, not in deploy/).
+# 1. Edit fly.toml: set `app` + PARLER_HUB_URL to your chosen, globally-unique name.
 
 # 2. Create the app (don't deploy yet) and a 1 GB volume for the SQLite directory.
-fly launch --no-deploy --copy-config --config deploy/fly.toml
-fly volumes create parler_data --size 1 --config deploy/fly.toml
+fly launch --no-deploy --copy-config
+fly volumes create parler_data --size 1
 
 # 3. Ship it.
-fly deploy --config deploy/fly.toml
+fly deploy
 ```
 
 You now have `https://<app>.fly.dev`. Open it in a browser — the hub serves a landing page with the

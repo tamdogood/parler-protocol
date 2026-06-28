@@ -12,6 +12,8 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
 tokio-tungstenite = { workspace = true }
+# Pinned in the root workspace with the `ring` provider; we install it as rustls' process default
+# before dialing `wss://` (see `ensure_crypto_provider` in client.rs).
 rustls = { workspace = true }
 futures = { workspace = true }
 async-trait = { workspace = true }
