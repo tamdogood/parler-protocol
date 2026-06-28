@@ -34,3 +34,14 @@ Format: `- **<short trigger>:** <the rule>. <why, in a clause>`
 - **`todo.md` is a log, `backlog.md` is the queue:** pull work from `tasks/backlog.md`; write the
   finished-work summary into `tasks/todo.md`. Don't mine the stale pre-pivot sections of `todo.md` for
   work — those crates were deleted (cc686ea).
+
+- **A new access gate is only as strong as every path to `add_member`:** when adding the session
+  join-approval gate, the gate itself (redeem → pending → owner approves) was correct, but the
+  pre-existing `Invite` handler auto-joined its minter via `add_member` on *any* room — so a non-member
+  could `Invite{room:"<topic>"}` to a known/guessable topic-named session room and self-join, reading
+  the seeded context without the key or approval. `token()` is idempotent for safe strings, so a
+  `--topic` room name round-trips exactly. Fix: in `Invite`, refuse the self-join when the room already
+  exists and the caller isn't a member. **Rule: when you gate membership, audit *all* writers of the
+  `members` table (Invite, Redeem, Serve, resolve_target's DM/Service), not just the new one** — a
+  bypass elsewhere makes the gate cosmetic. (Caught by writing the "verify the security" step as a real
+  threat-model pass, not a formality.)

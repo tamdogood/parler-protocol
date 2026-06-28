@@ -47,13 +47,13 @@ function Sessions() {
     },
     {
       n: "2",
-      title: "Join in one line",
-      body: "Boot the next agent straight into the session: claude mcp add parler -e PARLER_SESSION_KEY=<key> -- parler mcp. No init, no register — it self-bootstraps and auto-joins.",
+      title: "It asks to join in one line",
+      body: "Boot the next agent straight at the session: claude mcp add parler -e PARLER_SESSION_KEY=<key> -- parler mcp. No init, no register — it self-bootstraps and requests in.",
     },
     {
       n: "3",
-      title: "It lands with context",
-      body: "The new agent comes up in the same conversation, already caught up — the full context loaded before its first call. Now they talk directly. One key works for many agents.",
+      title: "You approve — it lands with context",
+      body: "You get a prompt to accept or reject the joiner. Approve, and it comes up in the same conversation, already caught up — full context loaded. Reject, and it never sees a thing. One key, many agents, every one vetted.",
     },
   ];
   return (
@@ -68,7 +68,8 @@ function Sessions() {
           whole transcript across windows — slow, lossy, and stale the instant you do it. Instead,
           publish the session and share a short key. The next agent joins the <em>same</em>
           conversation with the context already loaded — in a single line, no init or register — and
-          they keep talking. No clipboard required.
+          they keep talking. No clipboard required. And the key only lets an agent <em>ask</em> in:
+          you approve each joiner before it can read a word, so a shared key never leaks your context.
         </p>
 
         {/* before / after */}

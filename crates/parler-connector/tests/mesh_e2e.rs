@@ -1,7 +1,7 @@
 //! End-to-end: a real in-process hub + real WebSocket clients exercising the whole feature —
 //! the three delivery patterns, paste-a-code pairing, memory scoping, durable resume, and authz.
 
-use parler_connector::{BundleMeta, Config, MeshAgent};
+use parler_connector::{BundleMeta, Config, JoinOutcome, MeshAgent};
 use parler_protocol::{BundleRef, Part, RoomKind, StoredMessage, Target};
 use std::sync::Arc;
 use std::time::Duration;
@@ -320,6 +320,117 @@ async fn invite_max_uses_is_enforced() {
     let inv = alice.invite(RoomKind::Channel, Some("oneshot".into()), None, Some(1)).await.unwrap();
     bob.join(&inv.code).await.unwrap(); // first redemption: ok
     assert!(carol.join(&inv.code).await.is_err()); // exhausted
+}
+
+#[tokio::test]
+async fn approval_gated_session_requires_owner_consent() {
+    // The security-critical flow: an approval-gated key lets an agent only *ask* to join — it cannot
+    // read the conversation until the room owner approves. A leaked key alone grants nothing.
+    let hub = start_hub().await;
+    let mut alice = agent(&hub, "alice", Some("planner")).await;
+
+    let inv = alice
+        .invite_with_approval(RoomKind::Channel, Some("secret".into()), None, None, true)
+        .await
+        .unwrap();
+    alice
+        .send_text(Target::Room { room: inv.room.clone() }, "📋 context: launch code is 1234")
+        .await
+        .unwrap();
+
+    // Bob redeems → pending, NOT joined; and he cannot read the room (the context stays hidden).
+    let mut bob = agent(&hub, "bob", None).await;
+    match bob.redeem(&inv.code).await.unwrap() {
+        JoinOutcome::Pending { room } => assert_eq!(room, inv.room),
+        JoinOutcome::Joined { .. } => panic!("an approval-gated redeem must not join outright"),
+    }
+    assert!(bob.pull(&inv.room, None, None).await.is_err(), "a pending joiner can't read the room");
+    // The convenience `join()` surfaces the pending state as an error rather than a silent no-op.
+    assert!(bob.join(&inv.code).await.is_err());
+    // Re-redeeming while pending is idempotent (still pending).
+    assert!(matches!(bob.redeem(&inv.code).await.unwrap(), JoinOutcome::Pending { .. }));
+
+    // Only the owner can see/resolve the queue: the requester and a stranger are both refused.
+    assert!(bob.join_requests(&inv.room).await.is_err());
+    let mut eve = agent(&hub, "eve", None).await;
+    assert!(eve.resolve_join(&inv.room, &bob.id, true).await.is_err(), "a non-owner cannot approve");
+
+    let reqs = alice.join_requests(&inv.room).await.unwrap();
+    assert_eq!(reqs.len(), 1);
+    assert_eq!(reqs[0].agent, bob.id);
+
+    // Alice approves → bob is admitted and can finally read the seeded context.
+    assert!(alice.resolve_join(&inv.room, &bob.id, true).await.unwrap());
+    let room = match bob.redeem(&inv.code).await.unwrap() {
+        JoinOutcome::Joined { room, .. } => room,
+        JoinOutcome::Pending { .. } => panic!("bob should be admitted after approval"),
+    };
+    let (msgs, _) = bob.pull(&room, None, None).await.unwrap();
+    assert!(texts(&msgs).iter().any(|t| t.contains("launch code is 1234")));
+    assert!(alice.join_requests(&inv.room).await.unwrap().is_empty(), "the queue clears on approval");
+}
+
+#[tokio::test]
+async fn denied_join_request_is_terminal_e2e() {
+    // A denied requester is turned away for good: it can't read the room and can't re-request its way in.
+    let hub = start_hub().await;
+    let mut alice = agent(&hub, "alice", None).await;
+    let inv = alice
+        .invite_with_approval(RoomKind::Channel, Some("secret".into()), None, None, true)
+        .await
+        .unwrap();
+
+    let mut eve = agent(&hub, "eve", None).await;
+    assert!(matches!(eve.redeem(&inv.code).await.unwrap(), JoinOutcome::Pending { .. }));
+    assert!(!alice.resolve_join(&inv.room, &eve.id, false).await.unwrap()); // deny
+
+    assert!(eve.pull(&inv.room, None, None).await.is_err());
+    assert!(eve.redeem(&inv.code).await.is_err());
+}
+
+#[tokio::test]
+async fn approval_gate_not_bypassable_by_reinviting_to_the_room() {
+    // Regression for the gate's whole point: a non-member must not be able to walk past approval by
+    // minting its OWN invite for the same (guessable, topic-named) room and self-joining. Eve here
+    // doesn't even use the key — she only knows the topic.
+    let hub = start_hub().await;
+    let mut alice = agent(&hub, "alice", None).await;
+    let inv = alice
+        .invite_with_approval(RoomKind::Channel, Some("auth-redesign".into()), None, None, true)
+        .await
+        .unwrap();
+    alice
+        .send_text(Target::Room { room: inv.room.clone() }, "secret: launch code 1234")
+        .await
+        .unwrap();
+
+    let mut eve = agent(&hub, "eve", None).await;
+    // Self-adding via an invite to the same existing room is refused…
+    assert!(
+        eve.invite(RoomKind::Channel, Some("auth-redesign".into()), None, None).await.is_err(),
+        "a non-member must not be able to invite itself into an existing room"
+    );
+    // …so eve is not a member and cannot read the seeded context.
+    assert!(eve.pull(&inv.room, None, None).await.is_err(), "the approval gate holds");
+
+    // The legitimate owner can still mint further invites for its own room.
+    assert!(alice.invite(RoomKind::Channel, Some("auth-redesign".into()), None, None).await.is_ok());
+}
+
+#[tokio::test]
+async fn ordinary_session_key_still_joins_without_approval() {
+    // Backward-compat: a key minted without approval (the historical default) joins on the spot.
+    let hub = start_hub().await;
+    let mut alice = agent(&hub, "alice", None).await;
+    let mut bob = agent(&hub, "bob", None).await;
+
+    let inv = alice.invite(RoomKind::Channel, Some("open".into()), None, None).await.unwrap();
+    match bob.redeem(&inv.code).await.unwrap() {
+        JoinOutcome::Joined { room, .. } => assert_eq!(room, inv.room),
+        JoinOutcome::Pending { .. } => panic!("an ungated key should join immediately"),
+    }
+    // And the owner's request queue is empty (nothing is gated).
+    assert!(alice.join_requests(&inv.room).await.unwrap().is_empty());
 }
 
 #[tokio::test]

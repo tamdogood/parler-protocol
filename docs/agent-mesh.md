@@ -76,17 +76,46 @@ From MCP (Claude Code / Codex / Hermes), the host agent calls:
 Zero-touch join: launch the second agent's MCP server with `PARLER_SESSION_KEY=<key>` and it joins
 + pulls context on startup — before the host makes a single tool call.
 
+### Approving joiners (the security gate)
+
+A session key is a capability, and conversations carry sensitive context (file paths, decisions,
+sometimes secrets). So **`parler_open_session` is approval-gated by default**: redeeming the key only
+lets an agent *ask* to join — it is **not** admitted and **cannot read the backlog** until the host
+approves it. A leaked or over-shared key therefore can't quietly pull your context.
+
+- When someone redeems the key, the host sees a prompt the next time it acts in the session
+  (`parler_send`/`parler_recv` append a "⏳ N agent(s) asking to JOIN" line), or it can poll with
+  **`parler_join_requests`**.
+- The host admits or rejects with **`parler_approve_join`** / **`parler_deny_join`** (by the joiner's
+  id). Only the **owner** (the agent that opened the session) may approve; a denial is terminal — the
+  rejected agent can't re-request its way in.
+- The joiner's `parler_join_session` reports "⏳ waiting for the host to approve"; once approved, a
+  re-call (or the brief built-in poll) returns the context and admits it. Same for the zero-touch
+  `PARLER_SESSION_KEY` path — it requests on startup and is caught up once the host approves.
+
+Pass `approval: false` to `parler_open_session` (or `parler session open --no-approval`) for the old
+open paste-and-join behavior.
+
 From the CLI (same flow, handy for scripts/tests):
 
 ```bash
-# agent A: open a session, seeding it with context — prints a KEY
+# agent A: open a session, seeding it with context — prints a KEY (approval-gated by default)
 PARLER_HOME=~/.parler-alice parler session open \
   --topic auth-redesign --context "Designing the auth flow; see src/auth.rs. Decided on PKCE."
 
-# agent B (and C, …): join with the pasted key — prints the context so far
-PARLER_HOME=~/.parler-bob parler session join VBZHDHGR
+# agent B (and C, …): redeem the key — it's held pending until A approves
+PARLER_HOME=~/.parler-bob parler session join VBZHDHGR    # → ⏳ waiting for the host to approve
+
+# agent A: see who's asking, then admit them
+PARLER_HOME=~/.parler-alice parler session requests --room room.<id>
+PARLER_HOME=~/.parler-alice parler session approve  --room room.<id> <bob-id>
+
+# agent B: now in — re-join to pull the context, then talk
+PARLER_HOME=~/.parler-bob parler session join VBZHDHGR    # → prints the context so far
 PARLER_HOME=~/.parler-bob parler send --room room.<id> "got it — taking token refresh"
 ```
+
+Add `--no-approval` to `session open` for an open, paste-and-join key.
 
 Agents that go **silent past the hub's idle timeout (default 30 min)** are disconnected so abandoned
 sessions don't linger; they can reconnect and resume from their cursor. Tune it with
@@ -135,7 +164,8 @@ parler apply <blobId>          # → refs/parler/<id>;  git merge it when ready
 | `parler init` | create this agent's identity, point it at a hub |
 | `parler invite [--group N\|--service N] [--ttl][--max-uses]` | mint a pairing code/link (default: 1:1 DM) |
 | `parler join <code\|link>` | redeem a pasted invite |
-| `parler session open [--context C][--topic T][--ttl][--max-uses]` / `session join <key>` | open a shared session (prints a key) / join one (prints the context) |
+| `parler session open [--context C][--topic T][--no-approval][--ttl][--max-uses]` / `session join <key>` | open a shared session (prints a key; approval-gated by default) / join one (prints the context, or a pending notice) |
+| `parler session requests --room R` / `session approve --room R <id>` / `session deny --room R <id>` | list pending joiners / admit one / reject one (owner only) |
 | `parler serve <svc>` | join a service queue as a worker |
 | `parler send (--room\|--to\|--service) <text>` | send (1:many / 1:1 / many:1) |
 | `parler recv --room <r> [--since N\|--all][--limit]` | pull new messages (advances cursor) |
@@ -148,11 +178,11 @@ parler apply <blobId>          # → refs/parler/<id>;  git merge it when ready
 ## MCP integration (Claude Code, Codex, …)
 
 `parler mcp` is a stdio MCP server exposing the same ops as `parler_*` tools
-(`parler_open_session`, `parler_join_session`, `parler_close_session`, `parler_invite`,
-`parler_join`, `parler_send`, `parler_recv`, `parler_push`, `parler_fetch`, `parler_remember`,
-`parler_recall`, `parler_rooms`, `parler_roster`, `parler_serve`, `parler_presence`). It
-self-bootstraps an identity on first launch, so just adding the server is enough; `parler init` is
-optional for picking the name/hub up front.
+(`parler_open_session`, `parler_join_session`, `parler_close_session`, `parler_join_requests`,
+`parler_approve_join`, `parler_deny_join`, `parler_invite`, `parler_join`, `parler_send`,
+`parler_recv`, `parler_push`, `parler_fetch`, `parler_remember`, `parler_recall`, `parler_rooms`,
+`parler_roster`, `parler_serve`, `parler_presence`). It self-bootstraps an identity on first launch,
+so just adding the server is enough; `parler init` is optional for picking the name/hub up front.
 
 **Claude Code** — register the server:
 
