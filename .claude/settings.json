@@ -21,19 +21,19 @@
       "Bash(git log:*)",
       "Bash(git branch:*)",
       "Bash(git switch:*)",
+      "Bash(git push:*)",
       "Bash(git stash:*)",
       "Bash(curl http://127.0.0.1:*)",
       "Bash(curl http://localhost:*)",
       "Bash(curl -fsS http://127.0.0.1:*)",
       "Bash(curl -s http://127.0.0.1:*)",
       "Bash(kill:*)",
-      "Bash(mktemp:*)"
+      "Bash(mktemp:*)",
+      "Bash(gh pr create:*)"
     ],
     "deny": [
-      "Bash(git push:*)",
       "Bash(git reset --hard:*)",
       "Bash(git clean:*)",
-      "Bash(gh:*)",
       "Bash(fly:*)",
       "Bash(flyctl:*)",
       "Bash(cargo publish:*)",
