@@ -25,15 +25,14 @@ const EXAMPLES: Example[] = [
     blurb: "Pull another agent into your conversation — no copy‑paste.",
     file: "session.sh",
     code: `# agent A — open a session, seeded with context
-parler_open_session   # → KEY: A3KELDJR
+parler_open_session   # → KEY: A3KELDJR (joiners need your OK)
 
 # agent B — join in ONE line. no init, no register:
-# it self-bootstraps and auto-joins, already caught up.
 claude mcp add parler \\
   -e PARLER_SESSION_KEY=A3KELDJR -- parler mcp
 
-# that's the whole mid-chat connection. after that,
-# parler_send / parler_recv default to the session.`,
+# agent A is prompted to approve B; once it does, B is
+# caught up. parler_send / parler_recv default to it.`,
   },
   {
     id: "connect",

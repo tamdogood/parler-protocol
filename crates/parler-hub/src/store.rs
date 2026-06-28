@@ -8,8 +8,8 @@
 
 use anyhow::{anyhow, bail, Result};
 use parler_protocol::{
-    AgentCard, DirectoryEntry, DiscoverScope, EndpointRef, Fact, Part, RecallHit, RoomInfo,
-    RoomKind, RosterEntry, StoredMessage, Visibility,
+    AgentCard, DirectoryEntry, DiscoverScope, EndpointRef, Fact, JoinRequest, Part, RecallHit,
+    RoomInfo, RoomKind, RosterEntry, StoredMessage, Visibility,
 };
 use rusqlite::{named_params, params, Connection, OpenFlags, OptionalExtension};
 use std::ops::Deref;
@@ -41,6 +41,10 @@ CREATE TABLE IF NOT EXISTS rooms (
   name        TEXT PRIMARY KEY,
   kind        TEXT NOT NULL,
   description TEXT,
+  -- The agent that created the room (via its invite). Set-once; it is the only one allowed to
+  -- approve/deny pending joins for an approval-gated room. NULL for rooms created before this column
+  -- existed or with no distinguished owner (DMs/services).
+  owner       TEXT,
   created     INTEGER NOT NULL
 );
 
@@ -100,7 +104,22 @@ CREATE TABLE IF NOT EXISTS invites (
   uses       INTEGER NOT NULL DEFAULT 0,
   expires    INTEGER NOT NULL,
   created_by TEXT NOT NULL,
+  -- When 1, redeeming this invite records a pending join request the room owner must approve rather
+  -- than joining outright. Default 0 ⇒ the historical "redeem joins immediately" behavior.
+  require_approval INTEGER NOT NULL DEFAULT 0,
   created    INTEGER NOT NULL
+);
+
+-- Pending/denied join requests for approval-gated rooms. A redeem of an approval invite lands here as
+-- `pending` (the requester is NOT yet a member); the room owner approves (→ membership, row removed)
+-- or denies (→ status `denied`, which a requester cannot re-request past). Keyed per (room, agent) so
+-- re-redeeming the same code is idempotent rather than flooding the owner's queue.
+CREATE TABLE IF NOT EXISTS join_requests (
+  room      TEXT NOT NULL,
+  agent     TEXT NOT NULL,
+  status    TEXT NOT NULL DEFAULT 'pending',
+  requested INTEGER NOT NULL,
+  PRIMARY KEY (room, agent)
 );
 
 -- The discovery directory: one signed AgentCard per agent, plus denormalized tags/skills (lowercased,
@@ -202,6 +221,8 @@ impl Store {
         writer.execute_batch(MIGRATION)?;
         // Evolve tables created by an older schema without a destructive rebuild.
         add_column_if_missing(&writer, "blobs", "last_fetched", "INTEGER")?;
+        add_column_if_missing(&writer, "rooms", "owner", "TEXT")?;
+        add_column_if_missing(&writer, "invites", "require_approval", "INTEGER NOT NULL DEFAULT 0")?;
 
         // Read-only pool for a file-backed DB (the writer has already created the -wal/-shm files, so
         // read-only connections can attach). In-memory has no shared file ⇒ no pool, reads use writer.
@@ -412,6 +433,9 @@ impl Store {
         Ok((id, conn.last_insert_rowid()))
     }
 
+    /// `pull`'s cursor read shares the same already-held connection (see [`Store::pull`]); the
+    /// approval path's membership/ownership checks do the same via the free helpers below, since they
+    /// run while the writer lock is held and must not re-lock it.
     fn get_cursor(conn: &Connection, room: &str, agent: &str) -> Result<i64> {
         let cur: Option<i64> = conn
             .query_row(
@@ -490,42 +514,155 @@ impl Store {
         max_uses: u32,
         expires: i64,
         created_by: &str,
+        require_approval: bool,
         now: i64,
     ) -> Result<()> {
         let conn = self.w();
         conn.execute(
-            "INSERT INTO invites (code, room, kind, role, max_uses, uses, expires, created_by, created)
-             VALUES (?1, ?2, ?3, ?4, ?5, 0, ?6, ?7, ?8)",
-            params![code, room, kind.as_str(), role, max_uses, expires, created_by, now],
+            "INSERT INTO invites (code, room, kind, role, max_uses, uses, expires, created_by, require_approval, created)
+             VALUES (?1, ?2, ?3, ?4, ?5, 0, ?6, ?7, ?8, ?9)",
+            params![code, room, kind.as_str(), role, max_uses, expires, created_by, require_approval as i64, now],
         )?;
         Ok(())
     }
 
-    /// Redeem `code` for `agent`: validate expiry + remaining uses, increment uses, join the room.
-    pub fn redeem_invite(&self, code: &str, agent: &str, now: i64) -> Result<(String, RoomKind)> {
+    /// Mark `owner` as the room's owner if it has none yet (set-once). Only the owner may approve or
+    /// deny pending joins for an approval-gated room, so this can't be silently reassigned later.
+    pub fn set_room_owner(&self, room: &str, owner: &str) -> Result<()> {
         let conn = self.w();
-        let row: Option<(String, String, i64, i64, i64)> = conn
+        conn.execute(
+            "UPDATE rooms SET owner = ?2 WHERE name = ?1 AND owner IS NULL",
+            params![room, owner],
+        )?;
+        Ok(())
+    }
+
+    /// Redeem `code` for `agent`. For an ordinary invite this validates expiry + remaining uses,
+    /// charges a use, and joins the room. For an **approval-gated** invite it instead records a
+    /// *pending request* (the agent is not admitted) the room owner must approve — see
+    /// [`Store::resolve_join`]. Already-member redeems are idempotent (no use charged), so a pending
+    /// joiner can re-redeem the same code to poll for the owner's decision.
+    pub fn redeem_invite(&self, code: &str, agent: &str, now: i64) -> Result<Redeemed> {
+        let conn = self.w();
+        let row: Option<(String, String, i64, i64, i64, i64)> = conn
             .query_row(
-                "SELECT room, kind, max_uses, uses, expires FROM invites WHERE code = ?1",
+                "SELECT room, kind, max_uses, uses, expires, require_approval FROM invites WHERE code = ?1",
                 params![code],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
             )
             .optional()?;
-        let (room, kind_s, max_uses, uses, expires) =
+        let (room, kind_s, max_uses, uses, expires, require_approval) =
             row.ok_or_else(|| anyhow!("invalid or unknown invite code"))?;
+        let kind = RoomKind::parse(&kind_s).unwrap_or(RoomKind::Channel);
+
+        // Idempotent: already in the room (e.g. the owner, or a re-redeem after approval) → just say
+        // joined, without charging a use or re-checking expiry/limits.
+        if member_exists(&conn, &room, agent)? {
+            return Ok(Redeemed { room, kind, pending: false });
+        }
         if now > expires {
             bail!("invite has expired");
         }
-        if uses >= max_uses {
-            bail!("invite has already been used up");
+
+        if require_approval != 0 {
+            // Approval flow: a redeem becomes a request the owner vets — it does NOT grant access.
+            let status: Option<String> = conn
+                .query_row(
+                    "SELECT status FROM join_requests WHERE room = ?1 AND agent = ?2",
+                    params![room, agent],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            match status.as_deref() {
+                // Already waiting → idempotent poll, no extra use charged or queue entry added.
+                Some("pending") => Ok(Redeemed { room, kind, pending: true }),
+                // A denial is terminal for the requester (it cannot re-request its way in).
+                Some("denied") => bail!("your request to join was denied by the host"),
+                _ => {
+                    // A fresh requester consumes one use (so `max_uses` also bounds the pending queue).
+                    if uses >= max_uses {
+                        bail!("invite has already been used up");
+                    }
+                    conn.execute("UPDATE invites SET uses = uses + 1 WHERE code = ?1", params![code])?;
+                    conn.execute(
+                        "INSERT INTO join_requests (room, agent, status, requested) VALUES (?1, ?2, 'pending', ?3)",
+                        params![room, agent, now],
+                    )?;
+                    Ok(Redeemed { room, kind, pending: true })
+                }
+            }
+        } else {
+            if uses >= max_uses {
+                bail!("invite has already been used up");
+            }
+            conn.execute("UPDATE invites SET uses = uses + 1 WHERE code = ?1", params![code])?;
+            conn.execute(
+                "INSERT OR IGNORE INTO members (room, agent, joined, cursor) VALUES (?1, ?2, ?3, 0)",
+                params![room, agent, now],
+            )?;
+            Ok(Redeemed { room, kind, pending: false })
         }
-        conn.execute("UPDATE invites SET uses = uses + 1 WHERE code = ?1", params![code])?;
-        conn.execute(
-            "INSERT OR IGNORE INTO members (room, agent, joined, cursor) VALUES (?1, ?2, ?3, 0)",
-            params![room, agent, now],
+    }
+
+    /// The pending join requests for `room`, authorized to its **owner** only. A non-owner (or an
+    /// unknown room) gets an error rather than a peek at who is waiting.
+    pub fn pending_join_requests(&self, room: &str, owner: &str) -> Result<Vec<JoinRequest>> {
+        let conn = self.r();
+        if !room_owned_by(&conn, room, owner)? {
+            bail!("only the session owner can view join requests for '{room}'");
+        }
+        let mut stmt = conn.prepare(
+            "SELECT jr.agent, a.name, a.role, jr.requested
+               FROM join_requests jr LEFT JOIN agents a ON a.id = jr.agent
+              WHERE jr.room = ?1 AND jr.status = 'pending'
+              ORDER BY jr.requested ASC",
         )?;
-        let kind = RoomKind::parse(&kind_s).unwrap_or(RoomKind::Channel);
-        Ok((room, kind))
+        let rows = stmt
+            .query_map(params![room], |r| {
+                Ok(JoinRequest {
+                    agent: r.get(0)?,
+                    name: r.get::<_, Option<String>>(1)?.unwrap_or_default(),
+                    role: r.get(2)?,
+                    requested_at: r.get(3)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    /// Approve or deny a pending join request for `room`, authorized to its **owner** only. On
+    /// `approve` the requester is admitted as a member and its request cleared; on deny the request is
+    /// marked `denied` (so the requester cannot re-request). Errors if the caller isn't the owner or
+    /// there is no such request. Returns whether the requester was admitted.
+    pub fn resolve_join(&self, room: &str, owner: &str, agent: &str, approve: bool, now: i64) -> Result<bool> {
+        let conn = self.w();
+        if !room_owned_by(&conn, room, owner)? {
+            bail!("only the session owner can approve or deny join requests for '{room}'");
+        }
+        let exists: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM join_requests WHERE room = ?1 AND agent = ?2",
+            params![room, agent],
+            |r| r.get(0),
+        )?;
+        if exists == 0 {
+            bail!("no pending join request from '{agent}' for '{room}'");
+        }
+        if approve {
+            conn.execute(
+                "DELETE FROM join_requests WHERE room = ?1 AND agent = ?2",
+                params![room, agent],
+            )?;
+            conn.execute(
+                "INSERT OR IGNORE INTO members (room, agent, joined, cursor) VALUES (?1, ?2, ?3, 0)",
+                params![room, agent, now],
+            )?;
+        } else {
+            conn.execute(
+                "UPDATE join_requests SET status = 'denied' WHERE room = ?1 AND agent = ?2",
+                params![room, agent],
+            )?;
+        }
+        Ok(approve)
     }
 
     // ---- directory (discovery) ----
@@ -930,6 +1067,28 @@ impl Store {
     }
 }
 
+/// Whether `agent` is already a member of `room`, on an already-held connection (the approval path
+/// holds the writer lock, so it can't call [`Store::is_member`] which would re-lock).
+fn member_exists(conn: &Connection, room: &str, agent: &str) -> Result<bool> {
+    let n: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM members WHERE room = ?1 AND agent = ?2",
+        params![room, agent],
+        |r| r.get(0),
+    )?;
+    Ok(n > 0)
+}
+
+/// Whether `owner` owns `room` (the set-once `rooms.owner`), on an already-held connection. The
+/// authorization check behind viewing/resolving join requests.
+fn room_owned_by(conn: &Connection, room: &str, owner: &str) -> Result<bool> {
+    let n: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM rooms WHERE name = ?1 AND owner = ?2",
+        params![room, owner],
+        |r| r.get(0),
+    )?;
+    Ok(n > 0)
+}
+
 /// Idempotently add a column to a table (SQLite has no `ADD COLUMN IF NOT EXISTS`), so an older
 /// on-disk schema can gain a column without a destructive rebuild. `table`/`col`/`decl` are internal
 /// constants, never user input.
@@ -974,6 +1133,16 @@ fn build_fts_query(q: &str) -> String {
         .map(|s| format!("{}*", s.to_lowercase()))
         .collect();
     terms.join(" OR ")
+}
+
+/// The outcome of [`Store::redeem_invite`]: the resolved room + kind, and whether the redeem only
+/// queued a **pending** approval request (`pending = true`, the caller is not yet a member) rather
+/// than joining outright.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Redeemed {
+    pub room: String,
+    pub kind: RoomKind,
+    pub pending: bool,
 }
 
 /// Metadata for a content-addressed blob (the bytes live on disk under `<blob_dir>/<id>`).
@@ -1139,7 +1308,7 @@ mod tests {
             s.append_message("team", &eref("U_A", "alice"), &[Part::text("hello world")], None, None, 20).unwrap();
             s.remember("U_A", &Fact { key: None, text: "deploy is blue-green".into(), room: Some("team".into()) }, 21).unwrap();
             s.register_card(&card("U_A", "alice", &["ops"], &["plan"]), Some("sig"), true, Visibility::Public, 12).unwrap();
-            s.create_invite("CODE", "team", RoomKind::Channel, None, 1, 9_999_999_999_999, "U_A", 1).unwrap();
+            s.create_invite("CODE", "team", RoomKind::Channel, None, 1, 9_999_999_999_999, "U_A", false, 1).unwrap();
             s.mint_directory_token("TOK", "hub", 9_999_999_999_999, "U_A", 1).unwrap();
             s.put_blob_meta("blob1", "team", "U_A", None, 12, 30).unwrap();
             s.touch_blob_fetched("blob1", 31).unwrap();
@@ -1229,14 +1398,61 @@ mod tests {
     fn invite_redeem_joins_and_enforces_limits() {
         let s = Store::open(None).unwrap();
         s.ensure_room("dm.x", RoomKind::Dm, None, 1).unwrap();
-        s.create_invite("CODE1", "dm.x", RoomKind::Dm, None, 1, 9_999_999_999_999, "U_A", 1).unwrap();
+        s.create_invite("CODE1", "dm.x", RoomKind::Dm, None, 1, 9_999_999_999_999, "U_A", false, 1).unwrap();
 
-        let (room, kind) = s.redeem_invite("CODE1", "U_B", 2).unwrap();
-        assert_eq!(room, "dm.x");
-        assert_eq!(kind, RoomKind::Dm);
+        let r = s.redeem_invite("CODE1", "U_B", 2).unwrap();
+        assert_eq!(r.room, "dm.x");
+        assert_eq!(r.kind, RoomKind::Dm);
+        assert!(!r.pending, "an ordinary invite joins on the spot");
         assert!(s.is_member("dm.x", "U_B").unwrap());
         // Single-use invite is now spent.
         assert!(s.redeem_invite("CODE1", "U_C", 3).is_err());
+    }
+
+    #[test]
+    fn approval_invite_gates_join_behind_owner_consent() {
+        let s = Store::open(None).unwrap();
+        // alice owns the room (as the hub does on invite creation); bob will ask to join.
+        s.ensure_room("room.s", RoomKind::Channel, None, 1).unwrap();
+        s.add_member("room.s", "U_ALICE", 1).unwrap();
+        s.set_room_owner("room.s", "U_ALICE").unwrap();
+        s.create_invite("KEY", "room.s", RoomKind::Channel, None, 50, 9_999_999_999_999, "U_ALICE", true, 1).unwrap();
+
+        // Bob redeems → a *pending* request, NOT membership: he can't read the room yet.
+        let r = s.redeem_invite("KEY", "U_BOB", 2).unwrap();
+        assert!(r.pending);
+        assert!(!s.is_member("room.s", "U_BOB").unwrap(), "a pending joiner is not a member");
+        // Re-redeeming while pending is idempotent (still pending, no extra use / queue row).
+        assert!(s.redeem_invite("KEY", "U_BOB", 3).unwrap().pending);
+
+        // Only the owner can see the queue; a stranger (or non-owner) is refused.
+        assert!(s.pending_join_requests("room.s", "U_EVE").is_err());
+        let reqs = s.pending_join_requests("room.s", "U_ALICE").unwrap();
+        assert_eq!(reqs.len(), 1);
+        assert_eq!(reqs[0].agent, "U_BOB");
+
+        // A non-owner cannot approve; the owner can.
+        assert!(s.resolve_join("room.s", "U_EVE", "U_BOB", true, 4).is_err());
+        assert!(s.resolve_join("room.s", "U_ALICE", "U_BOB", true, 4).unwrap());
+        assert!(s.is_member("room.s", "U_BOB").unwrap(), "approval admits the requester");
+        assert!(s.pending_join_requests("room.s", "U_ALICE").unwrap().is_empty());
+        // A post-approval re-redeem is the idempotent member path (still not pending).
+        assert!(!s.redeem_invite("KEY", "U_BOB", 5).unwrap().pending);
+    }
+
+    #[test]
+    fn denied_join_request_is_terminal() {
+        let s = Store::open(None).unwrap();
+        s.ensure_room("room.s", RoomKind::Channel, None, 1).unwrap();
+        s.set_room_owner("room.s", "U_ALICE").unwrap();
+        s.create_invite("KEY", "room.s", RoomKind::Channel, None, 50, 9_999_999_999_999, "U_ALICE", true, 1).unwrap();
+
+        s.redeem_invite("KEY", "U_EVE", 2).unwrap(); // pending
+        assert!(!s.resolve_join("room.s", "U_ALICE", "U_EVE", false, 3).unwrap()); // deny
+        assert!(!s.is_member("room.s", "U_EVE").unwrap());
+        // Eve cannot re-request her way in past a denial.
+        assert!(s.redeem_invite("KEY", "U_EVE", 4).is_err());
+        assert!(s.pending_join_requests("room.s", "U_ALICE").unwrap().is_empty());
     }
 
     #[test]
@@ -1312,7 +1528,7 @@ mod tests {
         s.touch_blob_fetched("bb", 4_900).unwrap();
         assert!(s.gc_blobs(1_000, 5_000).unwrap().is_empty());
 
-        s.create_invite("C1", "dev", RoomKind::Channel, None, 1, 5_000, "U_A", 1).unwrap();
+        s.create_invite("C1", "dev", RoomKind::Channel, None, 1, 5_000, "U_A", false, 1).unwrap();
         assert_eq!(s.sweep_expired(10_000).unwrap(), 1); // invite expired at ts 5_000
     }
 

@@ -162,6 +162,22 @@ pub struct RecallHit {
     pub score: f64,
 }
 
+/// A pending request to join an **approval-gated** room: who is asking, and when. Surfaced to the
+/// room's owner so it can vet (approve or deny) the requester *before* it is admitted — until then
+/// the requester is not a member and cannot read the room's backlog.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct JoinRequest {
+    /// The requester's agent id (its public key).
+    pub agent: String,
+    /// The requester's display name.
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
+    /// When the request was made (epoch-ms).
+    #[serde(rename = "requestedAt")]
+    pub requested_at: i64,
+}
+
 /// A roster entry — a room member with their last-known presence.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RosterEntry {
@@ -217,9 +233,27 @@ pub enum ClientFrame {
         ttl_secs: Option<u64>,
         #[serde(default, rename = "maxUses", skip_serializing_if = "Option::is_none")]
         max_uses: Option<u32>,
+        /// When set, redeeming this invite does **not** join immediately — it records a *pending
+        /// request* the room owner must approve first (see [`ClientFrame::ResolveJoin`]). Default
+        /// `false` preserves the historical "redeem joins on the spot" behavior. Live sessions set it
+        /// so the host vets every agent that asks to enter the shared conversation.
+        #[serde(default, rename = "requireApproval", skip_serializing_if = "is_false")]
+        require_approval: bool,
     },
-    /// Redeem a pasted code — joins the room it grants.
+    /// Redeem a pasted code. Joins the room it grants — or, if the invite is approval-gated, records a
+    /// pending request (the hub replies [`ServerFrame::JoinPending`]) until the owner approves.
     Redeem { code: String },
+    /// List the pending join requests for `room` — authorized only for the room's **owner** (the
+    /// agent whose invite created it). Replies [`ServerFrame::JoinRequests`].
+    JoinRequests { room: String },
+    /// Approve or deny a pending join request for `room`. Only the room owner may call it: on
+    /// `approve` the requester is admitted as a member; on deny it is rejected (and cannot re-request).
+    /// Replies [`ServerFrame::JoinResolved`].
+    ResolveJoin {
+        room: String,
+        agent: String,
+        approve: bool,
+    },
     /// Join/create a service room as a worker, so `Send`/`Pull` on it are authorized.
     Serve { service: String },
     /// Publish (or refresh) this agent's directory card. `card.id` must equal the authenticated
@@ -341,6 +375,24 @@ pub enum ServerFrame {
         room: String,
         kind: RoomKind,
     },
+    /// A redeem of an approval-gated invite was recorded as a **pending request** — the room owner
+    /// must approve before the caller is admitted. The caller is *not* a member yet (it cannot read
+    /// the room until approved); it may re-redeem the same code to poll for the decision.
+    JoinPending {
+        room: String,
+    },
+    /// The pending join requests for a room the caller owns (reply to [`ClientFrame::JoinRequests`]).
+    JoinRequests {
+        room: String,
+        requests: Vec<JoinRequest>,
+    },
+    /// The outcome of a [`ClientFrame::ResolveJoin`]: `approved` is `true` when the requester was
+    /// admitted, `false` when denied.
+    JoinResolved {
+        room: String,
+        agent: String,
+        approved: bool,
+    },
     Registered {
         id: String,
         visibility: Visibility,
@@ -402,6 +454,12 @@ pub enum ServerFrame {
     Error {
         message: String,
     },
+}
+
+/// `skip_serializing_if` helper: omit a `bool` field from the wire when it is `false`, so an
+/// approval flag defaults cleanly to absent (and old peers that never set it stay byte-compatible).
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 /// The reverse-DNS [`Part`] kind that references a code/artifact bundle handed off through a room.
@@ -630,6 +688,62 @@ mod tests {
         assert_eq!(j["expiresAt"], 123);
         let back: ServerFrame = serde_json::from_value(j).unwrap();
         assert_eq!(back, f);
+    }
+
+    #[test]
+    fn approval_invite_field_defaults_and_round_trips() {
+        // Absent on the wire ⇒ `require_approval` deserializes to false (back-compat with old peers),
+        // and a false value is omitted when re-serialized (clean wire).
+        let open: ClientFrame =
+            serde_json::from_value(serde_json::json!({"op":"invite","kind":"channel"})).unwrap();
+        match &open {
+            ClientFrame::Invite { require_approval, .. } => assert!(!require_approval),
+            _ => panic!("expected invite"),
+        }
+        assert!(serde_json::to_value(&open).unwrap().get("requireApproval").is_none());
+
+        // When set it survives the round trip under its camelCase wire name.
+        let gated = ClientFrame::Invite {
+            kind: RoomKind::Channel,
+            room: Some("design".into()),
+            ttl_secs: None,
+            max_uses: None,
+            require_approval: true,
+        };
+        let j = serde_json::to_value(&gated).unwrap();
+        assert_eq!(j["requireApproval"], true);
+        assert_eq!(serde_json::from_value::<ClientFrame>(j).unwrap(), gated);
+    }
+
+    #[test]
+    fn join_approval_frames_round_trip() {
+        let resolve = ClientFrame::ResolveJoin {
+            room: "room.x".into(),
+            agent: "UBOB".into(),
+            approve: true,
+        };
+        let j = serde_json::to_value(&resolve).unwrap();
+        assert_eq!(j["op"], "resolve_join");
+        assert_eq!(j["approve"], true);
+        assert_eq!(serde_json::from_value::<ClientFrame>(j).unwrap(), resolve);
+
+        let pending = ServerFrame::JoinPending { room: "room.x".into() };
+        assert_eq!(serde_json::to_value(&pending).unwrap()["type"], "join_pending");
+
+        let reqs = ServerFrame::JoinRequests {
+            room: "room.x".into(),
+            requests: vec![JoinRequest {
+                agent: "UBOB".into(),
+                name: "bob".into(),
+                role: Some("reviewer".into()),
+                requested_at: 42,
+            }],
+        };
+        let j = serde_json::to_value(&reqs).unwrap();
+        assert_eq!(j["type"], "join_requests");
+        assert_eq!(j["requests"][0]["agent"], "UBOB");
+        assert_eq!(j["requests"][0]["requestedAt"], 42);
+        assert_eq!(serde_json::from_value::<ServerFrame>(j).unwrap(), reqs);
     }
 
     #[test]

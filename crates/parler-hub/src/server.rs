@@ -931,7 +931,7 @@ fn handle_authed(state: &HubState, me: &Authed, frame: ClientFrame) -> anyhow::R
             Ok(ServerFrame::DirectoryToken { token: tok, expires_at: expires })
         }
 
-        ClientFrame::Invite { kind, room, ttl_secs, max_uses } => {
+        ClientFrame::Invite { kind, room, ttl_secs, max_uses, require_approval } => {
             let now = now_ms();
             let expires = now + (ttl_secs.unwrap_or(24 * 3600).min(MAX_TTL_SECS) as i64) * 1000;
             let (room_name, max) = match kind {
@@ -945,18 +945,49 @@ fn handle_authed(state: &HubState, me: &Authed, frame: ClientFrame) -> anyhow::R
                     max_uses.unwrap_or(50),
                 ),
             };
+            // Approval gating is a group-session feature: a DM is an explicit single-use 1:1 handshake
+            // and a service queue auto-joins requesters, so honor `require_approval` only for channels.
+            let require_approval = require_approval && matches!(kind, RoomKind::Channel);
+            // Minting an invite auto-joins the minter (so a host can immediately talk in the room it
+            // opened). That self-join must NOT apply to a room that already exists and the caller is
+            // not in: a session room's name is surfaced to joiners (and a topic name is guessable), so
+            // otherwise a non-member could "invite itself" into an existing room and walk straight past
+            // its approval gate. A brand-new room is owned by its creator, below.
+            if store.room_kind(&room_name)?.is_some() && !store.is_member(&room_name, &me.id)? {
+                anyhow::bail!(
+                    "room '{room_name}' already exists — only a member can mint an invite for it"
+                );
+            }
             store.ensure_room(&room_name, kind, None, now)?;
             store.add_member(&room_name, &me.id, now)?;
+            // The creator owns the room, so it (and only it) can approve/deny pending joins later.
+            store.set_room_owner(&room_name, &me.id)?;
             let code = gen_code();
-            store.create_invite(&code, &room_name, kind, None, max, expires, &me.id, now)?;
+            store.create_invite(&code, &room_name, kind, None, max, expires, &me.id, require_approval, now)?;
             let url = format!("{public_url}/join/{code}");
             Ok(ServerFrame::Invited { code, url, room: room_name, kind, expires_at: expires })
         }
 
         ClientFrame::Redeem { code } => {
             let code = normalize_code(&code);
-            let (room, kind) = store.redeem_invite(&code, &me.id, now_ms())?;
-            Ok(ServerFrame::Joined { room, kind })
+            let r = store.redeem_invite(&code, &me.id, now_ms())?;
+            // An approval-gated redeem is held for the owner's consent — the caller is not admitted yet.
+            if r.pending {
+                Ok(ServerFrame::JoinPending { room: r.room })
+            } else {
+                Ok(ServerFrame::Joined { room: r.room, kind: r.kind })
+            }
+        }
+
+        ClientFrame::JoinRequests { room } => {
+            // Authorization (owner-only) is enforced in the store.
+            let requests = store.pending_join_requests(&room, &me.id)?;
+            Ok(ServerFrame::JoinRequests { room, requests })
+        }
+
+        ClientFrame::ResolveJoin { room, agent, approve } => {
+            let approved = store.resolve_join(&room, &me.id, &agent, approve, now_ms())?;
+            Ok(ServerFrame::JoinResolved { room, agent, approved })
         }
 
         ClientFrame::Serve { service } => {
@@ -1143,7 +1174,7 @@ mod tests {
     fn janitor_pass_sweeps_expired_and_gcs_idle_blobs() {
         let store = Store::open(None).unwrap();
         store.ensure_room("r", RoomKind::Channel, None, 1).unwrap();
-        store.create_invite("C", "r", RoomKind::Channel, None, 1, 100, "U", 1).unwrap();
+        store.create_invite("C", "r", RoomKind::Channel, None, 1, 100, "U", false, 1).unwrap();
         store.put_blob_meta("idleblob", "r", "U", None, 8, 100).unwrap();
         let r = Retention { blob_max_idle: Some(Duration::from_secs(1)), ..Retention::default() };
         // At now=10_000ms the invite (expires 100) is swept and the blob (created 100) is GC'd.

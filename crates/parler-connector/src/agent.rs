@@ -9,8 +9,8 @@ use anyhow::{bail, Result};
 use parler_auth::Identity;
 use parler_protocol::{
     canonical_card_bytes, AgentCard, AgentSkill, BundleRef, ClientFrame, DirectoryEntry,
-    DiscoverScope, EndpointKind, Fact, Part, RecallHit, RoomInfo, RoomKind, RosterEntry, ServerFrame,
-    StoredMessage, Target, Visibility,
+    DiscoverScope, EndpointKind, Fact, JoinRequest, Part, RecallHit, RoomInfo, RoomKind, RosterEntry,
+    ServerFrame, StoredMessage, Target, Visibility,
 };
 
 /// A freshly minted invite — the code/link the human pastes to another agent.
@@ -20,6 +20,15 @@ pub struct Invite {
     pub room: String,
     pub kind: RoomKind,
     pub expires_at: i64,
+}
+
+/// The result of redeeming an invite code via [`MeshAgent::redeem`].
+pub enum JoinOutcome {
+    /// Admitted into the room (an ordinary invite, or an approval-gated one the owner has approved).
+    Joined { room: String, kind: RoomKind },
+    /// The invite is approval-gated: the redeem is recorded as a pending request and the caller is
+    /// **not** in the room yet. Re-redeem the same code to poll once the owner has decided.
+    Pending { room: String },
 }
 
 /// What to advertise about a pushed artifact (everything but the bytes and their content id).
@@ -89,9 +98,24 @@ impl MeshAgent {
         ttl_secs: Option<u64>,
         max_uses: Option<u32>,
     ) -> Result<Invite> {
+        self.invite_with_approval(kind, room, ttl_secs, max_uses, false).await
+    }
+
+    /// Mint an invite, optionally **approval-gated**: with `require_approval`, redeeming the code does
+    /// not join immediately — it records a pending request the room owner must approve (see
+    /// [`MeshAgent::join_requests`] / [`MeshAgent::resolve_join`]). This is how a live session vets who
+    /// is let into the shared conversation. (The hub honors approval for `Channel` rooms only.)
+    pub async fn invite_with_approval(
+        &mut self,
+        kind: RoomKind,
+        room: Option<String>,
+        ttl_secs: Option<u64>,
+        max_uses: Option<u32>,
+        require_approval: bool,
+    ) -> Result<Invite> {
         match self
             .transport
-            .request(ClientFrame::Invite { kind, room, ttl_secs, max_uses })
+            .request(ClientFrame::Invite { kind, room, ttl_secs, max_uses, require_approval })
             .await?
         {
             ServerFrame::Invited { code, url, room, kind, expires_at } => {
@@ -101,11 +125,52 @@ impl MeshAgent {
         }
     }
 
-    /// Redeem a pasted code/link — joins the room it grants.
-    pub async fn join(&mut self, code: &str) -> Result<(String, RoomKind)> {
+    /// Redeem a pasted code/link, distinguishing an immediate join from an approval-gated
+    /// [`JoinOutcome::Pending`] (the owner must approve before the caller is admitted).
+    pub async fn redeem(&mut self, code: &str) -> Result<JoinOutcome> {
         match self.transport.request(ClientFrame::Redeem { code: code.to_string() }).await? {
-            ServerFrame::Joined { room, kind } => Ok((room, kind)),
-            other => bail!("unexpected reply to join: {other:?}"),
+            ServerFrame::Joined { room, kind } => Ok(JoinOutcome::Joined { room, kind }),
+            ServerFrame::JoinPending { room } => Ok(JoinOutcome::Pending { room }),
+            other => bail!("unexpected reply to redeem: {other:?}"),
+        }
+    }
+
+    /// Redeem a pasted code/link — joins the room it grants. If the invite is approval-gated and the
+    /// owner hasn't approved yet, this errors (the join is pending); use [`MeshAgent::redeem`] to
+    /// handle the pending case explicitly.
+    pub async fn join(&mut self, code: &str) -> Result<(String, RoomKind)> {
+        match self.redeem(code).await? {
+            JoinOutcome::Joined { room, kind } => Ok((room, kind)),
+            JoinOutcome::Pending { room } => {
+                bail!("join request for '{room}' is pending the host's approval")
+            }
+        }
+    }
+
+    /// List the pending join requests for a session/room you **own** (created via an approval-gated
+    /// invite). The hub authorizes this to the owner only.
+    pub async fn join_requests(&mut self, room: &str) -> Result<Vec<JoinRequest>> {
+        match self.transport.request(ClientFrame::JoinRequests { room: room.to_string() }).await? {
+            ServerFrame::JoinRequests { requests, .. } => Ok(requests),
+            other => bail!("unexpected reply to join_requests: {other:?}"),
+        }
+    }
+
+    /// Approve (`approve = true`) or deny a pending join request for a room you own. On approval the
+    /// requester is admitted; on denial it is rejected and cannot re-request. Returns whether the
+    /// requester was admitted.
+    pub async fn resolve_join(&mut self, room: &str, agent: &str, approve: bool) -> Result<bool> {
+        match self
+            .transport
+            .request(ClientFrame::ResolveJoin {
+                room: room.to_string(),
+                agent: agent.to_string(),
+                approve,
+            })
+            .await?
+        {
+            ServerFrame::JoinResolved { approved, .. } => Ok(approved),
+            other => bail!("unexpected reply to resolve_join: {other:?}"),
         }
     }
 

@@ -128,6 +128,10 @@ enum SessionCmd {
         /// An optional short name for the session.
         #[arg(long)]
         topic: Option<String>,
+        /// Don't require approval: anyone with the key joins immediately. By default joiners must be
+        /// approved by you before they can read the conversation.
+        #[arg(long)]
+        no_approval: bool,
         /// How long the key stays valid, in seconds (default 86400).
         #[arg(long)]
         ttl: Option<u64>,
@@ -135,10 +139,32 @@ enum SessionCmd {
         #[arg(long)]
         max_uses: Option<u32>,
     },
-    /// Join a shared session with a key and print the context so far.
+    /// Join a shared session with a key and print the context so far (or a pending-approval notice).
     Join {
         /// The session key (or full link) you were given.
         key: String,
+    },
+    /// List the agents waiting for your approval to join a session you opened.
+    Requests {
+        /// The session room (printed when you opened it).
+        #[arg(long)]
+        room: String,
+    },
+    /// Approve a pending joiner into a session you opened — they can then read it and participate.
+    Approve {
+        /// The session room (printed when you opened it).
+        #[arg(long)]
+        room: String,
+        /// The id of the joiner to admit.
+        agent: String,
+    },
+    /// Reject a pending joiner's request — they are turned away and cannot re-request.
+    Deny {
+        /// The session room (printed when you opened it).
+        #[arg(long)]
+        room: String,
+        /// The id of the joiner to reject.
+        agent: String,
     },
 }
 
@@ -172,6 +198,10 @@ struct InviteArgs {
     /// How many agents may redeem it (channel/service only; a DM is always single-use).
     #[arg(long)]
     max_uses: Option<u32>,
+    /// Require your approval before a redeemer joins (group rooms only). Without it, anyone with the
+    /// code joins immediately.
+    #[arg(long)]
+    require_approval: bool,
 }
 
 #[derive(Args)]
@@ -404,12 +434,19 @@ async fn cmd_invite(a: InviteArgs) -> Result<()> {
         (RoomKind::Dm, None)
     };
     let mut ag = connect().await?;
-    let inv = ag.invite(kind, room, a.ttl, a.max_uses).await?;
+    let inv = ag
+        .invite_with_approval(kind, room, a.ttl, a.max_uses, a.require_approval)
+        .await?;
     println!("✓ invite ready — {} room '{}'", inv.kind.as_str(), inv.room);
     println!();
     println!("    code: {}", inv.code);
     println!("    link: {}", inv.url);
     println!();
+    if a.require_approval && inv.kind == RoomKind::Channel {
+        println!("Redeemers must be approved by you first:");
+        println!("  parler session requests --room {0}    parler session approve --room {0} <id>", inv.room);
+        println!();
+    }
     println!("Hand it to another agent and have it run:  parler join {}", inv.code);
     Ok(())
 }
@@ -433,8 +470,11 @@ async fn cmd_serve(service: String) -> Result<()> {
 async fn cmd_session(c: SessionCmd) -> Result<()> {
     let mut ag = connect().await?;
     match c {
-        SessionCmd::Open { context, topic, ttl, max_uses } => {
-            let inv = ag.invite(RoomKind::Channel, topic, ttl, max_uses).await?;
+        SessionCmd::Open { context, topic, no_approval, ttl, max_uses } => {
+            let require_approval = !no_approval;
+            let inv = ag
+                .invite_with_approval(RoomKind::Channel, topic, ttl, max_uses, require_approval)
+                .await?;
             // Seed the room with the context snapshot so a late joiner catches up by reading history.
             if let Some(ctx) = context.as_deref().map(str::trim).filter(|c| !c.is_empty()) {
                 let seed = format!("📋 session context (from {}):\n{ctx}", ag.name);
@@ -445,11 +485,26 @@ async fn cmd_session(c: SessionCmd) -> Result<()> {
             println!("    KEY:  {}", inv.code);
             println!("    link: {}", inv.url);
             println!();
+            if require_approval {
+                println!("Joiners need your approval before they can read the conversation.");
+                println!("  see who's waiting:  parler session requests --room {}", inv.room);
+                println!("  approve / reject:   parler session approve --room {0} <id>  |  parler session deny --room {0} <id>", inv.room);
+                println!();
+            }
             println!("Hand the key to another agent:  parler session join {}", inv.code);
             println!("…or launch its MCP server with env  PARLER_SESSION_KEY={}", inv.code);
         }
         SessionCmd::Join { key } => {
-            let (room, _kind) = ag.join(&key).await?;
+            // An approval-gated session holds us as a pending request until the host admits us.
+            let room = match ag.redeem(&key).await? {
+                parler_connector::JoinOutcome::Joined { room, .. } => room,
+                parler_connector::JoinOutcome::Pending { room } => {
+                    println!("⏳ join request sent — waiting for the host to approve you into '{room}'.");
+                    println!("You can't see the conversation until then. Re-run this to check:");
+                    println!("  parler session join {key}");
+                    return Ok(());
+                }
+            };
             // since=None advances the fresh cursor to the live edge after backfilling the context.
             let (msgs, _cursor) = ag.pull(&room, None, None).await?;
             println!("✓ joined session — room '{room}'");
@@ -463,6 +518,27 @@ async fn cmd_session(c: SessionCmd) -> Result<()> {
                 println!("--- end context ---");
             }
             println!("send with:  parler send --room {room} \"…\"    receive with:  parler recv --room {room}");
+        }
+        SessionCmd::Requests { room } => {
+            let reqs = ag.join_requests(&room).await?;
+            if reqs.is_empty() {
+                println!("(no agents waiting to join '{room}')");
+                return Ok(());
+            }
+            println!("{} agent(s) waiting to join '{room}':", reqs.len());
+            for r in &reqs {
+                let role = r.role.as_deref().map(|x| format!(" ({x})")).unwrap_or_default();
+                println!("  • {}{role}  {}", r.name, r.agent);
+            }
+            println!("approve:  parler session approve --room {room} <id>     deny:  parler session deny --room {room} <id>");
+        }
+        SessionCmd::Approve { room, agent } => {
+            ag.resolve_join(&room, &agent, true).await?;
+            println!("✓ approved {agent} into '{room}' — they can now read the conversation and participate.");
+        }
+        SessionCmd::Deny { room, agent } => {
+            ag.resolve_join(&room, &agent, false).await?;
+            println!("✓ denied {agent}'s request to join '{room}'.");
         }
     }
     Ok(())

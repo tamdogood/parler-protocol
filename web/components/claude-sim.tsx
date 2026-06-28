@@ -2,8 +2,10 @@ import { cn } from "@/lib/utils";
 
 /**
  * A faithful, static mock of two Claude Code sessions doing a Parler mid-chat handoff:
- * the lead agent (atlas) publishes the conversation and gets a key; a brand-new agent
- * joins in a single `claude mcp add … -e PARLER_SESSION_KEY=…` line and is instantly caught up.
+ * the lead agent (atlas) publishes the conversation and gets a key; a brand-new agent asks to join
+ * in a single `claude mcp add … -e PARLER_SESSION_KEY=…` line, the host approves it, and only then
+ * is it caught up. The approval step is the security gate — a leaked key can't read the context
+ * without the host's explicit OK.
  *
  * Purely presentational — no live terminal, just styled text that reads like the real TUI.
  */
@@ -184,12 +186,27 @@ const ATLAS_ROWS: Row[] = [
   {
     kind: "result",
     tone: "green",
-    text: "KEY: A3KELDJR\nroom auth-redesign · context posted (5 msgs)",
+    text: "KEY: A3KELDJR\nroom auth-redesign · context posted (5 msgs)\napproval required — you admit each joiner",
   },
   { kind: "gap" },
   {
     kind: "assistant",
-    text: "Done. Hand this key to the next agent:\n\n  A3KELDJR\n\nIt joins this exact conversation, fully caught up.",
+    text: "Done — share this key:  A3KELDJR\n\nI'll vet whoever tries to join before they can\nread our context.",
+  },
+  { kind: "gap" },
+  { kind: "tool", name: "recv" },
+  {
+    kind: "result",
+    text: "⏳ codex is asking to JOIN auth-redesign\n   approve? [Uo3F…2K]",
+  },
+  { kind: "gap" },
+  { kind: "user", text: "Yes — let codex in." },
+  { kind: "gap" },
+  { kind: "tool", name: "approve_join" },
+  {
+    kind: "result",
+    tone: "green",
+    text: "✓ approved codex — it can now read the\nconversation and reply",
   },
 ];
 
@@ -201,15 +218,20 @@ const JOINER_ROWS: Row[] = [
   },
   {
     kind: "result",
+    text: 'Added MCP server "parler" ✔\nparler: join request sent — waiting for the\nhost to approve',
+  },
+  { kind: "gap" },
+  {
+    kind: "result",
     tone: "green",
-    text: 'Added MCP server "parler" ✔\nparler: joined session auth-redesign — caught up',
+    text: "parler: ✓ approved by host — joined\nauth-redesign, caught up on the full context",
   },
   { kind: "gap" },
   { kind: "user", text: "Where did we land on auth?" },
   { kind: "gap" },
   {
     kind: "assistant",
-    text: "I'm already in the session — full context loaded:\n\n  • Designing auth in src/auth.rs\n  • Chose PKCE + refresh tokens\n  • TODO: token rotation",
+    text: "I'm in the session now — full context loaded:\n\n  • Designing auth in src/auth.rs\n  • Chose PKCE + refresh tokens\n  • TODO: token rotation",
   },
   { kind: "gap" },
   { kind: "assistant", text: "I'll take token rotation and post back to the room." },
@@ -223,7 +245,7 @@ export function ClaudeSim({ className }: { className?: string }) {
       <div className="flex flex-col">
         <p className="mb-2 flex items-center gap-2 px-1 text-[13px] text-fog">
           <span className="font-mono text-electric-blue">agent A</span>
-          opens the session
+          opens the session &amp; admits joiners
         </p>
         <Terminal
           title="atlas — claude code"
@@ -237,7 +259,7 @@ export function ClaudeSim({ className }: { className?: string }) {
       <div className="flex flex-col">
         <p className="mb-2 flex items-center gap-2 px-1 text-[13px] text-fog">
           <span className="font-mono text-delivered-green">agent B</span>
-          joins in one line
+          asks to join — host approves
         </p>
         <Terminal
           title="new agent — claude code"
