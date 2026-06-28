@@ -21,11 +21,31 @@ use rand::Rng;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use tower_http::cors::{Any, CorsLayer};
 
 /// Default cap on a single handed-off blob (git bundle): 25 MiB.
 pub const DEFAULT_MAX_BLOB_BYTES: u64 = 25 * 1024 * 1024;
+
+/// Default total disk budget for all stored blobs: 1 GiB.
+pub const DEFAULT_MAX_BLOB_DIR_BYTES: u64 = 1024 * 1024 * 1024;
+
+/// Default cap on the JSON-serialized `parts` of a single message: 1 MiB. Code goes through blobs,
+/// so chat/text payloads never need to be large — this bounds per-message DB growth.
+pub const DEFAULT_MAX_MESSAGE_BYTES: usize = 1024 * 1024;
+
+/// Default ceiling on concurrent WebSocket connections to one hub.
+pub const DEFAULT_MAX_CONNECTIONS: usize = 1024;
+
+/// How long an unauthenticated socket may stay open before it must complete the handshake. Bounds
+/// slow-loris connections that open a socket and never authenticate.
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// Hard ceiling on any client-supplied TTL (invites, directory tokens): 365 days. Prevents an
+/// attacker-supplied `ttl_secs` from overflowing the millisecond expiry math.
+const MAX_TTL_SECS: u64 = 365 * 24 * 3600;
 
 /// Per-agent flood limits (fixed-window). `0` disables a limit. State is in-memory and resets on
 /// hub restart — a deliberately simple posture for a low-ops bus.
@@ -89,10 +109,21 @@ pub struct HubState {
     pub blob_dir: PathBuf,
     /// Largest single blob the hub accepts.
     pub max_blob_bytes: u64,
+    /// Total disk budget across all stored blobs; uploads that would exceed it are rejected.
+    pub max_blob_dir_bytes: u64,
+    /// Largest JSON-serialized `parts` payload accepted on a single `Send`.
+    pub max_message_bytes: usize,
+    /// Ceiling on concurrent connections; once reached, new sockets are refused.
+    pub max_connections: usize,
+    /// Optional shared join secret. When set, a connection must present a matching `secret` on its
+    /// signed `Hello` to authenticate — the access gate for a closed/private hub. `None` ⇒ open.
+    pub join_secret: Option<String>,
     /// Per-agent flood limits.
     pub limits: RateLimits,
     /// In-memory rate-limit counters, keyed by agent id (resets on restart).
     rate: Mutex<HashMap<String, AgentRate>>,
+    /// Live connection count, for the `max_connections` ceiling.
+    conn_count: AtomicUsize,
 }
 
 impl HubState {
@@ -108,8 +139,13 @@ impl HubState {
             mode,
             blob_dir,
             max_blob_bytes: DEFAULT_MAX_BLOB_BYTES,
+            max_blob_dir_bytes: DEFAULT_MAX_BLOB_DIR_BYTES,
+            max_message_bytes: DEFAULT_MAX_MESSAGE_BYTES,
+            max_connections: DEFAULT_MAX_CONNECTIONS,
+            join_secret: None,
             limits: RateLimits::default(),
             rate: Mutex::new(HashMap::new()),
+            conn_count: AtomicUsize::new(0),
         }
     }
 
@@ -274,7 +310,13 @@ fn landing_html(
   discover one another. Any agent can publish to it in three commands.</p>
   {browse}
 
-  <h2>Publish your agent</h2>
+  <h2>Using an MCP host? Just add the server</h2>
+  <p style="font-size:13px">Claude Code, Codex, Cursor &amp; co. need no <code>init</code> — register the
+  Parler MCP server with <code>PARLER_HUB={hub_url}</code> and it mints an identity on this hub the
+  first time it launches. One line for Claude Code:</p>
+  <pre><span class="k">PARLER_HUB={hub_url}</span> claude mcp add parler -- parler mcp</pre>
+
+  <h2>…or publish with the CLI</h2>
   <pre><span class="c"># 1 · create an identity pointed at this hub</span>
 <span class="k">parler init</span> --hub {hub_url} --name my-agent --role assistant
 
@@ -310,7 +352,13 @@ async fn join_page(Path(code): Path<String>) -> impl IntoResponse {
 }
 
 async fn ws_handler(ws: WebSocketUpgrade, State(state): State<Arc<HubState>>) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| handle_socket(socket, state))
+    // The largest legitimate frame is a blob upload; cap both message and frame size to that (plus a
+    // little slack for framing) so a peer can't push an arbitrarily large frame (tungstenite's
+    // default is 64 MiB). Text frames are far smaller and bounded further by `max_message_bytes`.
+    let cap = state.max_blob_bytes.saturating_add(1024 * 1024) as usize;
+    ws.max_message_size(cap)
+        .max_frame_size(cap)
+        .on_upgrade(move |socket| handle_socket(socket, state))
 }
 
 // ---- read-only directory REST API (consumed by the website) ----
@@ -439,15 +487,48 @@ struct PendingUpload {
     media_type: Option<String>,
 }
 
-/// What the connection should send back: a single frame, or a frame followed by a binary blob.
+/// What the connection should send back: a single frame, or a frame followed by blob bytes read
+/// from a file on the blocking pool (so a large read never stalls the async runtime).
 enum Reply {
     Frame(ServerFrame),
-    FrameThenBlob(ServerFrame, Vec<u8>),
+    FrameThenFile(ServerFrame, PathBuf),
 }
 
 async fn handle_socket(mut socket: WebSocket, state: Arc<HubState>) {
+    // Refuse the connection if the hub is already at its concurrency ceiling. The guard decrements
+    // the count on drop, so an early return or a dropped socket always frees the slot.
+    let prev = state.conn_count.fetch_add(1, Ordering::SeqCst);
+    let _guard = ConnGuard(&state.conn_count);
+    if prev >= state.max_connections {
+        let _ = send_frame(
+            &mut socket,
+            &ServerFrame::Error { message: "hub at capacity — try again shortly".into() },
+        )
+        .await;
+        return;
+    }
+
     let mut conn = ConnState::default();
-    while let Some(Ok(msg)) = socket.recv().await {
+    loop {
+        // Until authenticated, bound how long a socket may sit idle — a slow-loris that never
+        // completes the handshake is dropped. Authenticated agents are pull-based and may idle, so
+        // no timeout applies once `authed`.
+        let next = if conn.authed.is_some() {
+            socket.recv().await
+        } else {
+            match tokio::time::timeout(HANDSHAKE_TIMEOUT, socket.recv()).await {
+                Ok(msg) => msg,
+                Err(_) => {
+                    let _ = send_frame(
+                        &mut socket,
+                        &ServerFrame::Error { message: "handshake timed out".into() },
+                    )
+                    .await;
+                    break;
+                }
+            }
+        };
+        let Some(Ok(msg)) = next else { break };
         match msg {
             WsMessage::Text(txt) => {
                 let reply = match serde_json::from_str::<ClientFrame>(&txt) {
@@ -461,8 +542,22 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<HubState>) {
                 }
             }
             WsMessage::Binary(data) => {
-                let reply = Reply::Frame(handle_blob_upload(&state, &mut conn, data));
-                if !send_reply(&mut socket, reply).await {
+                // Hashing + writing a (potentially 25 MiB) blob is blocking work; run it on the
+                // blocking pool so it never stalls the async runtime. `pending` is consumed here.
+                let reply = match conn.pending.take() {
+                    None => ServerFrame::Error {
+                        message: "unexpected binary frame (no PutBlob in flight)".into(),
+                    },
+                    Some(p) => {
+                        let st = state.clone();
+                        tokio::task::spawn_blocking(move || finish_blob_upload(&st, p, data))
+                            .await
+                            .unwrap_or_else(|_| ServerFrame::Error {
+                                message: "blob upload task failed".into(),
+                            })
+                    }
+                };
+                if !send_reply(&mut socket, Reply::Frame(reply)).await {
                     break;
                 }
             }
@@ -478,12 +573,32 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<HubState>) {
     // overwrite it to `offline` here, so a one-shot CLI command leaves a meaningful last-known status.
 }
 
+/// Decrements the live-connection count when a connection task ends (normally or early).
+struct ConnGuard<'a>(&'a AtomicUsize);
+impl Drop for ConnGuard<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
 /// Send a [`Reply`]; returns `false` if the socket died (caller should stop).
 async fn send_reply(socket: &mut WebSocket, reply: Reply) -> bool {
     match reply {
         Reply::Frame(f) => send_frame(socket, &f).await,
-        Reply::FrameThenBlob(f, bytes) => {
-            send_frame(socket, &f).await && socket.send(WsMessage::Binary(bytes)).await.is_ok()
+        Reply::FrameThenFile(f, path) => {
+            // Read the blob bytes off the async runtime.
+            match tokio::task::spawn_blocking(move || std::fs::read(path)).await {
+                Ok(Ok(bytes)) => {
+                    send_frame(socket, &f).await && socket.send(WsMessage::Binary(bytes)).await.is_ok()
+                }
+                _ => {
+                    send_frame(
+                        socket,
+                        &ServerFrame::Error { message: "blob bytes unavailable".into() },
+                    )
+                    .await
+                }
+            }
         }
     }
 }
@@ -497,8 +612,8 @@ async fn send_frame(socket: &mut WebSocket, f: &ServerFrame) -> bool {
 
 /// Route one client frame to its reply. Synchronous (the store never blocks across an await).
 fn dispatch(state: &HubState, conn: &mut ConnState, frame: ClientFrame) -> Reply {
-    if let ClientFrame::Hello { id, name, role, sig, .. } = frame {
-        return Reply::Frame(handle_hello(state, conn, id, name, role, sig));
+    if let ClientFrame::Hello { id, name, role, sig, secret, .. } = frame {
+        return Reply::Frame(handle_hello(state, conn, id, name, role, sig, secret));
     }
     let Some(authed) = conn.authed.clone() else {
         return Reply::Frame(ServerFrame::Error {
@@ -534,13 +649,20 @@ fn handle_put_blob(
     if !state.rate_allows(&me.id, RateKind::Blob, now_ms()) {
         anyhow::bail!("rate limit: too many blob uploads — slow down");
     }
+    // Reject the reservation if accepting it could blow the total disk budget (approximate: a
+    // duplicate of an existing blob won't actually grow the store, but erring toward rejection is
+    // the safe DoS posture).
+    let used = state.store.total_blob_bytes().unwrap_or(0).max(0) as u64;
+    if used.saturating_add(size) > state.max_blob_dir_bytes {
+        anyhow::bail!("hub blob storage is full — try again later");
+    }
     let room = resolve_target(&state.store, me, &target)?;
     conn.pending = Some(PendingUpload { id: sha256.clone(), room, author: me.id.clone(), size, media_type });
     Ok(Reply::Frame(ServerFrame::BlobReady { id: sha256 }))
 }
 
 /// Serve a `GetBlob`: authorize by room membership, then reply with the metadata frame followed by
-/// the bytes.
+/// the bytes (read off the async runtime in [`send_reply`]).
 fn handle_get_blob(state: &HubState, me: &Authed, id: &str) -> anyhow::Result<Reply> {
     let meta = state
         .store
@@ -549,22 +671,17 @@ fn handle_get_blob(state: &HubState, me: &Authed, id: &str) -> anyhow::Result<Re
     if !state.store.blob_readable_by(id, &me.id)? {
         anyhow::bail!("not authorized to fetch blob '{id}'");
     }
-    let bytes = std::fs::read(state.blob_dir.join(id))
-        .map_err(|e| anyhow::anyhow!("blob bytes unavailable: {e}"))?;
-    Ok(Reply::FrameThenBlob(
+    // `id` is already proven to be a stored content id (it has a `blobs` row), so it's a 64-char hex
+    // string — `join` here can't escape `blob_dir`.
+    Ok(Reply::FrameThenFile(
         ServerFrame::BlobIncoming { id: id.to_string(), size: meta.size as u64, media_type: meta.media_type },
-        bytes,
+        state.blob_dir.join(id),
     ))
 }
 
 /// Consume the binary frame that follows a `PutBlob`: verify size + content id, persist to disk and
-/// the store. Any binary frame without a matching pending upload is an error.
-fn handle_blob_upload(state: &HubState, conn: &mut ConnState, data: Vec<u8>) -> ServerFrame {
-    let Some(p) = conn.pending.take() else {
-        return ServerFrame::Error {
-            message: "unexpected binary frame (no PutBlob in flight)".into(),
-        };
-    };
+/// the store. Runs on the blocking pool (hashing + file write can be large).
+fn finish_blob_upload(state: &HubState, p: PendingUpload, data: Vec<u8>) -> ServerFrame {
     if data.len() as u64 != p.size {
         return ServerFrame::Error {
             message: format!("blob size mismatch: got {} bytes, expected {}", data.len(), p.size),
@@ -602,6 +719,7 @@ fn handle_hello(
     name: String,
     role: Option<String>,
     sig: Option<String>,
+    secret: Option<String>,
 ) -> ServerFrame {
     match sig {
         // Step 1: issue a challenge to sign.
@@ -621,6 +739,16 @@ fn handle_hello(
                 return ServerFrame::Error {
                     message: "signature verification failed".into(),
                 };
+            }
+            // Owning a key proves identity, not authorization. On a hub with a join secret, the
+            // connection must also present the matching secret (constant-time compared) — this is
+            // the gate that keeps a private hub private even when its URL is publicly reachable.
+            if let Some(expected) = &state.join_secret {
+                if !secret_matches(expected, secret.as_deref()) {
+                    return ServerFrame::Error {
+                        message: "this hub requires a join secret (set PARLER_JOIN_SECRET)".into(),
+                    };
+                }
             }
             let now = now_ms();
             if let Err(e) = state.store.upsert_agent(&id, &name, role.as_deref(), now) {
@@ -680,7 +808,7 @@ fn handle_authed(state: &HubState, me: &Authed, frame: ClientFrame) -> anyhow::R
 
         ClientFrame::MintDirectoryToken { ttl_secs } => {
             let now = now_ms();
-            let expires = now + (ttl_secs.unwrap_or(3600) as i64) * 1000;
+            let expires = now + (ttl_secs.unwrap_or(3600).min(MAX_TTL_SECS) as i64) * 1000;
             let tok = gen_token();
             store.mint_directory_token(&tok, "hub", expires, &me.id, now)?;
             Ok(ServerFrame::DirectoryToken { token: tok, expires_at: expires })
@@ -688,7 +816,7 @@ fn handle_authed(state: &HubState, me: &Authed, frame: ClientFrame) -> anyhow::R
 
         ClientFrame::Invite { kind, room, ttl_secs, max_uses } => {
             let now = now_ms();
-            let expires = now + (ttl_secs.unwrap_or(24 * 3600) as i64) * 1000;
+            let expires = now + (ttl_secs.unwrap_or(24 * 3600).min(MAX_TTL_SECS) as i64) * 1000;
             let (room_name, max) = match kind {
                 RoomKind::Dm => (format!("dm.{}", gen_suffix()), 1),
                 RoomKind::Channel => (
@@ -725,6 +853,15 @@ fn handle_authed(state: &HubState, me: &Authed, frame: ClientFrame) -> anyhow::R
         ClientFrame::Send { target, parts, mentions, reply_to } => {
             if !state.rate_allows(&me.id, RateKind::Send, now_ms()) {
                 anyhow::bail!("rate limit: too many messages — slow down");
+            }
+            // Bound per-message size (code rides blobs, not text) so a single send can't store an
+            // outsized row.
+            let parts_bytes = serde_json::to_vec(&parts).map(|v| v.len()).unwrap_or(0);
+            if parts_bytes > state.max_message_bytes {
+                anyhow::bail!(
+                    "message too large: {parts_bytes} bytes > limit {} (hand off large payloads as a blob)",
+                    state.max_message_bytes
+                );
             }
             let room = resolve_target(store, me, &target)?;
             let mentions = mentions.as_deref().and_then(normalize_mentions);
@@ -838,6 +975,21 @@ fn verify_sig(id: &str, nonce: &str, sig_b64: &str) -> bool {
     parler_auth::verify(id, nonce.as_bytes(), sig_b64)
 }
 
+/// Compare a presented join secret to the expected one without leaking *where* they differ via
+/// timing. (Length is allowed to differ fast — it isn't the secret.)
+fn secret_matches(expected: &str, got: Option<&str>) -> bool {
+    let Some(got) = got else { return false };
+    let (a, b) = (expected.as_bytes(), got.as_bytes());
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b) {
+        diff |= x ^ y;
+    }
+    diff == 0
+}
+
 /// Accept a bare code or a pasted link (`parler://host/join/CODE`, `http://host/join/CODE`).
 fn normalize_code(s: &str) -> String {
     let s = s.trim();
@@ -900,5 +1052,56 @@ mod tests {
         let c = gen_code();
         assert_eq!(c.len(), 8);
         assert!(c.bytes().all(|b| CODE_ALPHABET.contains(&b)));
+    }
+
+    #[test]
+    fn secret_compare_matches_only_on_equal() {
+        assert!(secret_matches("hunter2", Some("hunter2")));
+        assert!(!secret_matches("hunter2", Some("hunter3")));
+        assert!(!secret_matches("hunter2", Some("hunter"))); // length differs
+        assert!(!secret_matches("hunter2", None));
+    }
+
+    #[test]
+    fn join_secret_gates_the_handshake() {
+        let store = Store::open(None).unwrap();
+        let mut state = HubState::new(store, "parler://x".into(), "T".into(), HubMode::Private);
+        state.join_secret = Some("s3cret".into());
+
+        let id = parler_auth::new_identity().unwrap();
+        let mut conn = ConnState::default();
+
+        // Step 1: challenge.
+        let nonce = match handle_hello(&state, &mut conn, id.id.clone(), "a".into(), None, None, None) {
+            ServerFrame::Challenge { nonce } => nonce,
+            other => panic!("expected challenge, got {other:?}"),
+        };
+        let sig = parler_auth::sign(&id.seed, nonce.as_bytes()).unwrap();
+
+        // A valid signature but no/empty/wrong secret is rejected — key ownership is not enough.
+        let no_secret = handle_hello(&state, &mut conn, id.id.clone(), "a".into(), None, Some(sig.clone()), None);
+        assert!(matches!(no_secret, ServerFrame::Error { .. }));
+        let wrong = handle_hello(&state, &mut conn, id.id.clone(), "a".into(), None, Some(sig.clone()), Some("nope".into()));
+        assert!(matches!(wrong, ServerFrame::Error { .. }));
+
+        // The correct secret is welcomed.
+        let ok = handle_hello(&state, &mut conn, id.id.clone(), "a".into(), None, Some(sig), Some("s3cret".into()));
+        assert!(matches!(ok, ServerFrame::Welcome { .. }));
+    }
+
+    #[test]
+    fn no_join_secret_allows_open_connect() {
+        // A hub without a join secret (the public hub) accepts a key-owner with no secret presented.
+        let store = Store::open(None).unwrap();
+        let state = HubState::new(store, "parler://x".into(), "T".into(), HubMode::Public);
+        let id = parler_auth::new_identity().unwrap();
+        let mut conn = ConnState::default();
+        let nonce = match handle_hello(&state, &mut conn, id.id.clone(), "a".into(), None, None, None) {
+            ServerFrame::Challenge { nonce } => nonce,
+            other => panic!("expected challenge, got {other:?}"),
+        };
+        let sig = parler_auth::sign(&id.seed, nonce.as_bytes()).unwrap();
+        let ok = handle_hello(&state, &mut conn, id.id, "a".into(), None, Some(sig), None);
+        assert!(matches!(ok, ServerFrame::Welcome { .. }));
     }
 }

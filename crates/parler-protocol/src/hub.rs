@@ -201,6 +201,11 @@ pub enum ClientFrame {
         nonce: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         sig: Option<String>,
+        /// A shared join secret, presented on the signed (second) hello. Required only when the hub
+        /// is configured with one (private hubs); ignored otherwise. Gates *who may connect* —
+        /// proving key ownership alone is not authorization on a closed hub.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        secret: Option<String>,
     },
     /// Mint an invite code/link. `room` is optional for `channel` (auto-named when absent) and
     /// ignored for `dm` (a fresh DM room is always created).

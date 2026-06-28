@@ -12,11 +12,9 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
 tokio-tungstenite = { workspace = true }
-# Pin a rustls crypto provider (`ring`) so we can install it as the process default before dialing
-# `wss://`. tokio-tungstenite (ring) and async-nats (aws-lc-rs) both pull rustls 0.23 with different
-# providers, which otherwise makes rustls panic ("couldn't determine the CryptoProvider") on the first
-# TLS handshake. See `ensure_crypto_provider` in client.rs.
-rustls = { version = "0.23", default-features = false, features = ["ring"] }
+# Pinned in the root workspace with the `ring` provider; we install it as rustls' process default
+# before dialing `wss://` (see `ensure_crypto_provider` in client.rs).
+rustls = { workspace = true }
 futures = { workspace = true }
 async-trait = { workspace = true }
 nkeys = { workspace = true }

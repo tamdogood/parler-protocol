@@ -40,6 +40,24 @@ struct Args {
     /// Largest single blob (git bundle) the hub accepts, in bytes (default 25 MiB).
     #[arg(long, env = "PARLER_HUB_MAX_BLOB_BYTES")]
     max_blob_bytes: Option<u64>,
+
+    /// Total disk budget for all stored blobs, in bytes (default 1 GiB).
+    #[arg(long, env = "PARLER_HUB_MAX_BLOB_DIR_BYTES")]
+    max_blob_dir_bytes: Option<u64>,
+
+    /// Largest single message's serialized parts, in bytes (default 1 MiB).
+    #[arg(long, env = "PARLER_HUB_MAX_MESSAGE_BYTES")]
+    max_message_bytes: Option<usize>,
+
+    /// Ceiling on concurrent connections (default 1024).
+    #[arg(long, env = "PARLER_HUB_MAX_CONNECTIONS")]
+    max_connections: Option<usize>,
+
+    /// Require this shared secret on connect (recommended for a private hub that is reachable over a
+    /// public URL — without it, anyone who can reach the hub can join). Agents present it via
+    /// `PARLER_JOIN_SECRET`.
+    #[arg(long, env = "PARLER_HUB_JOIN_SECRET")]
+    join_secret: Option<String>,
 }
 
 #[tokio::main]
@@ -61,6 +79,16 @@ async fn main() -> anyhow::Result<()> {
     if let Some(max) = args.max_blob_bytes {
         state.max_blob_bytes = max;
     }
+    if let Some(max) = args.max_blob_dir_bytes {
+        state.max_blob_dir_bytes = max;
+    }
+    if let Some(max) = args.max_message_bytes {
+        state.max_message_bytes = max;
+    }
+    if let Some(max) = args.max_connections {
+        state.max_connections = max;
+    }
+    state.join_secret = args.join_secret.filter(|s| !s.is_empty());
     let state = Arc::new(state);
 
     let listener = tokio::net::TcpListener::bind(&args.addr).await?;

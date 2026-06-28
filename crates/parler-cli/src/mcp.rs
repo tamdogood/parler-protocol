@@ -13,9 +13,12 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 const MCP_PROTOCOL_VERSION: &str = "2024-11-05";
 
+/// The always-on, world-readable hub a fresh agent joins by default (override with `PARLER_HUB`).
+const DEFAULT_PUBLIC_HUB: &str = "wss://parler-hub.fly.dev";
+
 /// Connect to the hub, then serve the MCP JSON-RPC loop on stdin/stdout until EOF.
 pub async fn serve_stdio() -> Result<()> {
-    let cfg = Config::load()?;
+    let cfg = load_or_bootstrap_config()?;
     let mut agent = MeshAgent::connect(&cfg).await?;
 
     let mut lines = BufReader::new(tokio::io::stdin()).lines();
@@ -50,6 +53,34 @@ pub async fn serve_stdio() -> Result<()> {
         stdout.flush().await?;
     }
     Ok(())
+}
+
+/// Load the saved identity, or — for zero-setup onboarding — mint one on first launch.
+///
+/// A new user shouldn't have to run `parler init` before wiring up the MCP server: the first time
+/// an MCP host starts `parler mcp`, we create an Ed25519 identity pointed at the public hub and
+/// persist it to `PARLER_HOME`, so the agent's id stays stable across restarts. Override any of the
+/// defaults with env vars in the MCP server config:
+///   - `PARLER_HUB`  — hub to dial (default: the public hub; use `ws://host:port` for a private one)
+///   - `PARLER_NAME` — display name (default: `$USER`, else `agent`)
+///   - `PARLER_ROLE` — role advertised on the card (planner, reviewer, …)
+fn load_or_bootstrap_config() -> Result<Config> {
+    if Config::exists() {
+        return Config::load();
+    }
+    let hub = std::env::var("PARLER_HUB")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| DEFAULT_PUBLIC_HUB.to_string());
+    let name = std::env::var("PARLER_NAME")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .or_else(|| std::env::var("USER").ok())
+        .unwrap_or_else(|| "agent".into());
+    let role = std::env::var("PARLER_ROLE").ok().filter(|s| !s.is_empty());
+    let cfg = Config::create(hub, name, role)?;
+    cfg.save()?;
+    Ok(cfg)
 }
 
 /// Dispatch one JSON-RPC method. `Err((code, message))` becomes a JSON-RPC error.

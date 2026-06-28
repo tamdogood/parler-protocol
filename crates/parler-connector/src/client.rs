@@ -46,6 +46,7 @@ impl HubClient {
             role: role.map(String::from),
             nonce: None,
             sig: None,
+            secret: None,
         })
         .await?;
         let nonce = match self.recv().await? {
@@ -58,12 +59,16 @@ impl HubClient {
         let kp = nkeys::KeyPair::from_seed(&identity.seed).map_err(|e| anyhow!("bad seed: {e}"))?;
         let sig = kp.sign(nonce.as_bytes()).map_err(|e| anyhow!("signing challenge: {e}"))?;
         let sig_b64 = data_encoding::BASE64.encode(&sig);
+        // A private hub may require a shared join secret in addition to key ownership. Presented over
+        // the (TLS-terminated) connection, like a bearer token; absent/empty ⇒ omitted.
+        let secret = std::env::var("PARLER_JOIN_SECRET").ok().filter(|s| !s.is_empty());
         self.send(&ClientFrame::Hello {
             id: identity.id.clone(),
             name: name.to_string(),
             role: role.map(String::from),
             nonce: Some(nonce),
             sig: Some(sig_b64),
+            secret,
         })
         .await?;
         match self.recv().await? {

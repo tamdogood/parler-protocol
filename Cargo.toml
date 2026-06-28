@@ -6,7 +6,7 @@ members = ["crates/*"]
 version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0"
-authors = ["Parler contributors"]
+authors = ["Tam Nguyen (tamdogood)", "Parler contributors"]
 repository = "https://github.com/tamdogood/parler-ai"
 description = "Parler — an open standard for AI agent coordination (Rust)"
 
@@ -51,6 +51,10 @@ tower-http = { version = "0.5", features = ["cors"] }
 # `rustls-tls-webpki-roots` lets the client dial `wss://` (a public hub behind TLS). It bundles the
 # Mozilla CA roots so it works in a minimal container, and reuses the rustls already in the tree.
 tokio-tungstenite = { version = "0.23", features = ["rustls-tls-webpki-roots"] }
+# Pin the `ring` crypto provider so the wss:// client can install it as the process default. Only
+# `ring` (no `aws-lc-rs`, so no C toolchain) — it's already compiled in via tokio-tungstenite above;
+# this just gives us the API to call `install_default()`.
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
 rusqlite = { version = "0.31", features = ["bundled"] }
 clap = { version = "4", features = ["derive", "env"] }
 url = "2"

@@ -640,6 +640,13 @@ impl Store {
         Ok(())
     }
 
+    /// Total bytes across all stored blobs — used to enforce the hub's disk budget.
+    pub fn total_blob_bytes(&self) -> Result<i64> {
+        let conn = self.conn.lock().unwrap();
+        let n: i64 = conn.query_row("SELECT COALESCE(SUM(size), 0) FROM blobs", [], |r| r.get(0))?;
+        Ok(n)
+    }
+
     /// A stored blob's metadata (bytes length + media type), or `None` if unknown.
     pub fn blob_meta(&self, id: &str) -> Result<Option<BlobMeta>> {
         let conn = self.conn.lock().unwrap();

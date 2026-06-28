@@ -104,6 +104,11 @@ struct HubArgs {
     /// Run a public hub (world-readable directory). Omit for a private, token-gated hub.
     #[arg(long, env = "PARLER_HUB_PUBLIC")]
     public: bool,
+    /// Require this shared secret on connect. Strongly recommended for a private hub exposed on a
+    /// public URL — otherwise anyone who can reach it can join. Agents present it via
+    /// `PARLER_JOIN_SECRET`.
+    #[arg(long, env = "PARLER_HUB_JOIN_SECRET")]
+    join_secret: Option<String>,
 }
 
 #[derive(Args)]
@@ -319,6 +324,7 @@ async fn cmd_hub(a: HubArgs) -> Result<()> {
     if let Some(db) = &a.db {
         state.blob_dir = std::path::PathBuf::from(format!("{db}.blobs"));
     }
+    state.join_secret = a.join_secret.filter(|s| !s.is_empty());
     let state = Arc::new(state);
     let listener = tokio::net::TcpListener::bind(&a.addr).await?;
     let actual = listener.local_addr()?;
