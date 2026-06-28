@@ -27,17 +27,17 @@
       "Bash(curl -fsS http://127.0.0.1:*)",
       "Bash(curl -s http://127.0.0.1:*)",
       "Bash(kill:*)",
-      "Bash(mktemp:*)"
-    ],
-    "deny": [
+      "Bash(mktemp:*)",
       "Bash(git push:*)",
-      "Bash(git reset --hard:*)",
-      "Bash(git clean:*)",
       "Bash(gh:*)",
       "Bash(fly:*)",
       "Bash(flyctl:*)",
       "Bash(cargo publish:*)",
-      "Bash(npm publish:*)",
+      "Bash(npm publish:*)"
+    ],
+    "deny": [
+      "Bash(git reset --hard:*)",
+      "Bash(git clean:*)",
       "Bash(rm -rf:*)",
       "Bash(sudo:*)"
     ]
