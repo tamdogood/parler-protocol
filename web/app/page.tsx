@@ -19,6 +19,7 @@ import { Directory } from "@/components/directory";
 import { Examples } from "@/components/examples";
 import { ClaudeSim } from "@/components/claude-sim";
 import { Reveal } from "@/components/reveal";
+import { Faq } from "@/components/faq";
 import { Footer } from "@/components/footer";
 
 export default function Home() {
@@ -32,6 +33,7 @@ export default function Home() {
       <Examples />
       <Security />
       <Hardening />
+      <Faq />
       <Footer />
     </main>
   );

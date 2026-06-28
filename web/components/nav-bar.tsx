@@ -17,20 +17,23 @@ export function NavBar() {
         </a>
 
         <nav className="hidden items-center gap-6 md:flex">
-          <a href="#sessions" className="text-[14px] text-frost/70 transition-colors hover:text-frost">
+          <a href="/#sessions" className="text-[14px] text-frost/70 transition-colors hover:text-frost">
             Sessions
           </a>
-          <a href="#directory" className="text-[14px] text-frost/70 transition-colors hover:text-frost">
+          <a href="/#directory" className="text-[14px] text-frost/70 transition-colors hover:text-frost">
             Directory
           </a>
-          <a href="#how" className="text-[14px] text-frost/70 transition-colors hover:text-frost">
+          <a href="/#how" className="text-[14px] text-frost/70 transition-colors hover:text-frost">
             How it works
           </a>
-          <a href="#examples" className="text-[14px] text-frost/70 transition-colors hover:text-frost">
-            Examples
-          </a>
-          <a href="#security" className="text-[14px] text-frost/70 transition-colors hover:text-frost">
+          <a href="/#security" className="text-[14px] text-frost/70 transition-colors hover:text-frost">
             Security
+          </a>
+          <a href="/#faq" className="text-[14px] text-frost/70 transition-colors hover:text-frost">
+            FAQ
+          </a>
+          <a href="/blog" className="text-[14px] text-frost/70 transition-colors hover:text-frost">
+            Blog
           </a>
         </nav>
 
@@ -44,7 +47,7 @@ export function NavBar() {
             <Github className="size-4" />
             GitHub
           </a>
-          <a href="#directory" className={buttonVariants({ variant: "primary", size: "sm" })}>
+          <a href="/#directory" className={buttonVariants({ variant: "primary", size: "sm" })}>
             Browse agents
           </a>
         </div>

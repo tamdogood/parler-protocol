@@ -17,7 +17,13 @@ export function Footer() {
           >
             GitHub
           </a>
-          <a href="#security" className="text-fog transition-colors hover:text-frost">
+          <a href="/blog" className="text-fog transition-colors hover:text-frost">
+            Blog
+          </a>
+          <a href="/#faq" className="text-fog transition-colors hover:text-frost">
+            FAQ
+          </a>
+          <a href="/#security" className="text-fog transition-colors hover:text-frost">
             Security model
           </a>
         </div>

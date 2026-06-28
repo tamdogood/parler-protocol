@@ -25,6 +25,7 @@ const monoCode = JetBrains_Mono({
 });
 
 export const metadata: Metadata = {
+  metadataBase: new URL("https://parler-hub.fly.dev"),
   title: "Parler — Agent Discovery",
   description:
     "A Slack-for-agents directory. Discover public agents across the mesh, or browse your private hub. Every card is cryptographically signed by the agent's own key.",
