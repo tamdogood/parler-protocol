@@ -3,8 +3,14 @@
 //! Each connection is a small state machine: an unauthenticated socket may only send `Hello`; the
 //! hub replies with a [`ServerFrame::Challenge`] nonce, the client signs it with its nkey seed, and
 //! once verified every other op is authorized against room membership. Every op gets exactly one
-//! reply frame — the transport is plain request/response (a recipient *pulls* rather than being
-//! pushed to), which keeps the hub stateless per message and trivially durable.
+//! reply frame; delivery is durable-by-pull (a recipient *pulls* past its cursor), which keeps the
+//! hub stateless per message and trivially durable.
+//!
+//! A connection may additionally [`ClientFrame::Subscribe`] for **live push**: thereafter the hub
+//! sends unsolicited [`ServerFrame::Delivery`] frames (out of band from replies) the instant a peer's
+//! message lands in one of the agent's rooms. Push is best-effort and in-memory — the durable cursor
+//! stays the source of truth, so it only lowers latency and a dropped push is always recoverable by
+//! the next [`ClientFrame::Pull`].
 
 use crate::{now_ms, Store};
 use axum::extract::ws::{Message as WsMessage, WebSocket, WebSocketUpgrade};
@@ -15,16 +21,23 @@ use axum::routing::get;
 use axum::{Json, Router};
 use parler_protocol::{
     canonical_card_bytes, normalize_mentions, token, ClientFrame, DiscoverScope, EndpointRef,
-    RoomKind, ServerFrame, Target,
+    RoomKind, ServerFrame, StoredMessage, Target,
 };
 use rand::Rng;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use tokio::sync::mpsc;
 use tower_http::cors::{Any, CorsLayer};
+
+/// How many undelivered pushes a single subscribed connection may queue before the hub starts
+/// dropping them (the connection's write side is slower than the room's send rate). A dropped push
+/// is harmless — the message is durable and the subscriber catches up on its next [`ClientFrame::Pull`]
+/// — so this only bounds per-connection memory; it never loses a message.
+const PUSH_BUFFER: usize = 256;
 
 /// Default cap on a single handed-off blob (git bundle): 25 MiB.
 pub const DEFAULT_MAX_BLOB_BYTES: u64 = 25 * 1024 * 1024;
@@ -166,6 +179,20 @@ pub struct HubState {
     rate: Mutex<HashMap<String, AgentRate>>,
     /// Live connection count, for the `max_connections` ceiling.
     conn_count: AtomicUsize,
+    /// Live push subscribers: agent id → its subscribed connections. A message appended to a room is
+    /// pushed to every subscribed connection whose agent is a member (except the author). In-memory
+    /// and best-effort: the durable cursor remains the source of truth, so this is purely a latency
+    /// optimization that resets cleanly on restart.
+    subscribers: Mutex<HashMap<String, Vec<Subscriber>>>,
+    /// Hands out a unique id per connection, so a subscription can be removed precisely on disconnect
+    /// (one agent may hold several connections).
+    next_conn: AtomicU64,
+}
+
+/// One subscribed connection's push channel, tagged with its connection id for clean removal.
+struct Subscriber {
+    conn: u64,
+    tx: mpsc::Sender<ServerFrame>,
 }
 
 impl HubState {
@@ -190,6 +217,62 @@ impl HubState {
             retention: Retention::default(),
             rate: Mutex::new(HashMap::new()),
             conn_count: AtomicUsize::new(0),
+            subscribers: Mutex::new(HashMap::new()),
+            next_conn: AtomicU64::new(1),
+        }
+    }
+
+    /// A fresh per-connection id.
+    fn next_conn_id(&self) -> u64 {
+        self.next_conn.fetch_add(1, Ordering::Relaxed)
+    }
+
+    /// Register connection `conn` (of `agent`) to receive live pushes on `tx`. Idempotent: a repeat
+    /// `Subscribe` on the same connection replaces its sender rather than duplicating it.
+    fn subscribe(&self, agent: &str, conn: u64, tx: mpsc::Sender<ServerFrame>) {
+        let mut subs = self.subscribers.lock().unwrap();
+        let v = subs.entry(agent.to_string()).or_default();
+        v.retain(|s| s.conn != conn);
+        v.push(Subscriber { conn, tx });
+    }
+
+    /// Drop connection `conn`'s subscription (on disconnect). A no-op if it never subscribed.
+    fn unsubscribe(&self, agent: &str, conn: u64) {
+        let mut subs = self.subscribers.lock().unwrap();
+        if let Some(v) = subs.get_mut(agent) {
+            v.retain(|s| s.conn != conn);
+            if v.is_empty() {
+                subs.remove(agent);
+            }
+        }
+    }
+
+    /// Best-effort live fan-out of a just-appended message to subscribed room members. Never blocks
+    /// the sender: a full channel drops the push (the subscriber recovers it via its durable cursor),
+    /// and a closed channel prunes that dead subscription. The author is never pushed its own message.
+    fn fanout(&self, room: &str, author: &str, msg: StoredMessage) {
+        // Only touch the registry if anyone is subscribed at all (the common case is nobody).
+        if self.subscribers.lock().unwrap().is_empty() {
+            return;
+        }
+        let members = match self.store.room_member_ids(room) {
+            Ok(m) => m,
+            Err(e) => {
+                tracing::warn!("fanout: room_member_ids({room}): {e}");
+                return;
+            }
+        };
+        let frame = ServerFrame::Delivery { message: msg };
+        let mut subs = self.subscribers.lock().unwrap();
+        for member in members {
+            if member == author {
+                continue;
+            }
+            if let Some(conns) = subs.get_mut(&member) {
+                conns.retain(|s| {
+                    !matches!(s.tx.try_send(frame.clone()), Err(mpsc::error::TrySendError::Closed(_)))
+                });
+            }
         }
     }
 
@@ -578,6 +661,11 @@ struct ConnState {
     authed: Option<Authed>,
     /// A reserved upload awaiting its bytes (set by `PutBlob`, consumed by the next binary frame).
     pending: Option<PendingUpload>,
+    /// This connection's unique id (assigned at accept), used to register/unregister its push
+    /// subscription precisely.
+    conn_id: u64,
+    /// The push channel's sender, handed to the subscriber registry when the client `Subscribe`s.
+    push_tx: Option<mpsc::Sender<ServerFrame>>,
 }
 
 #[derive(Clone)]
@@ -617,71 +705,97 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<HubState>) {
         return;
     }
 
-    let mut conn = ConnState::default();
+    // Each connection owns a bounded push channel. The sender is registered in `state.subscribers`
+    // only when (if) the client sends `Subscribe`; until then `push_rx` simply never yields. Holding
+    // `push_tx` in `conn` keeps the channel open (so `push_rx.recv()` parks rather than returning
+    // `None`) and lets the `Subscribe` handler register a clone.
+    let (push_tx, mut push_rx) = mpsc::channel::<ServerFrame>(PUSH_BUFFER);
+    let mut conn = ConnState {
+        conn_id: state.next_conn_id(),
+        push_tx: Some(push_tx),
+        ..Default::default()
+    };
     loop {
         // Bound how long a socket may sit idle. Before authentication the bound is short — a
         // slow-loris that never completes the handshake is dropped. After authentication the bound
         // is the (longer, configurable) idle timeout: agents are pull-based and may idle between
         // actions, but one silent past the timeout is dropped so abandoned agents don't linger (it
-        // reconnects and resumes from its durable cursor). The deadline resets each iteration, so
-        // it measures silence since the last received frame. An authed `idle_timeout` of `None`
-        // disables the bound entirely.
+        // reconnects and resumes from its durable cursor). The deadline is rebuilt each iteration, so
+        // it measures silence since the last frame *received or pushed*. An authed `idle_timeout` of
+        // `None` disables the bound entirely.
         let bound = if conn.authed.is_some() { state.idle_timeout } else { Some(HANDSHAKE_TIMEOUT) };
-        let next = match bound {
-            None => socket.recv().await,
-            Some(d) => match tokio::time::timeout(d, socket.recv()).await {
-                Ok(msg) => msg,
-                Err(_) => {
-                    let reason = if conn.authed.is_some() {
-                        "idle timeout — disconnecting after inactivity"
-                    } else {
-                        "handshake timed out"
-                    };
-                    let _ =
-                        send_frame(&mut socket, &ServerFrame::Error { message: reason.into() }).await;
-                    break;
-                }
-            },
+        let idle = async {
+            match bound {
+                Some(d) => tokio::time::sleep(d).await,
+                None => std::future::pending::<()>().await,
+            }
         };
-        let Some(Ok(msg)) = next else { break };
-        match msg {
-            WsMessage::Text(txt) => {
-                let reply = match serde_json::from_str::<ClientFrame>(&txt) {
-                    Ok(frame) => dispatch(&state, &mut conn, frame),
-                    Err(e) => Reply::Frame(ServerFrame::Error {
-                        message: format!("malformed frame: {e}"),
-                    }),
-                };
-                if !send_reply(&mut socket, reply).await {
+        tokio::pin!(idle);
+
+        tokio::select! {
+            biased;
+            // A pushed delivery (only after `Subscribe`): forward it to the client out-of-band.
+            Some(frame) = push_rx.recv() => {
+                if !send_frame(&mut socket, &frame).await {
                     break;
                 }
             }
-            WsMessage::Binary(data) => {
-                // Hashing + writing a (potentially 25 MiB) blob is blocking work; run it on the
-                // blocking pool so it never stalls the async runtime. `pending` is consumed here.
-                let reply = match conn.pending.take() {
-                    None => ServerFrame::Error {
-                        message: "unexpected binary frame (no PutBlob in flight)".into(),
-                    },
-                    Some(p) => {
-                        let st = state.clone();
-                        tokio::task::spawn_blocking(move || finish_blob_upload(&st, p, data))
-                            .await
-                            .unwrap_or_else(|_| ServerFrame::Error {
-                                message: "blob upload task failed".into(),
-                            })
+            msg = socket.recv() => {
+                let Some(Ok(msg)) = msg else { break };
+                match msg {
+                    WsMessage::Text(txt) => {
+                        let reply = match serde_json::from_str::<ClientFrame>(&txt) {
+                            Ok(frame) => dispatch(&state, &mut conn, frame),
+                            Err(e) => Reply::Frame(ServerFrame::Error {
+                                message: format!("malformed frame: {e}"),
+                            }),
+                        };
+                        if !send_reply(&mut socket, reply).await {
+                            break;
+                        }
                     }
-                };
-                if !send_reply(&mut socket, Reply::Frame(reply)).await {
-                    break;
+                    WsMessage::Binary(data) => {
+                        // Hashing + writing a (potentially 25 MiB) blob is blocking work; run it on
+                        // the blocking pool so it never stalls the async runtime. `pending` is
+                        // consumed here.
+                        let reply = match conn.pending.take() {
+                            None => ServerFrame::Error {
+                                message: "unexpected binary frame (no PutBlob in flight)".into(),
+                            },
+                            Some(p) => {
+                                let st = state.clone();
+                                tokio::task::spawn_blocking(move || finish_blob_upload(&st, p, data))
+                                    .await
+                                    .unwrap_or_else(|_| ServerFrame::Error {
+                                        message: "blob upload task failed".into(),
+                                    })
+                            }
+                        };
+                        if !send_reply(&mut socket, Reply::Frame(reply)).await {
+                            break;
+                        }
+                    }
+                    WsMessage::Ping(p) => {
+                        let _ = socket.send(WsMessage::Pong(p)).await;
+                    }
+                    WsMessage::Close(_) => break,
+                    _ => {}
                 }
             }
-            WsMessage::Ping(p) => {
-                let _ = socket.send(WsMessage::Pong(p)).await;
+            _ = &mut idle => {
+                let reason = if conn.authed.is_some() {
+                    "idle timeout — disconnecting after inactivity"
+                } else {
+                    "handshake timed out"
+                };
+                let _ = send_frame(&mut socket, &ServerFrame::Error { message: reason.into() }).await;
+                break;
             }
-            WsMessage::Close(_) => break,
-            _ => {}
         }
+    }
+    // Drop any push subscription this connection held (no-op if it never subscribed).
+    if let Some(authed) = &conn.authed {
+        state.unsubscribe(&authed.id, conn.conn_id);
     }
     // Presence is self-reported and persists across disconnects; the agent's last status remains in
     // the directory and decays to `offline` by staleness (see `Store::PRESENCE_STALE_MS`). We don't
@@ -735,13 +849,22 @@ fn dispatch(state: &HubState, conn: &mut ConnState, frame: ClientFrame) -> Reply
             message: "not authenticated — send `hello` first".into(),
         });
     };
-    // The two blob ops need the connection (to stash a pending upload) or a two-part reply, so they
-    // are handled here; everything else is a plain one-frame request/reply.
+    // The blob ops need the connection (to stash a pending upload) or a two-part reply, and
+    // `Subscribe` needs the connection's push sender — so those are handled here; everything else is
+    // a plain one-frame request/reply.
     let result = match frame {
         ClientFrame::PutBlob { target, sha256, size, media_type } => {
             handle_put_blob(state, conn, &authed, target, sha256, size, media_type)
         }
         ClientFrame::GetBlob { id } => handle_get_blob(state, &authed, &id),
+        ClientFrame::Subscribe => {
+            // Register this connection for live pushes; the standing subscription is torn down when
+            // the socket closes (see `handle_socket`).
+            if let Some(tx) = conn.push_tx.clone() {
+                state.subscribe(&authed.id, conn.conn_id, tx);
+            }
+            Ok(Reply::Frame(ServerFrame::Subscribed))
+        }
         other => handle_authed(state, &authed, other).map(Reply::Frame),
     };
     result.unwrap_or_else(|e| Reply::Frame(ServerFrame::Error { message: e.to_string() }))
@@ -1014,14 +1137,17 @@ fn handle_authed(state: &HubState, me: &Authed, frame: ClientFrame) -> anyhow::R
             let room = resolve_target(store, me, &target)?;
             let mentions = mentions.as_deref().and_then(normalize_mentions);
             let from = EndpointRef { id: me.id.clone(), name: me.name.clone(), role: me.role.clone() };
-            let (id, seq) = store.append_message(
+            let now = now_ms();
+            let (id, seq) =
+                store.append_message(&room, &from, &parts, mentions.as_deref(), reply_to.as_deref(), now)?;
+            // Best-effort live push to subscribed members (the durable cursor is still the source of
+            // truth, so this only lowers latency — it never replaces `Pull`). Built from the same
+            // fields just persisted, so a pushed message is byte-identical to the pulled one.
+            state.fanout(
                 &room,
-                &from,
-                &parts,
-                mentions.as_deref(),
-                reply_to.as_deref(),
-                now_ms(),
-            )?;
+                &me.id,
+                StoredMessage { seq, id: id.clone(), room: room.clone(), from, parts, mentions, reply_to, ts: now },
+            );
             Ok(ServerFrame::Sent { id, seq, room })
         }
 
@@ -1069,9 +1195,10 @@ fn handle_authed(state: &HubState, me: &Authed, frame: ClientFrame) -> anyhow::R
 
         ClientFrame::Ping => Ok(ServerFrame::Pong),
 
-        // Blob transfer is intercepted in `dispatch` (it needs the connection / a two-part reply).
-        ClientFrame::PutBlob { .. } | ClientFrame::GetBlob { .. } => {
-            unreachable!("blob ops are handled in dispatch")
+        // Intercepted in `dispatch` (these need the connection: a two-part reply, a stashed upload,
+        // or the push sender).
+        ClientFrame::PutBlob { .. } | ClientFrame::GetBlob { .. } | ClientFrame::Subscribe => {
+            unreachable!("blob/subscribe ops are handled in dispatch")
         }
     }
 }

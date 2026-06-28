@@ -1,3 +1,46 @@
+# Task: Real-time push delivery (sub-second) — 2026-06-28
+
+**User ask:** implement the roadmap item *"Real-time push delivery (sub-second; today delivery is
+pull + durable cursor)"* (README.md:554).
+
+**Design principle:** push is a **best-effort latency layer over the durable cursor**, never a new
+delivery guarantee. A dropped/missed push is always recoverable by `Pull` (the per-(room,agent)
+cursor remains the source of truth), so the hub keeps **no** per-subscriber durability — just live
+fan-out. **Additive + backward-compatible**: new optional frames; an old client never subscribes and
+behaves exactly as today; a new client against the *deployed* hub gets an `Error` to `subscribe` and
+falls back to polling.
+
+- [x] **Protocol** (`hub.rs`): `ClientFrame::Subscribe` (standing intent), `ServerFrame::Subscribed`
+  (ack), `ServerFrame::Delivery { message }` (unsolicited; not echoed to author; does not advance the
+  cursor) + round-trip tests.
+- [x] **Store**: `room_member_ids(room)` (the fan-out recipient set).
+- [x] **Hub**: per-connection bounded mpsc (`PUSH_BUFFER=256`) + `subscribers` registry on `HubState`
+  (`subscribe`/`unsubscribe`/`fanout` keyed by agent id, conn-id tagged); `handle_socket` `select!`s
+  socket-recv ⨉ push ⨉ idle-deadline; `Send` fans out best-effort (`try_send`, drop-on-full,
+  prune-on-closed); deregister on disconnect.
+- [x] **Connector**: `MeshTransport::subscribe`/`next_delivery` (default no-op so other transports
+  compile); `HubClient` buffers `Delivery` in an `inbox` + demuxes it from replies (incl. `recv_binary`);
+  `MeshAgent` wrappers.
+- [x] **CLI**: `parler recv --watch` — subscribe + block on `next_delivery`, pull-on-wake (advances+
+  dedups the cursor AND heartbeats the idle timer); 2 s polling fallback when push is unsupported.
+- [x] **MCP**: auto-`subscribe` after connect (`McpState.push`); opt-in `wait_secs` long-poll on
+  `parler_recv` (pull → wait → re-pull). `wait_secs` absent = unchanged behavior.
+- [x] **Tests**: e2e `push_delivery_is_sub_second` + `unsubscribed_agent_is_never_pushed` (mesh_e2e)
+  and `recv_wait_secs_long_polls_for_a_push` (mcp) + `push_delivery_frame_round_trips` (protocol).
+- [x] **Docs**: README roadmap box ✓ + Good-first-issues; `docs/agent-mesh.md` Deferred→live + a
+  `--watch` Stop-hook; `docs/discovery.md` + hub/server.rs module doc.
+- [x] Gate: `scripts/verify.sh --rust-only` → **VERIFY: PASS**. `[HUMAN] web:` none (Rust/CLI/protocol).
+
+**Verdict:** shipped, additive, backward-compatible. The deployed hub (parler-hub.fly.dev) keeps
+working with old clients; a new client against an old hub gets an `Error` to `subscribe` → returns
+`false` → stays pull-based. The elegant core: **push is a best-effort latency layer over the durable
+cursor** — the hub holds no per-subscriber durability, a full/closed channel just drops the push, and
+the recipient always recovers the message via `Pull`. So at-least-once + ordering are unchanged; only
+latency improves (poll-interval → sub-second). Proven by the `push ⟂ cursor` assertion (a pull after
+two pushes still returns the full backlog).
+
+---
+
 # Task: SQLite design + audit + agent-memory research (2026-06-28)
 
 **User ask:** design/audit the hub's SQLite store so it stays scalable + corruption-safe as the

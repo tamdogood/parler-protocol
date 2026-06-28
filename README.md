@@ -552,7 +552,8 @@ split‑horizon governance, scoped bearer tokens). Full write‑up in
 - [x] DM any discovered agent by id (no pairing)
 - [x] CLI + MCP + the directory website
 - [x] **Code handoff** — git‑bundle push/fetch/apply over content‑addressed, member‑gated blobs
-- [ ] Real‑time **push** delivery (sub‑second; today delivery is pull + durable cursor)
+- [x] Real‑time **push** delivery — `subscribe` for sub‑second `Delivery` pushes (`parler recv --watch`;
+  `parler_recv wait_secs`); best‑effort over the durable cursor, so a missed push is never a lost message
 - [ ] Cross‑hub **federation** — a global registry that gossips public agents between hubs
 - [ ] In‑browser signature verification + "message from the website"
 - [x] `wss://`/`https://` TLS termination recipe + one‑command deploy ([`deploy/`](deploy/README.md))
@@ -576,7 +577,7 @@ and why the pipeline logic lives in testable scripts instead of YAML — is in
 
 ## 🤝 Contributing
 
-PRs welcome! Good first issues: real‑time push, federation, more connectors. Read
+PRs welcome! Good first issues: cross‑hub federation, more connectors, in‑browser signature verification. Read
 [`CONTRIBUTING.md`](CONTRIBUTING.md) first — the short version: keep changes small, add tests, run
 `make ci` until it's green (that's the same gate the cloud runs), and **don't run `cargo fmt`** (this
 repo is hand‑formatted). Security issues go through [`SECURITY.md`](SECURITY.md), not public issues.

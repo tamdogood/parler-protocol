@@ -9,6 +9,7 @@ use anyhow::{anyhow, bail, Result};
 use parler_connector::{BundleMeta, Config, JoinOutcome, MeshAgent};
 use parler_protocol::{AgentSkill, DiscoverScope, RoomKind, Target, Visibility};
 use serde_json::{json, Value};
+use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 const MCP_PROTOCOL_VERSION: &str = "2024-11-05";
@@ -22,13 +23,19 @@ const DEFAULT_PUBLIC_HUB: &str = "wss://parler-hub.fly.dev";
 struct McpState {
     agent: MeshAgent,
     active_session: Option<String>,
+    /// Whether the hub is pushing to us (a successful `subscribe`), so `parler_recv` may long-poll
+    /// for a sub-second reply instead of returning empty.
+    push: bool,
 }
 
 /// Connect to the hub, then serve the MCP JSON-RPC loop on stdin/stdout until EOF.
 pub async fn serve_stdio() -> Result<()> {
     let cfg = load_or_bootstrap_config()?;
-    let agent = MeshAgent::connect(&cfg).await?;
-    let mut state = McpState { agent, active_session: None };
+    let mut agent = MeshAgent::connect(&cfg).await?;
+    // Opt into sub-second push so `parler_recv` can long-poll for replies (best-effort; against an
+    // older hub this is a no-op and we stay purely pull-based).
+    let push = agent.subscribe().await.unwrap_or(false);
+    let mut state = McpState { agent, active_session: None, push };
 
     // Spin-up convenience: if a session key was handed in via the environment, join it now so a
     // freshly launched agent is already in the shared conversation (with its context) before the
@@ -390,9 +397,10 @@ async fn call_session_tool(state: &mut McpState, name: &str, args: &Value) -> Re
                 bail!("provide one of room / to / service, or open/join a session first");
             };
             let (_id, seq, room) = state.agent.send_text(target, &text).await?;
-            // Auto-pull: the hub never pushes, so surface anything new in this room right here so a
-            // reply shows up without a separate parler_recv. Our own just-sent message is filtered
-            // out; the pull advances our cursor so these aren't re-delivered later.
+            // Auto-pull right after sending so an already-waiting reply shows up without a separate
+            // parler_recv (read-after-write); for a reply that hasn't landed yet, use parler_recv with
+            // wait_secs to long-poll. Our own just-sent message is filtered out; the pull advances our
+            // cursor so these aren't re-delivered later.
             let mut out = format!("sent to '{room}' (seq {seq})");
             if let Ok((msgs, _cursor)) = state.agent.pull(&room, None, None).await {
                 let me = state.agent.id.clone();
@@ -415,13 +423,29 @@ async fn call_session_tool(state: &mut McpState, name: &str, args: &Value) -> Re
                 .or_else(|| state.active_session.clone())
                 .ok_or_else(|| anyhow!("missing 'room' (open/join a session, or pass room)"))?;
             let since = args.get("since").and_then(Value::as_i64);
-            let (msgs, cursor) = state.agent.pull(&room, since, u32opt("limit")).await?;
+            let limit = u32opt("limit");
+            let (mut msgs, mut cursor) = state.agent.pull(&room, since, limit).await?;
+            // Long-poll: if nothing new yet and the caller asked to wait (and the hub is pushing),
+            // block up to `wait_secs` for a peer message, then re-pull to read + advance the cursor.
+            // Only in cursor mode (`since` absent) — an explicit `since` is a history re-read.
+            if msgs.is_empty() && since.is_none() && state.push {
+                if let Some(secs) = args.get("wait_secs").and_then(Value::as_u64).filter(|w| *w > 0) {
+                    let secs = secs.min(60);
+                    if state.agent.next_delivery(Duration::from_secs(secs)).await?.is_some() {
+                        let (m, c) = state.agent.pull(&room, None, limit).await?;
+                        msgs = m;
+                        cursor = c;
+                    }
+                }
+            }
             let mut out = if msgs.is_empty() {
                 format!("(no new messages in '{room}')")
             } else {
                 let body = msgs.iter().map(crate::render_message).collect::<Vec<_>>().join("\n");
                 format!("{body}\n— cursor at {cursor} —")
             };
+            // Surface any pending join requests so a host sees the accept/reject choice inline, even
+            // when there are no new messages.
             if let Some(notice) = pending_join_notice(state, &room).await {
                 out.push_str(&notice);
             }
@@ -664,7 +688,7 @@ fn tool_specs() -> Vec<Value> {
         ),
         tool(
             "parler_send",
-            "Send a message, and get back any new replies in the same room (the hub never pushes, so this surfaces incoming messages too). Defaults to your active session if you've opened/joined one; otherwise provide exactly one of: room (1:many channel), to (a peer agent id, 1:1 DM), or service (many:1 queue).",
+            "Send a message, and get back any replies already waiting in the same room (read-after-write; for a reply that hasn't arrived yet, use parler_recv with wait_secs). Defaults to your active session if you've opened/joined one; otherwise provide exactly one of: room (1:many channel), to (a peer agent id, 1:1 DM), or service (many:1 queue).",
             json!({
                 "room": { "type": "string" },
                 "to": { "type": "string" },
@@ -675,11 +699,12 @@ fn tool_specs() -> Vec<Value> {
         ),
         tool(
             "parler_recv",
-            "Pull new messages since your cursor (which it advances). Defaults to your active session; pass room to read a different one. Use since/limit to re-read history.",
+            "Pull new messages since your cursor (which it advances). Defaults to your active session; pass room to read a different one. Use since/limit to re-read history. Set wait_secs to block (long-poll) up to that many seconds for a real-time push if nothing is waiting — returns as soon as a peer message arrives, or empty on timeout.",
             json!({
                 "room": { "type": "string" },
                 "since": { "type": "integer" },
-                "limit": { "type": "integer" }
+                "limit": { "type": "integer" },
+                "wait_secs": { "type": "integer", "description": "block up to this many seconds for a pushed message when nothing is waiting (sub-second wake; max 60)" }
             }),
             &[],
         ),
@@ -798,11 +823,13 @@ mod tests {
         format!("ws://{addr}")
     }
 
-    /// A fresh in-memory identity connected to `hub` (never touches PARLER_HOME).
+    /// A fresh in-memory identity connected to `hub`, subscribed for push (never touches
+    /// PARLER_HOME).
     async fn state(hub: &str, name: &str) -> McpState {
         let cfg = Config::create(hub.to_string(), name.to_string(), None).unwrap();
-        let agent = MeshAgent::connect(&cfg).await.unwrap();
-        McpState { agent, active_session: None }
+        let mut agent = MeshAgent::connect(&cfg).await.unwrap();
+        let push = agent.subscribe().await.unwrap_or(false);
+        McpState { agent, active_session: None, push }
     }
 
     /// Pull the `KEY: <code>` line out of an `open_session` result.
@@ -881,6 +908,35 @@ mod tests {
         call_session_tool(&mut alice, "parler_send", &json!({ "text": "ping bob" })).await.unwrap();
         let recv = call_session_tool(&mut bob, "parler_recv", &json!({})).await.unwrap();
         assert!(recv.contains("ping bob"));
+    }
+
+    #[tokio::test]
+    async fn recv_wait_secs_long_polls_for_a_push() {
+        // With nothing waiting, `parler_recv` + wait_secs blocks until a peer's message is pushed,
+        // then returns it — sub-second, no polling. (state() subscribes for push.)
+        let hub = start_hub().await;
+        let mut alice = state(&hub, "alice").await;
+        let mut bob = state(&hub, "bob").await;
+        assert!(bob.push, "the hub should support push so recv can long-poll");
+
+        let opened = open_session(&mut alice, Some("seed"), None, None, None, false).await.unwrap();
+        let key = key_of(&opened);
+        join_session(&mut bob, &key).await.unwrap(); // bob caught up to the live edge
+        // join_session posts bob's own "joined" announce *after* its catch-up pull, so it now sits
+        // past bob's cursor — drain it so the long-poll below starts from a genuinely empty inbox
+        // (otherwise the initial pull returns non-empty and short-circuits the wait).
+        call_session_tool(&mut bob, "parler_recv", &json!({})).await.unwrap();
+
+        // Bob long-polls while, concurrently, alice sends after a short delay → the push wakes bob.
+        let send_args = json!({ "text": "ping bob" });
+        let recv_args = json!({ "wait_secs": 5 });
+        let send = async {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            call_session_tool(&mut alice, "parler_send", &send_args).await.unwrap();
+        };
+        let recv = call_session_tool(&mut bob, "parler_recv", &recv_args);
+        let (_sent, got) = tokio::join!(send, recv);
+        assert!(got.unwrap().contains("ping bob"), "long-poll recv should wake on the pushed message");
     }
 
     #[tokio::test]

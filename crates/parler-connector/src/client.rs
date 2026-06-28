@@ -1,23 +1,42 @@
 //! [`HubClient`] — the WebSocket transport to `parler-hub`.
 //!
 //! On connect it performs the nkey challenge-response handshake (hello → challenge → signed hello →
-//! welcome), proving it owns the identity's keypair. Thereafter it is a simple request/reply
-//! channel (one reply per request — the hub never pushes), which it exposes via [`MeshTransport`].
+//! welcome), proving it owns the identity's keypair. Thereafter it is a request/reply channel (one
+//! reply per request), exposed via [`MeshTransport`].
+//!
+//! After [`HubClient::subscribe`] the hub may also send unsolicited [`ServerFrame::Delivery`] frames
+//! at any time (sub-second push). Those are **demultiplexed** from request replies: any delivery that
+//! arrives while we're reading a reply is set aside in `inbox`, and [`HubClient::next_delivery`]
+//! drains it (then awaits the socket for more). Push is best-effort — the durable cursor (`Pull`)
+//! remains the source of truth — so a missed delivery is never a lost message.
 
 use crate::MeshTransport;
 use anyhow::{anyhow, bail, Result};
 use async_trait::async_trait;
 use futures::{SinkExt, StreamExt};
 use parler_auth::Identity;
-use parler_protocol::{ClientFrame, ServerFrame};
+use parler_protocol::{ClientFrame, ServerFrame, StoredMessage};
+use std::collections::VecDeque;
+use std::time::Duration;
 use tokio::net::TcpStream;
 use tokio_tungstenite::{
     connect_async, tungstenite::Message as WsMessage, MaybeTlsStream, WebSocketStream,
 };
 
+/// Cap on the client-side push buffer. Pushes arriving while the caller isn't draining (e.g. an MCP
+/// agent idle between tool calls) accumulate here; past this we drop the oldest. Harmless by design —
+/// a dropped push is still returned by the next `Pull` — so this just bounds memory.
+const INBOX_CAP: usize = 1024;
+
 /// An authenticated WebSocket connection to a hub.
 pub struct HubClient {
     ws: WebSocketStream<MaybeTlsStream<TcpStream>>,
+    /// Pushed messages that arrived interleaved with a request's reply, buffered until the caller
+    /// drains them via [`HubClient::next_delivery`]. Bounded by [`INBOX_CAP`] (drops oldest).
+    inbox: VecDeque<StoredMessage>,
+    /// Whether [`HubClient::subscribe`] succeeded — i.e. the hub is pushing to us. When `false`,
+    /// `next_delivery` returns immediately (nothing will ever arrive unsolicited).
+    subscribed: bool,
 }
 
 impl HubClient {
@@ -33,7 +52,7 @@ impl HubClient {
         let (ws, _resp) = connect_async(&ws_url)
             .await
             .map_err(|e| anyhow!("connecting to {ws_url}: {e}"))?;
-        let mut client = HubClient { ws };
+        let mut client = HubClient { ws, inbox: VecDeque::new(), subscribed: false };
         client.handshake(identity, name, role).await?;
         Ok(client)
     }
@@ -85,10 +104,23 @@ impl HubClient {
         Ok(())
     }
 
+    /// Buffer an out-of-band pushed message, dropping the oldest if the buffer is full.
+    fn buffer_push(&mut self, message: StoredMessage) {
+        if self.inbox.len() >= INBOX_CAP {
+            self.inbox.pop_front();
+        }
+        self.inbox.push_back(message);
+    }
+
+    /// Read the next reply frame, setting aside any unsolicited [`ServerFrame::Delivery`] pushes that
+    /// interleave with it (so request/reply stays correct even while subscribed).
     async fn recv(&mut self) -> Result<ServerFrame> {
         while let Some(msg) = self.ws.next().await {
             match msg? {
-                WsMessage::Text(t) => return Ok(serde_json::from_str(&t)?),
+                WsMessage::Text(t) => match serde_json::from_str::<ServerFrame>(&t)? {
+                    ServerFrame::Delivery { message } => self.buffer_push(message),
+                    frame => return Ok(frame),
+                },
                 WsMessage::Close(_) => bail!("hub closed the connection"),
                 _ => continue,
             }
@@ -96,22 +128,40 @@ impl HubClient {
         bail!("hub connection ended")
     }
 
-    /// Receive the next binary frame (a blob payload), surfacing an interleaved error frame as `Err`.
+    /// Receive the next binary frame (a blob payload), surfacing an interleaved error frame as `Err`
+    /// and buffering any interleaved push.
     async fn recv_binary(&mut self) -> Result<Vec<u8>> {
         while let Some(msg) = self.ws.next().await {
             match msg? {
                 WsMessage::Binary(b) => return Ok(b),
-                WsMessage::Text(t) => {
-                    if let Ok(ServerFrame::Error { message }) = serde_json::from_str::<ServerFrame>(&t) {
-                        bail!("{message}");
-                    }
-                    bail!("expected a binary blob, got a text frame");
-                }
+                WsMessage::Text(t) => match serde_json::from_str::<ServerFrame>(&t) {
+                    Ok(ServerFrame::Delivery { message }) => self.buffer_push(message),
+                    Ok(ServerFrame::Error { message }) => bail!("{message}"),
+                    _ => bail!("expected a binary blob, got a text frame"),
+                },
                 WsMessage::Close(_) => bail!("hub closed the connection"),
                 _ => continue,
             }
         }
         bail!("hub connection ended")
+    }
+
+    /// Block on the socket until the next pushed message arrives (ignoring pings/pongs). `Ok(None)`
+    /// if the hub closed the connection; an interleaved [`ServerFrame::Error`] (e.g. an idle-timeout
+    /// notice) surfaces as `Err`. Callers wrap this in a timeout (see [`HubClient::next_delivery`]).
+    async fn recv_push(&mut self) -> Result<Option<StoredMessage>> {
+        while let Some(msg) = self.ws.next().await {
+            match msg? {
+                WsMessage::Text(t) => match serde_json::from_str::<ServerFrame>(&t)? {
+                    ServerFrame::Delivery { message } => return Ok(Some(message)),
+                    ServerFrame::Error { message } => bail!("{message}"),
+                    _ => continue,
+                },
+                WsMessage::Close(_) => return Ok(None),
+                _ => continue,
+            }
+        }
+        Ok(None)
     }
 }
 
@@ -124,6 +174,33 @@ impl MeshTransport for HubClient {
             bail!("{message}");
         }
         Ok(reply)
+    }
+
+    async fn subscribe(&mut self) -> Result<bool> {
+        self.send(&ClientFrame::Subscribe).await?;
+        match self.recv().await? {
+            ServerFrame::Subscribed => {
+                self.subscribed = true;
+                Ok(true)
+            }
+            // An older hub doesn't know the `subscribe` op and replies with a malformed-frame error;
+            // that's not fatal — the connection stays usable, the caller just keeps polling.
+            ServerFrame::Error { .. } => Ok(false),
+            other => bail!("unexpected reply to subscribe: {other:?}"),
+        }
+    }
+
+    async fn next_delivery(&mut self, max_wait: Duration) -> Result<Option<StoredMessage>> {
+        if let Some(m) = self.inbox.pop_front() {
+            return Ok(Some(m));
+        }
+        if !self.subscribed {
+            return Ok(None);
+        }
+        match tokio::time::timeout(max_wait, self.recv_push()).await {
+            Ok(res) => res,
+            Err(_) => Ok(None), // timed out — no push within the window
+        }
     }
 
     async fn upload_blob(&mut self, put: ClientFrame, bytes: &[u8]) -> Result<ServerFrame> {

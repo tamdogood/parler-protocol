@@ -220,6 +220,71 @@ async fn code_handoff_push_recv_fetch_round_trips() {
     assert!(eve.fetch_blob(&bref.blob).await.is_err());
 }
 
+// ---- real-time push delivery ----
+
+#[tokio::test]
+async fn push_delivery_is_sub_second() {
+    // A subscribed member is pushed a peer's message the instant it's sent — no poll — while the
+    // durable cursor stays the source of truth (push never advances it).
+    let hub = start_hub().await;
+    let mut alice = agent(&hub, "alice", None).await;
+    let mut bob = agent(&hub, "bob", None).await;
+    let inv = alice.invite(RoomKind::Channel, Some("live".into()), None, None).await.unwrap();
+    bob.join(&inv.code).await.unwrap();
+
+    // Bob opts into push; the hub acks (it supports it).
+    assert!(bob.subscribe().await.unwrap(), "hub should support push");
+    // Nothing sent yet → a short wait yields nothing (no false wake).
+    assert!(bob.next_delivery(Duration::from_millis(100)).await.unwrap().is_none());
+
+    // Alice sends; bob is pushed it well under a second.
+    alice.send_text(Target::Room { room: inv.room.clone() }, "live ping").await.unwrap();
+    let got = bob
+        .next_delivery(Duration::from_secs(2))
+        .await
+        .unwrap()
+        .expect("a pushed delivery");
+    assert_eq!(texts(std::slice::from_ref(&got)), vec!["live ping"]);
+    assert_eq!(got.room, inv.room);
+
+    // The author is not pushed its own message: alice subscribes, sends, and gets nothing back…
+    assert!(alice.subscribe().await.unwrap());
+    alice.send_text(Target::Room { room: inv.room.clone() }, "from alice").await.unwrap();
+    assert!(
+        alice.next_delivery(Duration::from_millis(300)).await.unwrap().is_none(),
+        "an author must not be pushed its own message"
+    );
+    // …but bob (a peer) is.
+    let got2 = bob
+        .next_delivery(Duration::from_secs(2))
+        .await
+        .unwrap()
+        .expect("bob is pushed the peer message");
+    assert_eq!(texts(std::slice::from_ref(&got2)), vec!["from alice"]);
+
+    // Push did NOT advance bob's durable cursor — a pull still returns the whole backlog, proving
+    // push is a latency layer over (not a replacement for) the cursor.
+    let (pulled, _) = bob.pull(&inv.room, None, None).await.unwrap();
+    assert_eq!(texts(&pulled), vec!["live ping", "from alice"]);
+}
+
+#[tokio::test]
+async fn unsubscribed_agent_is_never_pushed() {
+    // Push is opt-in: an agent that didn't `subscribe` is never sent a Delivery, and `next_delivery`
+    // returns immediately (it stays a pure puller — the backward-compatible path).
+    let hub = start_hub().await;
+    let mut alice = agent(&hub, "alice", None).await;
+    let mut bob = agent(&hub, "bob", None).await;
+    let inv = alice.invite(RoomKind::Channel, Some("quiet".into()), None, None).await.unwrap();
+    bob.join(&inv.code).await.unwrap();
+
+    alice.send_text(Target::Room { room: inv.room.clone() }, "no push for you").await.unwrap();
+    // Bob never subscribed → no wait, no delivery; the message is still there to pull.
+    assert!(bob.next_delivery(Duration::from_millis(200)).await.unwrap().is_none());
+    let (m, _) = bob.pull(&inv.room, None, None).await.unwrap();
+    assert_eq!(texts(&m), vec!["no push for you"]);
+}
+
 #[tokio::test]
 async fn non_member_cannot_read_a_room() {
     let hub = start_hub().await;

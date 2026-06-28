@@ -15,6 +15,7 @@ use parler_protocol::{
 };
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
 #[derive(Parser)]
 #[command(
@@ -272,6 +273,10 @@ struct RecvArgs {
     all: bool,
     #[arg(long)]
     limit: Option<u32>,
+    /// Stay connected and print messages the moment they arrive (sub-second push). Falls back to
+    /// polling if the hub doesn't support push. Ctrl-C to stop.
+    #[arg(long)]
+    watch: bool,
 }
 
 #[derive(Args)]
@@ -683,16 +688,46 @@ async fn cmd_apply(a: ApplyArgs) -> Result<()> {
 async fn cmd_recv(a: RecvArgs) -> Result<()> {
     let since = if a.all { Some(0) } else { a.since };
     let mut ag = connect().await?;
+
+    // First, the backlog past the cursor (or `since`).
     let (msgs, cursor) = ag.pull(&a.room, since, a.limit).await?;
     if msgs.is_empty() {
         println!("(no new messages in '{}')", a.room);
+    } else {
+        for m in &msgs {
+            println!("{}", render_message(m));
+        }
+        println!("— cursor at {cursor} —");
+    }
+    if !a.watch {
         return Ok(());
     }
-    for m in &msgs {
-        println!("{}", render_message(m));
+
+    // Watch mode: ask the hub to push (sub-second), then block for new messages. Each wake re-pulls
+    // the room, which both reads + advances/dedups the durable cursor AND, by sending a frame, keeps
+    // the connection under the hub's idle timeout. If the hub can't push, degrade to a poll loop —
+    // the per-iteration pull is then the poll.
+    let pushing = ag.subscribe().await.unwrap_or(false);
+    eprintln!(
+        "👁  watching '{}' — {} (Ctrl-C to stop)",
+        a.room,
+        if pushing { "live push" } else { "polling every 2s" }
+    );
+    loop {
+        if pushing {
+            // Wake on a push for any of our rooms, or fall through every 25s to re-pull + heartbeat.
+            let _ = ag.next_delivery(Duration::from_secs(25)).await?;
+        } else {
+            tokio::time::sleep(Duration::from_secs(2)).await;
+        }
+        let (new, cur) = ag.pull(&a.room, None, a.limit).await?;
+        if !new.is_empty() {
+            for m in &new {
+                println!("{}", render_message(m));
+            }
+            println!("— cursor at {cur} —");
+        }
     }
-    println!("— cursor at {cursor} —");
-    Ok(())
 }
 
 async fn cmd_remember(a: RememberArgs) -> Result<()> {

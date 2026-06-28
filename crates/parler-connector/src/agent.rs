@@ -12,6 +12,7 @@ use parler_protocol::{
     DiscoverScope, EndpointKind, Fact, JoinRequest, Part, RecallHit, RoomInfo, RoomKind, RosterEntry,
     ServerFrame, StoredMessage, Target, Visibility,
 };
+use std::time::Duration;
 
 /// A freshly minted invite — the code/link the human pastes to another agent.
 pub struct Invite {
@@ -271,6 +272,22 @@ impl MeshAgent {
             ServerFrame::Pulled { messages, cursor, .. } => Ok((messages, cursor)),
             other => bail!("unexpected reply to pull: {other:?}"),
         }
+    }
+
+    /// Ask the hub to **push** new room messages to this connection (sub-second delivery), instead of
+    /// waiting for the next [`MeshAgent::pull`]. Returns `true` if the hub supports push, `false`
+    /// otherwise (an older hub) — in which case keep using `pull`. The subscription covers every room
+    /// the agent belongs to now or joins later, and ends when the connection drops.
+    pub async fn subscribe(&mut self) -> Result<bool> {
+        self.transport.subscribe().await
+    }
+
+    /// Block up to `max_wait` for the next pushed message (a peer's, never your own); `None` on
+    /// timeout. Only meaningful after [`MeshAgent::subscribe`] returned `true`. A push is best-effort
+    /// and does **not** advance the durable cursor, so the idiomatic use is "block here to wake
+    /// promptly, then [`MeshAgent::pull`] to read + advance authoritatively" (which also dedups).
+    pub async fn next_delivery(&mut self, max_wait: Duration) -> Result<Option<StoredMessage>> {
+        self.transport.next_delivery(max_wait).await
     }
 
     /// Write a fact to the memory store (idempotent when `key` is set).
