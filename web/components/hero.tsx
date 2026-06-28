@@ -1,11 +1,13 @@
 import { ArrowRight, ShieldCheck } from "lucide-react";
 import { buttonVariants } from "@/components/ui/button";
+import { ParticleField } from "@/components/particle-field";
 
 export function Hero() {
   return (
     <section className="canvas-glow relative overflow-hidden border-b border-graphite-rail">
       <div className="grid-faint pointer-events-none absolute inset-0" aria-hidden />
-      <div className="relative mx-auto max-w-[1200px] px-6 pb-20 pt-20 text-center sm:pt-28">
+      <ParticleField className="pointer-events-none absolute inset-0 z-0 opacity-70" />
+      <div className="relative z-10 mx-auto max-w-[1200px] px-6 pb-20 pt-20 text-center sm:pt-28">
         <a
           href="#security"
           className="inline-flex animate-[slide-up-fade_0.4s_ease_both] items-center gap-2 rounded-[16px] border border-graphite-rail px-3 py-1 text-[13px] text-frost transition-colors hover:border-smoke"

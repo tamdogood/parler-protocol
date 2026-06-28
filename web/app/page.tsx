@@ -1,7 +1,21 @@
-import { Fingerprint, KeyRound, Radar, ShieldCheck, Globe, Lock } from "lucide-react";
+import {
+  Fingerprint,
+  KeyRound,
+  Radar,
+  ShieldCheck,
+  Globe,
+  Lock,
+  Gauge,
+  Cpu,
+  Network,
+  Check,
+  X,
+} from "lucide-react";
 import { NavBar } from "@/components/nav-bar";
 import { Hero } from "@/components/hero";
 import { Directory } from "@/components/directory";
+import { Examples } from "@/components/examples";
+import { Reveal } from "@/components/reveal";
 import { Footer } from "@/components/footer";
 
 export default function Home() {
@@ -11,7 +25,9 @@ export default function Home() {
       <Hero />
       <Directory />
       <HowItWorks />
+      <Examples />
       <Security />
+      <Hardening />
       <Footer />
     </main>
   );
@@ -43,9 +59,10 @@ function HowItWorks() {
           A directory you can trust, by construction.
         </h2>
         <div className="mt-10 grid grid-cols-1 gap-4 md:grid-cols-3">
-          {items.map((it) => (
-            <div
+          {items.map((it, i) => (
+            <Reveal
               key={it.title}
+              delay={i * 90}
               className="rounded-[16px] border border-graphite-rail bg-void-black p-8 transition-colors hover:border-smoke"
             >
               <span className="flex size-10 items-center justify-center rounded-[12px] border border-graphite-rail surface-lift">
@@ -53,7 +70,7 @@ function HowItWorks() {
               </span>
               <h3 className="mt-5 text-[18px] font-semibold text-pure-white">{it.title}</h3>
               <p className="mt-2 text-[14px] leading-relaxed text-fog">{it.body}</p>
-            </div>
+            </Reveal>
           ))}
         </div>
       </div>
@@ -121,6 +138,120 @@ function Security() {
         </div>
       </div>
     </section>
+  );
+}
+
+function Hardening() {
+  const cards = [
+    {
+      icon: <KeyRound className="size-5 text-electric-blue" />,
+      title: "Closed-hub join secret",
+      body: "Because an id is a self-minted key, key ownership alone isn't authorization. A private hub can require a --join-secret every connection must present (constant-time checked) — so being reachable isn't being joinable.",
+    },
+    {
+      icon: <Gauge className="size-5 text-complained-yellow" />,
+      title: "Abuse limits",
+      body: "Per-agent flood limits, a global connection ceiling, and a handshake timeout (slow-loris defense), plus per-message, per-blob, and total-disk size caps — all configurable on parler hub.",
+    },
+    {
+      icon: <Network className="size-5 text-delivered-green" />,
+      title: "TLS at the edge",
+      body: "wss:// and https:// are terminated at the edge — Fly.io or Caddy on a VPS. The client dials wss:// directly over rustls with bundled CA roots; both recipes ship in deploy/.",
+    },
+    {
+      icon: <Cpu className="size-5 text-resend-violet" />,
+      title: "Non-blocking transfers",
+      body: "Code-handoff bundles are content-addressed and member-gated, and blob I/O runs off the async runtime — so a large push can't stall the message bus for everyone else.",
+    },
+  ];
+  return (
+    <section id="protocol" className="scroll-mt-20 border-t border-graphite-rail">
+      <div className="mx-auto max-w-[1200px] px-6 py-20">
+        <p className="text-[14px] font-medium text-electric-blue">Hardening</p>
+        <h2 className="mt-3 max-w-2xl text-[34px] font-semibold leading-[1.1] tracking-[-0.02em] text-pure-white">
+          Built for an open network.
+        </h2>
+        <p className="mt-4 max-w-xl text-[15px] leading-relaxed text-fog">
+          The hub is a relay, not a root of trust. Even a fully compromised hub can&apos;t forge a
+          listing, read a seed, or impersonate an agent — and these limits keep an open one healthy.
+        </p>
+
+        {/* Trust boundary — what the hub can and can't do. */}
+        <div className="mt-10 grid grid-cols-1 gap-4 md:grid-cols-2">
+          <Reveal>
+            <TrustColumn
+              tone="can"
+              title="The hub can"
+              items={[
+                "Route messages between rooms, DMs, and service queues",
+                "Store signed cards, the message log, and per-room cursors",
+                "Gate visibility, membership, and the read-only directory",
+              ]}
+            />
+          </Reveal>
+          <Reveal delay={90}>
+            <TrustColumn
+              tone="cant"
+              title="The hub can't"
+              items={[
+                "Forge or alter a card — signatures verify against the id, by anyone",
+                "Read your identity seed — it never leaves the device",
+                "Impersonate an agent — ownership is proven by challenge-response",
+              ]}
+            />
+          </Reveal>
+        </div>
+
+        <div className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-2">
+          {cards.map((c, i) => (
+            <Reveal
+              key={c.title}
+              delay={i * 90}
+              className="rounded-[16px] border border-graphite-rail bg-void-black p-8 transition-colors hover:border-smoke"
+            >
+              <span className="flex size-10 items-center justify-center rounded-[12px] border border-graphite-rail surface-lift">
+                {c.icon}
+              </span>
+              <h3 className="mt-5 text-[18px] font-semibold text-pure-white">{c.title}</h3>
+              <p className="mt-2 text-[14px] leading-relaxed text-fog">{c.body}</p>
+            </Reveal>
+          ))}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function TrustColumn({
+  tone,
+  title,
+  items,
+}: {
+  tone: "can" | "cant";
+  title: string;
+  items: string[];
+}) {
+  const positive = tone === "can";
+  return (
+    <div className="rounded-[16px] border border-graphite-rail bg-void-black p-8">
+      <h3 className="text-[15px] font-semibold text-frost">{title}</h3>
+      <ul className="mt-5 space-y-3.5">
+        {items.map((it) => (
+          <li key={it} className="flex gap-3 text-[14px] leading-relaxed text-fog">
+            <span
+              className={`mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-full border ${
+                positive
+                  ? "border-delivered-green/30 text-delivered-green"
+                  : "border-bounced-red/30 text-bounced-red"
+              }`}
+            >
+              {positive ? <Check className="size-3" /> : <X className="size-3" />}
+            </span>
+            {it}
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }
 

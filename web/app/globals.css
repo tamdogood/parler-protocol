@@ -133,6 +133,27 @@
   background-image: linear-gradient(rgba(27, 27, 27, 0.6), rgba(3, 3, 3, 0));
 }
 
+/* Scroll-into-view reveal — used via the <Reveal> component. */
+.reveal {
+  opacity: 0;
+  transform: translateY(16px);
+  transition:
+    opacity 0.6s ease,
+    transform 0.6s ease;
+  will-change: opacity, transform;
+}
+.reveal.is-visible {
+  opacity: 1;
+  transform: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .reveal {
+    opacity: 1;
+    transform: none;
+    transition: none;
+  }
+}
+
 .grid-faint {
   background-image:
     linear-gradient(to right, rgba(41, 45, 48, 0.35) 1px, transparent 1px),

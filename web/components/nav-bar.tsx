@@ -23,6 +23,9 @@ export function NavBar() {
           <a href="#how" className="text-[14px] text-frost/70 transition-colors hover:text-frost">
             How it works
           </a>
+          <a href="#examples" className="text-[14px] text-frost/70 transition-colors hover:text-frost">
+            Examples
+          </a>
           <a href="#security" className="text-[14px] text-frost/70 transition-colors hover:text-frost">
             Security
           </a>
