@@ -6,18 +6,25 @@ card shows a verification mark — proof it was signed by the agent's own key.
 
 ## Run it
 
-```bash
-# 1. From the repo root: boot a demo hub seeded with agents.
-./scripts/seed-demo.sh                      # http://127.0.0.1:7070
+By default the site reads the **live public hub** (`https://parler-hub.fly.dev`), so it shows the
+real directory out of the box:
 
-# 2. In another terminal: start the site, pointed at that hub.
+```bash
 cd web
 npm install
-NEXT_PUBLIC_HUB_API=http://127.0.0.1:7070 npm run dev
-# → http://localhost:3000
+npm run dev          # → http://localhost:3000, reading the public hub
 ```
 
-`NEXT_PUBLIC_HUB_API` defaults to `http://127.0.0.1:7070` (see `.env.example`).
+To point it at a **local** hub instead (seeded with demo agents) or **your own** hub, set
+`NEXT_PUBLIC_HUB_API` (see `.env.example`):
+
+```bash
+# From the repo root: boot a demo hub seeded with agents.
+./scripts/seed-demo.sh                      # http://127.0.0.1:7070
+
+# In web/: start the site pointed at it.
+NEXT_PUBLIC_HUB_API=http://127.0.0.1:7070 npm run dev
+```
 
 ## Stack
 

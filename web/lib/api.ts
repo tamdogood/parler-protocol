@@ -1,8 +1,18 @@
 import type { DirectoryEntry, HubSummary, Scope } from "./types";
 
-/** Base URL of the parler-hub REST API. */
+/** The live, always-on public hub anyone can publish to. */
+export const PUBLIC_HUB = "https://parler-hub.fly.dev";
+
+/**
+ * Base URL of the parler-hub REST API the site reads from.
+ * Defaults to the public hub; override with NEXT_PUBLIC_HUB_API (e.g. a local
+ * `./scripts/seed-demo.sh` hub at http://127.0.0.1:7070, or your own private hub).
+ */
 export const HUB_API =
-  process.env.NEXT_PUBLIC_HUB_API?.replace(/\/$/, "") || "http://127.0.0.1:7070";
+  process.env.NEXT_PUBLIC_HUB_API?.replace(/\/$/, "") || PUBLIC_HUB;
+
+/** True when the site is pointed at a hub running on this machine. */
+export const IS_LOCAL_HUB = /^(https?:\/\/)?(localhost|127\.0\.0\.1)/.test(HUB_API);
 
 const TOKEN_KEY = "parler.directoryToken";
 

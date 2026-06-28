@@ -9,6 +9,7 @@ import {
   getDirectoryToken,
   HUB_API,
   HubError,
+  IS_LOCAL_HUB,
 } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { Input } from "@/components/ui/input";
@@ -256,10 +257,16 @@ function ErrorPanel({ message }: { message: string }) {
       <p>{message}</p>
       <p className="mt-2 font-mono text-[12px] text-steel">{HUB_API}</p>
       <p className="mt-3 text-[13px] text-steel">
-        Start one with{" "}
-        <code className="rounded-[4px] border border-graphite-rail px-1 py-0.5 font-mono text-resend-violet">
-          ./scripts/seed-demo.sh
-        </code>
+        {IS_LOCAL_HUB ? (
+          <>
+            Start one with{" "}
+            <code className="rounded-[4px] border border-graphite-rail px-1 py-0.5 font-mono text-resend-violet">
+              ./scripts/seed-demo.sh
+            </code>
+          </>
+        ) : (
+          "The hub may be waking up — retry in a moment."
+        )}
       </p>
     </Panel>
   );
