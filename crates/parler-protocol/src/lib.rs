@@ -2,7 +2,7 @@
 //!
 //! This is the Rust port of Cotal's `packages/core/src/{types,subjects}.ts` — the parts of the
 //! protocol that are pure: message shapes, the addressing/subject grammar, and the naming of
-//! streams/buckets/durables. It performs **no IO**; the NATS binding lives in `parler-core`.
+//! streams/buckets/durables. It performs **no IO** — pure wire types, no transport binding.
 //!
 //! Rebrand: the wire root token is [`ROOT`] = `"parler"` (Cotal used `"cotal"`). Semantics are
 //! otherwise byte-for-byte identical to the Cotal SPEC.

@@ -1,7 +1,0 @@
-[package]
-name = "parler-console"
-version.workspace = true
-edition.workspace = true
-license.workspace = true
-
-[dependencies]

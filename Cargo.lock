@@ -1066,38 +1066,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "parler-cmux"
-version = "0.1.0"
-dependencies = [
- "parler-core",
- "regex",
- "serde_json",
-]
-
-[[package]]
-name = "parler-connect-claude"
-version = "0.1.0"
-
-[[package]]
-name = "parler-connect-hermes"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "futures",
- "parler-core",
- "parler-protocol",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 1.0.69",
- "tokio",
-]
-
-[[package]]
-name = "parler-connect-opencode"
-version = "0.1.0"
-
-[[package]]
 name = "parler-connector"
 version = "0.1.0"
 dependencies = [
@@ -1116,24 +1084,6 @@ dependencies = [
  "tokio-tungstenite 0.23.1",
  "tracing",
 ]
-
-[[package]]
-name = "parler-console"
-version = "0.1.0"
-
-[[package]]
-name = "parler-core"
-version = "0.1.0"
-dependencies = [
- "parler-protocol",
- "serde",
- "serde_json",
- "thiserror 1.0.69",
-]
-
-[[package]]
-name = "parler-delivery"
-version = "0.1.0"
 
 [[package]]
 name = "parler-hub"
@@ -1158,10 +1108,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "parler-manager"
-version = "0.1.0"
-
-[[package]]
 name = "parler-protocol"
 version = "0.1.0"
 dependencies = [
@@ -1169,14 +1115,6 @@ dependencies = [
  "serde_json",
  "thiserror 1.0.69",
 ]
-
-[[package]]
-name = "parler-tmux"
-version = "0.1.0"
-
-[[package]]
-name = "parler-web"
-version = "0.1.0"
 
 [[package]]
 name = "pem-rfc7468"

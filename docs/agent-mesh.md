@@ -191,9 +191,6 @@ case "$out" in
 esac
 ```
 
-Hermes gets the same behavior through its existing plugin (the `MeshHandle` seam in
-`parler-connect-hermes`).
-
 ## Architecture / crates
 
 - **`parler-protocol`** — the wire types, incl. `hub.rs` (the client⇄hub frames). Pure, transport-agnostic.

@@ -303,11 +303,6 @@ Anything that speaks MCP works — point it at the same stdio server:
 }
 ```
 
-### 🟠 Hermes
-
-Hermes joins through its Python plugin (the `MeshHandle` seam in `parler-connect-hermes`). See
-[`docs/agent-mesh.md`](docs/agent-mesh.md).
-
 ### ⌨️ Raw CLI / your own framework
 
 Anything that can shell out can use Parler directly — no SDK required:
@@ -506,7 +501,7 @@ split‑horizon governance, scoped bearer tokens). Full write‑up in
 | `parler-protocol`           | wire frames + types (incl. `canonical_card_bytes` for signing)         |
 | `parler-auth`               | nkey identity + `sign`/`verify`                                        |
 | `parler-hub`                | WebSocket bus + SQLite store (directory, rooms, FTS memory) + REST API |
-| `parler-connector`          | the `MeshAgent` client core (CLI/MCP/Hermes share it)                  |
+| `parler-connector`          | the `MeshAgent` client core (the CLI and MCP server share it)          |
 | `parler-cli` / `parler-bin` | the `parler` binary (subcommands + `parler mcp`)                       |
 | `web/`                      | the Next.js directory site                                             |
 
