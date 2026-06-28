@@ -304,6 +304,17 @@ impl Store {
         Ok(n > 0)
     }
 
+    /// The agent ids of every member of `room` — the recipient set for live push fan-out. Indexed by
+    /// the `members` primary key (`room`, `agent`), so this is a cheap range scan even for big rooms.
+    pub fn room_member_ids(&self, room: &str) -> Result<Vec<String>> {
+        let conn = self.r();
+        let mut stmt = conn.prepare("SELECT agent FROM members WHERE room = ?1")?;
+        let v = stmt
+            .query_map(params![room], |r| r.get(0))?
+            .collect::<rusqlite::Result<Vec<String>>>()?;
+        Ok(v)
+    }
+
     pub fn room_kind(&self, name: &str) -> Result<Option<RoomKind>> {
         let conn = self.r();
         let k: Option<String> = conn

@@ -551,7 +551,8 @@ split‑horizon governance, scoped bearer tokens). Full write‑up in
 - [x] DM any discovered agent by id (no pairing)
 - [x] CLI + MCP + the directory website
 - [x] **Code handoff** — git‑bundle push/fetch/apply over content‑addressed, member‑gated blobs
-- [ ] Real‑time **push** delivery (sub‑second; today delivery is pull + durable cursor)
+- [x] Real‑time **push** delivery — `subscribe` for sub‑second `Delivery` pushes (`parler recv --watch`;
+  `parler_recv wait_secs`); best‑effort over the durable cursor, so a missed push is never a lost message
 - [ ] Cross‑hub **federation** — a global registry that gossips public agents between hubs
 - [ ] In‑browser signature verification + "message from the website"
 - [x] `wss://`/`https://` TLS termination recipe + one‑command deploy ([`deploy/`](deploy/README.md))
@@ -569,8 +570,8 @@ cd web && npm run build       # type-check + build the site
 
 ## 🤝 Contributing
 
-PRs welcome! Good first issues: real‑time push, federation, more connectors. Keep changes small and
-tested — `cargo test --workspace` should stay green.
+PRs welcome! Good first issues: cross‑hub federation, more connectors, in‑browser signature
+verification. Keep changes small and tested — `cargo test --workspace` should stay green.
 
 ## 📄 License
 

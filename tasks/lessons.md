@@ -34,3 +34,14 @@ Format: `- **<short trigger>:** <the rule>. <why, in a clause>`
 - **`todo.md` is a log, `backlog.md` is the queue:** pull work from `tasks/backlog.md`; write the
   finished-work summary into `tasks/todo.md`. Don't mine the stale pre-pivot sections of `todo.md` for
   work — those crates were deleted (cc686ea).
+
+- **A joiner's own "joined" announce sits past its own cursor:** `join_session` posts "X joined"
+  *after* its catch-up pull, so the very next `pull`/`parler_recv` returns that own message. When
+  writing a test that needs an *empty* inbox (e.g. to exercise the `parler_recv wait_secs` long-poll),
+  drain it with a throwaway `parler_recv` first — otherwise the initial pull is non-empty and
+  short-circuits the wait. (Caught by `recv_wait_secs_long_polls_for_a_push`.)
+
+- **Push is a latency layer, never a delivery guarantee:** real-time `Delivery` pushes are best-effort
+  and in-memory (full/closed channel → drop); the per-(room,agent) cursor stays the source of truth, so
+  a push must never advance the cursor and a missed push is always recovered by `Pull`. Keep that
+  invariant if you touch `fanout`/`next_delivery` — it's what makes push additive + crash-safe.

@@ -177,17 +177,33 @@ args = ["mcp"]
 
 ### Making it feel live (the "Slack" wake)
 
-MCP tools are pull-based, so by default an agent sees peer messages when it next calls `parler_recv`.
-To have replies arrive **proactively**, add a Claude Code `Stop` hook that pulls the inbox and, if a
-peer wrote something, continues the turn (requires `jq`):
+### Real-time push (sub-second)
+
+Delivery is durable-by-pull, but a connection can also opt into **push**: send `subscribe` once and
+the hub streams a `Delivery` frame the instant a peer's message lands in any room you belong to. It's
+a **latency layer over the cursor**, not a replacement — a push the hub can't deliver (slow/closed
+socket) is simply dropped, and the message is still returned by the next `Pull`, so push never weakens
+the at-least-once guarantee. The author is never pushed its own message, and a push does **not** move
+the durable cursor (you still `Pull` to read+advance, which also dedups).
+
+- **CLI:** `parler recv --room team --watch` prints messages as they arrive (falls back to a 2 s poll
+  against a hub that doesn't support push).
+- **MCP:** `parler mcp` subscribes on connect, so `parler_recv` accepts `wait_secs` to **long-poll** —
+  it returns the moment a peer replies instead of returning empty.
+
+### Proactively waking on replies
+
+To have replies arrive **proactively** in Claude Code, block on the watch stream from a `Stop` hook so
+the turn continues when a peer writes (requires `jq`):
 
 ```bash
 #!/usr/bin/env bash
-# .claude/hooks/parler-wake.sh  — wired as a Stop hook
-out=$(parler recv --room team 2>/dev/null)
+# .claude/hooks/parler-wake.sh  — wired as a Stop hook. `--watch` blocks until a peer posts
+# (sub-second via push), so the turn resumes the instant there's something to read.
+out=$(timeout 30 parler recv --room team --watch 2>/dev/null | head -c 4000)
 case "$out" in
-  \[*) printf '{"decision":"block","reason":%s}\n' \
-         "$(printf 'New messages on the mesh:\n%s' "$out" | jq -Rs .)" ;;
+  ?*) printf '{"decision":"block","reason":%s}\n' \
+        "$(printf 'New messages on the mesh:\n%s' "$out" | jq -Rs .)" ;;
 esac
 ```
 
@@ -203,7 +219,9 @@ esac
 
 ## Deferred (intentionally)
 
-- Live server push (`Subscribe`/`Delivery` frames) for sub-second latency — the frame protocol
-  leaves room for it; today delivery is pull + cursor.
 - A `NatsTransport` behind `MeshTransport`, reusing the full-rewrite NATS/JWT stack for scale.
-- `wss://` TLS termination (run the hub behind a reverse proxy for now).
+- Cross-hub federation (gossip public agents between hubs).
+
+> **Done:** live server push (`subscribe` → `Delivery` frames) for sub-second latency — see
+> [Real-time push](#real-time-push-sub-second) above. `wss://` TLS termination shipped with the
+> `deploy/` kit.

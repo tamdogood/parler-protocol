@@ -313,6 +313,14 @@ pub enum ClientFrame {
     /// caller is a member of a room the blob was posted to, replies [`ServerFrame::BlobIncoming`],
     /// then sends the bytes as a single binary frame.
     GetBlob { id: String },
+    /// Ask the hub to **push** new room messages to this connection as [`ServerFrame::Delivery`]
+    /// frames (sub-second delivery), for every room the agent belongs to now or joins later. A
+    /// standing intent that ends when the connection closes. Best-effort: a push the hub can't
+    /// deliver (slow/closed socket) is simply dropped — the durable per-room cursor still returns it
+    /// on the next [`ClientFrame::Pull`], so push never changes the delivery guarantee, only latency.
+    /// The hub acks with [`ServerFrame::Subscribed`]. (Older hubs don't know this op and answer
+    /// [`ServerFrame::Error`]; a client treats that as "push unsupported" and keeps polling.)
+    Subscribe,
     Ping,
 }
 
@@ -397,6 +405,19 @@ pub enum ServerFrame {
         size: u64,
         #[serde(default, rename = "mediaType", skip_serializing_if = "Option::is_none")]
         media_type: Option<String>,
+    },
+    /// Acknowledges a [`ClientFrame::Subscribe`] — this connection will now receive [`Delivery`]
+    /// pushes for the agent's rooms.
+    ///
+    /// [`Delivery`]: ServerFrame::Delivery
+    Subscribed,
+    /// A **pushed** room message — sent unsolicited (not in reply to any op) to a subscribed member
+    /// the instant a peer's [`ClientFrame::Send`] lands. It is never echoed to the message's own
+    /// author, and it does **not** advance the recipient's durable cursor: a subscriber still
+    /// [`ClientFrame::Pull`]s to advance/dedup (the push only wakes it sooner). A client that didn't
+    /// subscribe never sees this frame; one that did must demultiplex it from request replies.
+    Delivery {
+        message: StoredMessage,
     },
     Pong,
     Error {
@@ -689,9 +710,33 @@ mod tests {
     fn unit_variants_serialize_as_tag_only() {
         assert_eq!(serde_json::to_value(ClientFrame::Ping).unwrap()["op"], "ping");
         assert_eq!(serde_json::to_value(ClientFrame::Rooms).unwrap()["op"], "rooms");
+        assert_eq!(serde_json::to_value(ClientFrame::Subscribe).unwrap()["op"], "subscribe");
         assert_eq!(
             serde_json::to_value(ServerFrame::PresenceOk).unwrap()["type"],
             "presence_ok"
         );
+        assert_eq!(serde_json::to_value(ServerFrame::Subscribed).unwrap()["type"], "subscribed");
+    }
+
+    #[test]
+    fn push_delivery_frame_round_trips() {
+        let msg = StoredMessage {
+            seq: 42,
+            id: "0190-msg".into(),
+            room: "team".into(),
+            from: EndpointRef { id: "UALICE".into(), name: "alice".into(), role: Some("planner".into()) },
+            parts: vec![Part::text("live ping")],
+            mentions: Some(vec!["UBOB".into()]),
+            reply_to: None,
+            ts: 1700,
+        };
+        let f = ServerFrame::Delivery { message: msg.clone() };
+        let j = serde_json::to_value(&f).unwrap();
+        assert_eq!(j["type"], "delivery");
+        assert_eq!(j["message"]["seq"], 42);
+        assert_eq!(j["message"]["room"], "team");
+        assert_eq!(j["message"]["parts"][0]["kind"], "text");
+        let back: ServerFrame = serde_json::from_value(j).unwrap();
+        assert_eq!(back, ServerFrame::Delivery { message: msg });
     }
 }
