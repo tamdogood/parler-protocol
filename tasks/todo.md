@@ -1,3 +1,45 @@
+# Task: Fix hub memory growth (audit) — 2026-06-28
+
+**User ask:** keeping `parler` running for a while eats a lot of memory — audit, make sure nothing
+odd is happening, and fix it.
+
+## Root cause (audited)
+- `store.rs::configure_conn` sets `PRAGMA cache_size = -65536` = **64 MiB page cache per connection**.
+- `Store::open` opens a pool: 1 writer + up to 8 readers = **up to 9 connections** (file-backed DB).
+- ⇒ page-cache budget = 64 MiB × 9 = **~576 MiB** of heap that *fills as the DB is read* (the
+  "grows the longer it runs" symptom). 10-core Mac → 576 MiB; Fly 256 MB VM → 128 MiB cache + 256 MiB
+  mmap = over budget → OOM/restart.
+- The pragma's own comment admits it was sized for "the single writer today; each reader once the pool
+  lands" — never divided when the pool multiplied it. **This is the regression.**
+
+## Secondary
+- `HubState.rate: HashMap<String, AgentRate>` grows unbounded by distinct agent id; never pruned.
+
+## Cleared (already bounded — not the leak)
+- client `inbox` (VecDeque, cap 1024), hub push channel (cap 256, drops), `subscribers` (removed on
+  disconnect), CLI watch loop, MCP request/reply loop.
+
+## Plan
+- [x] Split one fixed page-cache budget (64 MiB) across the whole pool, not per-connection.
+- [x] Trim `mmap_size` 256 MiB → 128 MiB (defense for the 256 MB VM; shared + reclaimable).
+- [x] Prune idle entries from the `rate` map in the janitor (drop counters idle past the longest window).
+- [x] Test: total cache budget stays bounded as the pool grows; rate prune drops stale entries.
+- [x] `cargo build` + `cargo test` + `cargo clippy -D warnings` (hub crate).
+
+## Review
+- Fix is localized to `parler-hub` (`store.rs` + `server.rs`); additive, no API/protocol/CLI change.
+- `store.rs`: pick reader count first, `cache_kib = TOTAL_CACHE_KIB / (1 + n_readers)` (≥4 MiB floor),
+  pass it to `configure_conn`; mmap 256→128 MiB. Result: pool cache ≤ 64 MiB total on any core count
+  (was 64 MiB × 9 = 576 MiB on a 10-core box; 128 MiB on Fly's 1-vCPU VM).
+- `server.rs`: janitor now `prune_rate_windows` — drops rate counters idle past the 1h window so the
+  `rate` map is bounded by recently-active agents.
+- **Verified:** `cargo test -p parler-hub` 26/26 (new `pool_total_page_cache_stays_bounded` reads
+  `PRAGMA cache_size` on every live pooled connection and asserts the sum ≤ budget;
+  `prune_rate_windows_drops_only_idle_agents`); connector+CLI 21/21 (boot real hubs);
+  `cargo clippy -p parler-hub --all-targets -D warnings` clean. No `cargo fmt` (hand-formatted repo).
+
+---
+
 # Task: Real-time push delivery (sub-second) — 2026-06-28
 
 **User ask:** implement the roadmap item *"Real-time push delivery (sub-second; today delivery is

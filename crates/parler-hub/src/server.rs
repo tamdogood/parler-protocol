@@ -365,7 +365,20 @@ async fn run_janitor(state: Arc<HubState>) {
         if !stale_blobs.is_empty() {
             tracing::info!("janitor: gc'd {} stale blobs", stale_blobs.len());
         }
+        // Bound the in-memory rate-limit table: drop counters for agents idle longer than the longest
+        // window, so a busy/long-lived hub's `rate` map stays sized to *recently active* agents rather
+        // than every agent that ever connected.
+        prune_rate_windows(&state, now);
     }
+}
+
+/// Drop rate-limit counters whose most recent window predates the longest flood window (1h), keeping
+/// the in-memory `rate` map bounded by recently active agents. Harmless: a dropped entry is recreated
+/// with a fresh window on the agent's next event — identical to the window rollover it would have had.
+fn prune_rate_windows(state: &HubState, now: i64) {
+    const MAX_WINDOW_MS: i64 = 3_600_000; // the blob window (the longer of the two)
+    let mut map = state.rate.lock().unwrap();
+    map.retain(|_, ar| now - ar.sends.start < MAX_WINDOW_MS || now - ar.blobs.start < MAX_WINDOW_MS);
 }
 
 /// One synchronous janitor pass over the store; returns the content ids whose disk bytes to unlink.
@@ -1315,6 +1328,23 @@ mod tests {
         assert_eq!(stale, vec!["idleblob".to_string()]);
         assert!(store.redeem_invite("C", "U2", 10_000).is_err()); // invite gone
         assert!(store.blob_meta("idleblob").unwrap().is_none()); // blob row gone
+    }
+
+    #[test]
+    fn prune_rate_windows_drops_only_idle_agents() {
+        let store = Store::open(None).unwrap();
+        let state = HubState::new(store, "parler://x".into(), "T".into(), HubMode::Public);
+        let now = 10_000_000i64;
+
+        // `active` just sent; `idle` last sent over an hour ago.
+        state.rate_allows("active", RateKind::Send, now);
+        state.rate_allows("idle", RateKind::Send, now - 3_600_001);
+
+        assert_eq!(state.rate.lock().unwrap().len(), 2);
+        prune_rate_windows(&state, now);
+        let map = state.rate.lock().unwrap();
+        assert!(map.contains_key("active"), "a recently active agent's counter is kept");
+        assert!(!map.contains_key("idle"), "an agent idle past the longest window is dropped");
     }
 
     #[test]
