@@ -62,3 +62,20 @@ Format: `- **<short trigger>:** <the rule>. <why, in a clause>`
   of resident page cache that fills the longer the hub runs. Budget *one total* and divide by the
   connection count in `Store::open` (see `TOTAL_CACHE_KIB`). Same trap applies if more pooled
   connections are ever added — re-divide, don't re-add. (Root cause of the "parler eats memory" report.)
+
+- **A new *read* gate needs the same audit as a write gate — and a separate capability from the key it
+  sits beside:** issue #43 wanted "paste your session code → read the chat on the web." But a
+  session/join key is *approval-gated* (redeem only requests; can't read the backlog), so reading room
+  contents straight from it over the public REST API would silently defeat that gate (a glimpsed key →
+  full transcript). Fix: a distinct, owner-only, room-scoped, read-only, expiring **watch token** (a
+  new capability), not a new use of the key. Reusing the `directory_tokens` table forced **tightening
+  `validate_directory_token` to `scope='hub'`** so the two token kinds can't be replayed for each other
+  (same table ⇒ scope is the wall; check it both ways). The viewer read path uses a **pure read**
+  (`room_messages`), never `pull` — a non-member viewer must not advance any agent's cursor. Rule: when
+  exposing data to a *new audience* (a browser, not an agent), enumerate exactly what the new capability
+  reaches, and prove with **negative-assertion tests** (join key → 401, no id leak, cursor unchanged)
+  that it can't reach anything else or mutate state. (The read-side twin of the `add_member` audit.)
+
+- **`web/` is human-driven *for the autonomous loop* — a direct user request overrides that:** when Tam
+  explicitly asks for a website feature, build and verify `web/` too (`npm ci && npm run build`). The
+  "leave a `[HUMAN] web:` note" rule is only for the unattended `/work-next` loop.

@@ -135,7 +135,9 @@ async fn handle(state: &mut McpState, method: &str, params: Value) -> Result<Val
             let result = match name.as_str() {
                 "parler_open_session" | "parler_join_session" | "parler_close_session"
                 | "parler_send" | "parler_recv" | "parler_join_requests" | "parler_approve_join"
-                | "parler_deny_join" => call_session_tool(state, &name, &args).await,
+                | "parler_deny_join" | "parler_watch_session" => {
+                    call_session_tool(state, &name, &args).await
+                }
                 _ => call_tool(&mut state.agent, &name, &args).await,
             };
             // Per MCP, a tool's own failure is a result with isError=true, not a protocol error.
@@ -390,6 +392,20 @@ async fn call_session_tool(state: &mut McpState, name: &str, args: &Value) -> Re
                 format!("✗ denied {who}'s request to join session '{room}'.")
             })
         }
+        "parler_watch_session" => {
+            let room = s("room")
+                .or_else(|| state.active_session.clone())
+                .ok_or_else(|| anyhow!("missing 'room' (open a session, or pass room)"))?;
+            let ttl = args.get("ttl_secs").and_then(Value::as_u64);
+            let (token, _expires_at) = state.agent.mint_watch_token(&room, ttl).await?;
+            Ok(format!(
+                "read-only WATCH code for session '{room}':\n{token}\n\
+                 Give it to the user to paste into the Parler website's session viewer (the /session \
+                 page) — they'll see the conversation and how many agents are in the room, without \
+                 joining. It's read-only and expiring, but anyone with the code can read the session, \
+                 so treat it like a password."
+            ))
+        }
         "parler_send" => {
             let text = s("text").ok_or_else(|| anyhow!("missing 'text'"))?;
             // Default to the active session; otherwise require exactly one explicit target.
@@ -502,6 +518,8 @@ async fn open_session(
          Give this key to another agent: have it call parler_join_session with it, or launch it with \
          PARLER_SESSION_KEY={code}.\n\
          {gate}\n\
+         To let the user watch this session in their browser, call parler_watch_session for a read-only \
+         web viewer code.\n\
          link: {url}",
         code = inv.code,
         url = inv.url,
@@ -670,6 +688,15 @@ fn tool_specs() -> Vec<Value> {
                 "room": { "type": "string", "description": "the session room (defaults to your active session)" }
             }),
             &["agent"],
+        ),
+        tool(
+            "parler_watch_session",
+            "Mint a read-only WATCH code for a session you opened, so the user can watch it from the Parler website (paste the code into the /session page → see the whole conversation and how many agents are in the room, live). Owner-only and separate from the join key: the join key can't read the backlog, so this is the safe way to let a human view the session. Defaults to your active session. Hand the returned code to the user.",
+            json!({
+                "room": { "type": "string", "description": "the session room (defaults to your active session)" },
+                "ttl_secs": { "type": "integer", "description": "how long the watch code stays valid (default 1h)" }
+            }),
+            &[],
         ),
         tool(
             "parler_invite",

@@ -20,7 +20,7 @@ use axum::response::{Html, IntoResponse};
 use axum::routing::get;
 use axum::{Json, Router};
 use parler_protocol::{
-    canonical_card_bytes, normalize_mentions, token, ClientFrame, DiscoverScope, EndpointRef,
+    canonical_card_bytes, normalize_mentions, token, ClientFrame, DiscoverScope, EndpointRef, Part,
     RoomKind, ServerFrame, StoredMessage, Target,
 };
 use rand::Rng;
@@ -318,6 +318,7 @@ pub fn app(state: Arc<HubState>) -> Router {
         .route("/api/hub", get(api_hub))
         .route("/api/directory", get(api_directory))
         .route("/api/agents/:id", get(api_agent))
+        .route("/api/session", get(api_session))
         .layer(cors)
         .with_state(state)
 }
@@ -648,6 +649,103 @@ async fn api_agent(
         )
             .into_response(),
     }
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct SessionQuery {
+    /// Return only messages with `seq` greater than this (the cursor the viewer last saw). Lets the
+    /// website poll incrementally. Absent ⇒ from the start of the room.
+    since: Option<i64>,
+    /// The watch token, as a `?token=` fallback for curl/tests. The website sends it as a Bearer
+    /// header instead (keeps the capability out of URLs and request logs).
+    token: Option<String>,
+}
+
+/// `GET /api/session` — the **read-only session viewer** behind the website's "paste a code" page.
+///
+/// Authorized *only* by a valid **watch token** (an `Authorization: Bearer …`, or `?token=`), which
+/// the session owner minted for exactly one room. This is deliberately separate from the *join* key:
+/// a join key is approval-gated and can't read the backlog, so a glimpsed/over-shared join key never
+/// exposes the conversation here — viewing is a capability the host grants explicitly. The response
+/// carries only what a viewer needs (display names/roles, presence, text + a label for non-text
+/// parts, member counts) — never agent ids, blob bytes, or raw `data` payloads.
+async fn api_session(
+    State(state): State<Arc<HubState>>,
+    headers: HeaderMap,
+    Query(q): Query<SessionQuery>,
+) -> impl IntoResponse {
+    let Some(token) = bearer_token(&headers).or(q.token) else {
+        return session_error(
+            StatusCode::UNAUTHORIZED,
+            "a watch token is required — open a session and mint one (parler session watch)",
+        );
+    };
+    let now = now_ms();
+    let room = match state.store.validate_watch_token(&token, now) {
+        Ok(Some(room)) => room,
+        Ok(None) => return session_error(StatusCode::UNAUTHORIZED, "invalid or expired watch token"),
+        Err(e) => return session_error(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
+    };
+    let kind = state.store.room_kind(&room).ok().flatten().map(|k| k.as_str()).unwrap_or("channel");
+    let roster = match state.store.roster(&room, now) {
+        Ok(r) => r,
+        Err(e) => return session_error(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
+    };
+    let online = roster.iter().filter(|e| e.status != "offline").count();
+    let agents: Vec<_> = roster
+        .iter()
+        .map(|e| {
+            serde_json::json!({
+                "name": e.name,
+                "role": e.role,
+                "status": e.status,
+                "activity": e.activity,
+                "lastSeen": e.last_seen,
+            })
+        })
+        .collect();
+    let since = q.since.unwrap_or(0);
+    let msgs = match state.store.room_messages(&room, since, 1000) {
+        Ok(m) => m,
+        Err(e) => return session_error(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
+    };
+    let cursor = msgs.last().map(|m| m.seq).unwrap_or(since);
+    let messages: Vec<_> = msgs.iter().map(viewer_message).collect();
+    Json(serde_json::json!({
+        "room": room,
+        "kind": kind,
+        "memberCount": roster.len(),
+        "onlineCount": online,
+        "agents": agents,
+        "messages": messages,
+        "cursor": cursor,
+    }))
+    .into_response()
+}
+
+fn session_error(status: StatusCode, message: &str) -> axum::response::Response {
+    (status, Json(serde_json::json!({ "error": message }))).into_response()
+}
+
+/// Project a stored message to the viewer's read-only shape: display name/role, timestamp, and parts
+/// reduced to text (verbatim) or just a `kind` label for non-text parts — so handed-off blob bytes and
+/// raw `data` payloads never reach the browser.
+fn viewer_message(m: &StoredMessage) -> serde_json::Value {
+    let parts: Vec<serde_json::Value> = m
+        .parts
+        .iter()
+        .map(|p| match p {
+            Part::Text(t) => serde_json::json!({ "kind": "text", "text": t }),
+            Part::Data(_) => serde_json::json!({ "kind": "data" }),
+            Part::Extension { kind, .. } => serde_json::json!({ "kind": kind }),
+        })
+        .collect();
+    serde_json::json!({
+        "seq": m.seq,
+        "ts": m.ts,
+        "from": { "name": m.from.name, "role": m.from.role },
+        "parts": parts,
+    })
 }
 
 /// Hub-scope reads (private directory) are allowed when the hub mode is `public`, or the request
@@ -1065,6 +1163,16 @@ fn handle_authed(state: &HubState, me: &Authed, frame: ClientFrame) -> anyhow::R
             let tok = gen_token();
             store.mint_directory_token(&tok, "hub", expires, &me.id, now)?;
             Ok(ServerFrame::DirectoryToken { token: tok, expires_at: expires })
+        }
+
+        ClientFrame::MintWatch { room, ttl_secs } => {
+            let now = now_ms();
+            let expires = now + (ttl_secs.unwrap_or(3600).min(MAX_TTL_SECS) as i64) * 1000;
+            let tok = gen_token();
+            // Owner-only is enforced in the store: a leaked *join* key can't mint a viewer, and a
+            // non-owner member can't expose the room either.
+            store.mint_watch_token(&tok, &room, &me.id, expires, now)?;
+            Ok(ServerFrame::Watch { token: tok, room, expires_at: expires })
         }
 
         ClientFrame::Invite { kind, room, ttl_secs, max_uses, require_approval } => {

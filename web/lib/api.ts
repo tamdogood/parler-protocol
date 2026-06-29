@@ -1,4 +1,4 @@
-import type { DirectoryEntry, HubSummary, Scope } from "./types";
+import type { DirectoryEntry, HubSummary, Scope, SessionView } from "./types";
 
 /** The live, always-on public hub anyone can publish to. */
 export const PUBLIC_HUB = "https://parler-hub.fly.dev";
@@ -80,4 +80,30 @@ export function fetchDirectory(params: DiscoverParams): Promise<DirectoryEntry[]
   if (params.status) qs.set("status", params.status);
   // Hub scope may require a directory bearer token on a private hub.
   return getJson<DirectoryEntry[]>(`/api/directory?${qs.toString()}`, params.scope === "hub");
+}
+
+/**
+ * Read a session the caller holds a **watch token** for. The token is sent as a Bearer header (kept
+ * out of the URL/query so it never lands in request logs), exactly like the directory token. `since`
+ * fetches only messages newer than a previously seen cursor, for cheap polling. A bad/expired token
+ * comes back as a 401 `HubError`.
+ */
+export function fetchSession(token: string, since?: number): Promise<SessionView> {
+  const qs = since ? `?since=${since}` : "";
+  return fetch(`${HUB_API}/api/session${qs}`, {
+    headers: { Authorization: `Bearer ${token.trim()}` },
+    cache: "no-store",
+  }).then(async (res) => {
+    if (!res.ok) {
+      let msg = `${res.status} ${res.statusText}`;
+      try {
+        const body = (await res.json()) as { error?: string };
+        if (body.error) msg = body.error;
+      } catch {
+        /* non-JSON error body */
+      }
+      throw new HubError(msg, res.status);
+    }
+    return (await res.json()) as SessionView;
+  });
 }

@@ -167,6 +167,16 @@ enum SessionCmd {
         /// The id of the joiner to reject.
         agent: String,
     },
+    /// Mint a read-only WATCH code for a session you opened — paste it into the website's session
+    /// viewer to watch the conversation and how many agents are in the room (no joining). Owner-only.
+    Watch {
+        /// The session room (printed when you opened it).
+        #[arg(long)]
+        room: String,
+        /// How long the watch code stays valid, in seconds (default 3600).
+        #[arg(long)]
+        ttl: Option<u64>,
+    },
 }
 
 #[derive(Args)]
@@ -498,6 +508,8 @@ async fn cmd_session(c: SessionCmd) -> Result<()> {
             }
             println!("Hand the key to another agent:  parler session join {}", inv.code);
             println!("…or launch its MCP server with env  PARLER_SESSION_KEY={}", inv.code);
+            println!();
+            println!("Watch it live in your browser:  parler session watch --room {}", inv.room);
         }
         SessionCmd::Join { key } => {
             // An approval-gated session holds us as a pending request until the host admits us.
@@ -544,6 +556,16 @@ async fn cmd_session(c: SessionCmd) -> Result<()> {
         SessionCmd::Deny { room, agent } => {
             ag.resolve_join(&room, &agent, false).await?;
             println!("✓ denied {agent}'s request to join '{room}'.");
+        }
+        SessionCmd::Watch { room, ttl } => {
+            let (token, expires_at) = ag.mint_watch_token(&room, ttl).await?;
+            println!("✓ read-only watch code for '{room}' (expires at {expires_at}):");
+            println!();
+            println!("    {token}");
+            println!();
+            println!("Paste it into the Parler website's session viewer (the /session page) to watch the");
+            println!("conversation and how many agents are in the room — read-only, no joining. Anyone with");
+            println!("this code can read the session, so share it like a password.");
         }
     }
     Ok(())

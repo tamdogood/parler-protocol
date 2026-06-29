@@ -433,4 +433,18 @@ impl MeshAgent {
             other => bail!("unexpected reply to mint token: {other:?}"),
         }
     }
+
+    /// Mint a read-only **watch** token for a session/room you **own** — the bearer you paste into the
+    /// website's session viewer to watch the conversation and how many agents are in it, without joining.
+    /// The hub authorizes this to the room owner only. Returns `(token, expires_at)`.
+    pub async fn mint_watch_token(&mut self, room: &str, ttl_secs: Option<u64>) -> Result<(String, i64)> {
+        match self
+            .transport
+            .request(ClientFrame::MintWatch { room: room.to_string(), ttl_secs })
+            .await?
+        {
+            ServerFrame::Watch { token, expires_at, .. } => Ok((token, expires_at)),
+            other => bail!("unexpected reply to mint watch token: {other:?}"),
+        }
+    }
 }

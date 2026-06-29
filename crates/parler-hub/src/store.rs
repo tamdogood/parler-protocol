@@ -556,6 +556,40 @@ impl Store {
         Ok((msgs, new_cursor))
     }
 
+    /// Read `room`'s messages newer than `since` (ascending by `seq`), capped at `limit`. A **pure
+    /// read**: unlike [`Store::pull`] it advances no member cursor — the read-only `/api/session`
+    /// viewer is not a member of the room, so it must never mutate one agent's delivery state. The
+    /// caller authorizes access *before* calling this (a valid watch token for exactly this room).
+    pub fn room_messages(&self, room: &str, since: i64, limit: u32) -> Result<Vec<StoredMessage>> {
+        let lim = limit.min(1000) as i64;
+        let conn = self.r();
+        let mut stmt = conn.prepare(
+            "SELECT seq, id, room, author, author_name, author_role, parts, mentions, reply_to, ts
+               FROM messages WHERE room = ?1 AND seq > ?2 ORDER BY seq ASC LIMIT ?3",
+        )?;
+        let raws = stmt
+            .query_map(params![room, since, lim], |r| {
+                Ok(RawMsg {
+                    seq: r.get(0)?,
+                    id: r.get(1)?,
+                    room: r.get(2)?,
+                    author: r.get(3)?,
+                    name: r.get(4)?,
+                    role: r.get(5)?,
+                    parts: r.get(6)?,
+                    mentions: r.get(7)?,
+                    reply_to: r.get(8)?,
+                    ts: r.get(9)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let mut msgs = Vec::with_capacity(raws.len());
+        for raw in &raws {
+            msgs.push(raw.to_stored()?);
+        }
+        Ok(msgs)
+    }
+
     // ---- invites ----
 
     #[allow(clippy::too_many_arguments)]
@@ -872,17 +906,56 @@ impl Store {
         Ok(())
     }
 
-    /// `true` when `token` exists and has not expired.
+    /// `true` when `token` exists, has not expired, **and** is a directory-scoped token. The scope
+    /// check matters now that the same table also holds room-scoped *watch* tokens (scope `watch:<room>`):
+    /// without it, a read-only watch bearer could be replayed to unlock the whole private directory. A
+    /// directory token is minted with scope `"hub"` (see the server's `MintDirectoryToken` handler).
     pub fn validate_directory_token(&self, token: &str, now: i64) -> Result<bool> {
         let conn = self.r();
         let exp: Option<i64> = conn
             .query_row(
-                "SELECT expires FROM directory_tokens WHERE token = ?1",
+                "SELECT expires FROM directory_tokens WHERE token = ?1 AND scope = 'hub'",
                 params![token],
                 |r| r.get(0),
             )
             .optional()?;
         Ok(matches!(exp, Some(e) if now <= e))
+    }
+
+    /// Mint a read-only **watch** token bound to one `room`, authorized to the room's **owner** only.
+    /// Reuses the `directory_tokens` table with a room-scoped `watch:<room>` scope (so the existing
+    /// `sweep_expired` janitor reaps it). A non-owner — including an approved *member* who is not the
+    /// owner — cannot mint one, so exposing a session to outside viewers stays the host's call alone.
+    pub fn mint_watch_token(&self, token: &str, room: &str, owner: &str, expires: i64, now: i64) -> Result<()> {
+        let conn = self.w();
+        if !room_owned_by(&conn, room, owner)? {
+            bail!("only the session owner can mint a watch link for '{room}'");
+        }
+        conn.execute(
+            "INSERT INTO directory_tokens (token, scope, expires, created_by, created)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![token, format!("watch:{room}"), expires, owner, now],
+        )?;
+        Ok(())
+    }
+
+    /// Resolve a watch `token` to the single room it grants read access to — `Some(room)` iff the token
+    /// exists, has not expired, and carries a `watch:<room>` scope. This is the *only* authorization for
+    /// the read-only `/api/session` viewer, so it is deliberately narrow: one token unlocks exactly one
+    /// room, nothing else.
+    pub fn validate_watch_token(&self, token: &str, now: i64) -> Result<Option<String>> {
+        let conn = self.r();
+        let row: Option<(String, i64)> = conn
+            .query_row(
+                "SELECT scope, expires FROM directory_tokens WHERE token = ?1",
+                params![token],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        match row {
+            Some((scope, exp)) if now <= exp => Ok(scope.strip_prefix("watch:").map(|s| s.to_string())),
+            _ => Ok(None),
+        }
     }
 
     // ---- blobs (code handoff) ----
@@ -1938,6 +2011,50 @@ mod tests {
         assert!(s.validate_directory_token("TKN", 1_000).unwrap());
         assert!(!s.validate_directory_token("TKN", 1_001).unwrap()); // expired
         assert!(!s.validate_directory_token("NOPE", 1).unwrap()); // unknown
+    }
+
+    #[test]
+    fn watch_token_is_owner_only_room_scoped_and_distinct_from_directory_token() {
+        let s = Store::open(None).unwrap();
+        // A session room owned by alice; bob is an (approved) member but NOT the owner.
+        s.ensure_room("room.s", RoomKind::Channel, None, 1).unwrap();
+        s.add_member("room.s", "U_A", 1).unwrap();
+        s.add_member("room.s", "U_B", 1).unwrap();
+        s.set_room_owner("room.s", "U_A").unwrap();
+
+        // Only the owner may mint a watch link; a non-owner member is refused.
+        assert!(s.mint_watch_token("W_BOB", "room.s", "U_B", 10_000, 1).is_err());
+        s.mint_watch_token("W_OK", "room.s", "U_A", 10_000, 1).unwrap();
+
+        // It resolves to exactly its room, honors expiry, and an unknown token is None.
+        assert_eq!(s.validate_watch_token("W_OK", 5_000).unwrap().as_deref(), Some("room.s"));
+        assert_eq!(s.validate_watch_token("W_OK", 10_001).unwrap(), None); // expired
+        assert_eq!(s.validate_watch_token("NOPE", 1).unwrap(), None);
+
+        // Cross-scope must NOT hold: a watch token can't unlock the directory, and a directory token
+        // can't be used as a watch token. (Both live in the same table — the scope is the wall.)
+        assert!(!s.validate_directory_token("W_OK", 5_000).unwrap());
+        s.mint_directory_token("D_OK", "hub", 10_000, "U_A", 1).unwrap();
+        assert_eq!(s.validate_watch_token("D_OK", 5_000).unwrap(), None);
+    }
+
+    #[test]
+    fn room_messages_reads_in_order_without_advancing_a_cursor() {
+        let s = Store::open(None).unwrap();
+        s.ensure_room("room.s", RoomKind::Channel, None, 1).unwrap();
+        s.add_member("room.s", "U_A", 1).unwrap();
+        s.append_message("room.s", &eref("U_A", "alice"), &[Part::text("one")], None, None, 10).unwrap();
+        s.append_message("room.s", &eref("U_A", "alice"), &[Part::text("two")], None, None, 11).unwrap();
+
+        let all = s.room_messages("room.s", 0, 100).unwrap();
+        assert_eq!(all.iter().map(|m| m.seq).collect::<Vec<_>>(), vec![1, 2]);
+        // `since` filters to newer rows only.
+        let tail = s.room_messages("room.s", 1, 100).unwrap();
+        assert_eq!(tail.len(), 1);
+        assert_eq!(tail[0].seq, 2);
+        // The viewer is not a member, so its read must leave the member's pull cursor untouched.
+        let (pulled, _cursor) = s.pull("room.s", "U_A", None, None).unwrap();
+        assert_eq!(pulled.len(), 2, "member still sees the full backlog — room_messages didn't advance it");
     }
 
     // ---- vector / semantic recall ----

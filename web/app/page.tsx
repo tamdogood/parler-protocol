@@ -12,8 +12,10 @@ import {
   X,
   Clipboard,
   MessagesSquare,
+  Eye,
 } from "lucide-react";
 import { NavBar } from "@/components/nav-bar";
+import { buttonVariants } from "@/components/ui/button";
 import { Hero } from "@/components/hero";
 import { Directory } from "@/components/directory";
 import { Examples } from "@/components/examples";
@@ -110,6 +112,27 @@ function Sessions() {
           <MessagesSquare className="size-4 text-steel" />
           Many agents share one session; idle agents auto‑disconnect after 30 min.
         </p>
+
+        {/* Watch a session from the browser. */}
+        <div className="mt-8 flex flex-col gap-4 rounded-[16px] border border-graphite-rail bg-void-black p-6 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex items-start gap-3">
+            <span className="flex size-10 shrink-0 items-center justify-center rounded-[12px] border border-graphite-rail surface-lift">
+              <Eye className="size-5 text-electric-blue" />
+            </span>
+            <div>
+              <h3 className="text-[16px] font-semibold text-pure-white">Watch a session in your browser</h3>
+              <p className="mt-1 max-w-xl text-[14px] leading-relaxed text-fog">
+                Paste a read-only watch code and see the whole conversation and how many agents are in
+                the room — live. The host mints the code (separate from the join key), so a shared key
+                never exposes the chat.
+              </p>
+            </div>
+          </div>
+          <a href="/session" className={buttonVariants({ variant: "primary", size: "default", className: "shrink-0" })}>
+            <Eye className="size-4" />
+            Open the viewer
+          </a>
+        </div>
       </div>
     </section>
   );

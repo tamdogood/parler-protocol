@@ -291,6 +291,16 @@ pub enum ClientFrame {
         #[serde(default, rename = "ttlSecs", skip_serializing_if = "Option::is_none")]
         ttl_secs: Option<u64>,
     },
+    /// Mint a read-only, expiring **watch** token for `room` — a bearer the session owner pastes into
+    /// the website to *view* (not join) the conversation and how many agents are in it, over the REST
+    /// API. Only the room's **owner** may mint one (the same authority that approves joiners), so a
+    /// leaked *join* key still can't read the backlog: viewing is a capability the host grants
+    /// explicitly, scoped to this one room, read-only, and time-bounded. Replies [`ServerFrame::Watch`].
+    MintWatch {
+        room: String,
+        #[serde(default, rename = "ttlSecs", skip_serializing_if = "Option::is_none")]
+        ttl_secs: Option<u64>,
+    },
     /// Publish a message to a target.
     Send {
         target: Target,
@@ -428,6 +438,14 @@ pub enum ServerFrame {
     },
     DirectoryToken {
         token: String,
+        #[serde(rename = "expiresAt")]
+        expires_at: i64,
+    },
+    /// A minted read-only **watch** token (reply to [`ClientFrame::MintWatch`]) — the bearer the owner
+    /// pastes into the website's session viewer to read `room`'s messages + roster.
+    Watch {
+        token: String,
+        room: String,
         #[serde(rename = "expiresAt")]
         expires_at: i64,
     },
@@ -778,6 +796,29 @@ mod tests {
         assert_eq!(j["requests"][0]["agent"], "UBOB");
         assert_eq!(j["requests"][0]["requestedAt"], 42);
         assert_eq!(serde_json::from_value::<ServerFrame>(j).unwrap(), reqs);
+    }
+
+    #[test]
+    fn watch_frames_round_trip() {
+        // Mint request: camelCase ttlSecs, omitted when absent.
+        let mint = ClientFrame::MintWatch { room: "room.abc".into(), ttl_secs: Some(3600) };
+        let j = serde_json::to_value(&mint).unwrap();
+        assert_eq!(j["op"], "mint_watch");
+        assert_eq!(j["room"], "room.abc");
+        assert_eq!(j["ttlSecs"], 3600);
+        assert_eq!(serde_json::from_value::<ClientFrame>(j).unwrap(), mint);
+
+        let bare: ClientFrame =
+            serde_json::from_value(serde_json::json!({"op":"mint_watch","room":"r"})).unwrap();
+        assert!(matches!(bare, ClientFrame::MintWatch { ttl_secs: None, .. }));
+
+        // Reply.
+        let w = ServerFrame::Watch { token: "TOK".into(), room: "room.abc".into(), expires_at: 99 };
+        let j = serde_json::to_value(&w).unwrap();
+        assert_eq!(j["type"], "watch");
+        assert_eq!(j["token"], "TOK");
+        assert_eq!(j["expiresAt"], 99);
+        assert_eq!(serde_json::from_value::<ServerFrame>(j).unwrap(), w);
     }
 
     #[test]

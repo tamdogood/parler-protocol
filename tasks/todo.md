@@ -1,3 +1,89 @@
+# Task: Web session viewer — paste a code, see the conversation + agent count (#43) — 2026-06-28
+
+**User ask:** issue #43 — "a web UI to see the room status." Build a website feature where a user
+pastes their session code and sees (a) the whole content between agents and (b) how many agents are
+in the room. **Must be securely built and private.**
+
+## The security crux (why not "just read from the session key")
+A **session key is an *approval-gated* capability** (docs/agent-mesh.md, lessons.md): redeeming it only
+lets an agent *ask* to join — it can't read the backlog until the host approves. The whole point is
+"a leaked/over-shared key can't quietly pull your context." If the public website read room contents
+straight from the pasted **join key** over an unauthenticated REST call, anyone who glimpsed that key
+(screen-share, clipboard, scrollback) could read the entire private conversation from the public site —
+blowing a hole through the exact gate the project built.
+
+**So: a separate, explicit, read-only "watch" capability**, minted by the session **owner** only —
+the same authority that approves joiners. This mirrors the existing **directory-token** pattern
+(mint over the authenticated WS → paste a bearer into the website → read over REST). Secure by
+default (no watch token ⇒ no web visibility), scoped to **one** room, read-only, and expiring.
+From the owner's POV this still *is* "paste a code from your session": opening a session yields a
+watch code right alongside the join key.
+
+## Design (mirrors the directory-token feature end-to-end)
+- **protocol**: `ClientFrame::MintWatch { room, ttlSecs }` → `ServerFrame::Watch { token, room, expiresAt }`. Additive.
+- **store**: reuse `directory_tokens` with scope `watch:<room>`.
+  - `mint_watch_token(token, room, owner, expires, now)` — **owner-only** (`room_owned_by`).
+  - `validate_watch_token(token, now) -> Option<room>` — checks expiry **and** the `watch:` scope.
+  - **Tighten `validate_directory_token` to require `scope='hub'`** so a watch token can't read the
+    private directory (and vice-versa). Closes a cross-scope escalation.
+  - `room_messages(room, since, limit)` — pure read, **never** advances any cursor (viewer ≠ member).
+- **server**: handle `MintWatch` (owner-only via store); add `GET /api/session` — bearer = watch token →
+  `{ room, kind, memberCount, onlineCount, agents[], messages[], cursor }`. 401 without a valid token.
+  Viewer-specific JSON (name/role/status + text parts + a label for non-text) so no ids/blob/data leak.
+- **connector**: `MeshAgent::mint_watch_token(room, ttl)`.
+- **CLI**: `parler session watch --room <room> [--ttl <secs>]`; hint line in `session open` output.
+- **MCP**: `parler_watch_session` tool (active-session default); hint in `open_session` output.
+- **web**: `/session` page — paste box → live viewer (room header + "N agents (M online)" badge +
+  roster with StatusDot + message stream), polls every 4s via `since`. Watch token kept **in memory**
+  (not localStorage), prefill from URL hash `#k=`. Nav link added. Read-only — never sends.
+- **docs**: agent-mesh.md "Watch a session from the browser".
+
+## Threat-model pass (the lessons.md discipline, applied to a *read* gate) — ALL VERIFIED
+- [x] Watch token reads **exactly one** room — `validate_watch_token` returns only the `watch:<room>`
+      it was minted for; `room_messages`/`roster` take that one room. (test: scoped + distinct)
+- [x] Mint is **owner-only** — `mint_watch_token` calls `room_owned_by`; the only path to a `watch:`
+      scope. (tests: store unit + `only_the_session_owner_can_mint_a_watch_code` e2e)
+- [x] Watch token ≠ directory token — `validate_directory_token` now requires `scope='hub'`;
+      `validate_watch_token` requires the `watch:` prefix. Cross-use fails both ways. (store unit test)
+- [x] No cursor mutation from the viewer — `room_messages` is a pure read (test asserts the member's
+      pull still returns the full backlog afterwards).
+- [x] No blob/data/id leakage — `viewer_message` emits text verbatim + a bare `kind` for non-text;
+      roster maps to name/role/status only. (e2e asserts `agents[0].id` is absent)
+- [x] Expiring + swept — reuses `directory_tokens`, already in `sweep_expired`.
+- [x] **Live-proven**: join key → HTTP 401; no token → 401; watch code → 200 with content + counts.
+
+## Steps — ALL DONE
+- [x] protocol frames + round-trip test (`watch_frames_round_trip`)
+- [x] store: mint/validate/room_messages + tightened directory-token scope + 2 unit tests
+- [x] server: `MintWatch` handler + `GET /api/session` (bearer-gated, viewer-shaped JSON)
+- [x] connector: `mint_watch_token`
+- [x] CLI: `session watch` + hint in `session open`
+- [x] MCP: `parler_watch_session` tool + hint in `open_session`
+- [x] web: types, `fetchSession`, `/session` page, nav link, home CTA
+- [x] e2e test: open → mint watch → HTTP GET asserts content + agent count + 401 for the join key
+- [x] docs: agent-mesh.md "Watch a session from the browser" + CLI/MCP tables
+- [x] verify: `cargo build` ✓, full `cargo test` ✓ (all green), `cargo clippy -D warnings` ✓,
+      `npm run build` ✓ (`/session` prerendered), live CLI→hub→REST smoke ✓
+
+## Review
+**Shipped** the issue-#43 feature as a secure read-only **watch capability**, mirroring the existing
+directory-token pattern end-to-end. The crux: a *session/join key is approval-gated and can't read the
+backlog* — so reading room contents straight from it over the public web would have defeated the
+project's own security model. Instead the **owner** mints a separate, room-scoped, read-only, expiring
+**watch code**; pasting it into the website's `/session` page shows the whole conversation and how many
+agents are in the room, live.
+
+Additive + backward-compatible (new frames/route/tool only — no wire break). All changes mirror an
+existing accepted pattern, so the surface is consistent. New tests cover the happy path, the
+owner-only gate, scope isolation (watch≠directory), the no-cursor-mutation invariant, and the headline
+security property (the join key returns 401 from the viewer). Branch is a little behind origin/main
+(AGENTS.md / a CLAUDE.md trim land on merge — untouched here).
+
+Possible follow-ups (not needed for #43): show a bundle's one-line summary in the viewer; a "revoke
+watch code" command; optional rate-limit on `/api/session` polling.
+
+---
+
 # Task: Fix hub memory growth (audit) — 2026-06-28
 
 **User ask:** keeping `parler` running for a while eats a lot of memory — audit, make sure nothing

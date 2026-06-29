@@ -28,3 +28,4 @@ parler-auth = { workspace = true }
 parler-protocol = { workspace = true }
 tokio = { workspace = true }
 anyhow = { workspace = true }
+serde_json = { workspace = true }

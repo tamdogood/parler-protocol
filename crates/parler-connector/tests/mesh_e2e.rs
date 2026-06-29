@@ -510,6 +510,109 @@ async fn expired_invite_is_rejected() {
     assert!(bob.join(&inv.code).await.is_err());
 }
 
+// ---- web session viewer (read-only watch tokens) ----
+
+/// A minimal async HTTP/1.1 GET with an optional `Authorization: Bearer`. Returns `(status, body)`.
+/// The session viewer is plain HTTP (a browser, not an agent), so we exercise it over a real socket —
+/// the same dependency-free client style as the hub's smoke test.
+async fn http_get(hub_ws: &str, path: &str, bearer: Option<&str>) -> (u16, String) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let addr = hub_ws.strip_prefix("ws://").expect("ws url");
+    let mut stream = tokio::net::TcpStream::connect(addr).await.expect("connect");
+    let auth = bearer.map(|t| format!("Authorization: Bearer {t}\r\n")).unwrap_or_default();
+    let req = format!("GET {path} HTTP/1.1\r\nHost: {addr}\r\n{auth}Connection: close\r\n\r\n");
+    stream.write_all(req.as_bytes()).await.expect("write");
+    let mut buf = Vec::new();
+    stream.read_to_end(&mut buf).await.expect("read");
+    let raw = String::from_utf8_lossy(&buf).into_owned();
+    let (head, body) = raw.split_once("\r\n\r\n").unwrap_or((raw.as_str(), ""));
+    let status = head
+        .lines()
+        .next()
+        .and_then(|l| l.split_whitespace().nth(1))
+        .and_then(|c| c.parse().ok())
+        .unwrap_or(0);
+    (status, body.to_string())
+}
+
+#[tokio::test]
+async fn web_session_viewer_reads_a_watched_session() {
+    let hub = start_hub().await;
+    let mut alice = agent(&hub, "alice", Some("planner")).await;
+
+    // Alice opens an approval-gated session (the website-monitored case) and seeds it with context.
+    let inv = alice
+        .invite_with_approval(RoomKind::Channel, Some("design".into()), None, None, true)
+        .await
+        .unwrap();
+    alice
+        .send_text(
+            Target::Room { room: inv.room.clone() },
+            "context: redesigning auth, see src/auth.rs",
+        )
+        .await
+        .unwrap();
+
+    // Bob asks to join; Alice approves — now two agents are in the room.
+    let mut bob = agent(&hub, "bob", Some("reviewer")).await;
+    match bob.redeem(&inv.code).await.unwrap() {
+        JoinOutcome::Pending { .. } => {}
+        JoinOutcome::Joined { .. } => panic!("an approval-gated session should hold the joiner pending"),
+    }
+    alice.resolve_join(&inv.room, &bob.id, true).await.unwrap();
+
+    // The owner mints a read-only watch code for the website.
+    let (watch, _exp) = alice.mint_watch_token(&inv.room, None).await.unwrap();
+
+    // The viewer endpoint returns the conversation + the agent count, gated by the watch token.
+    let (status, body) = http_get(&hub, "/api/session", Some(&watch)).await;
+    assert_eq!(status, 200, "watch token authorizes the viewer; body={body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["memberCount"], 2, "two agents are in the room");
+    assert_eq!(v["onlineCount"], 2);
+    assert_eq!(v["room"], inv.room);
+    let names: Vec<&str> =
+        v["agents"].as_array().unwrap().iter().map(|a| a["name"].as_str().unwrap()).collect();
+    assert!(names.contains(&"alice") && names.contains(&"bob"), "roster lists both agents: {names:?}");
+    let text = v["messages"][0]["parts"][0]["text"].as_str().unwrap();
+    assert!(text.contains("redesigning auth"), "the conversation content is visible: {text}");
+    // The viewer shape must not leak agent ids (public keys).
+    assert!(v["agents"][0].get("id").is_none(), "the viewer must not expose agent ids");
+
+    // Incremental poll: nothing new past the cursor.
+    let cursor = v["cursor"].as_i64().unwrap();
+    let (_s, body2) = http_get(&hub, &format!("/api/session?since={cursor}"), Some(&watch)).await;
+    let v2: serde_json::Value = serde_json::from_str(&body2).unwrap();
+    assert_eq!(v2["messages"].as_array().unwrap().len(), 0, "no messages newer than the cursor");
+
+    // Security: the *join key* is NOT a watch token — it can't read the conversation from the web.
+    let (status, _b) = http_get(&hub, "/api/session", Some(&inv.code)).await;
+    assert_eq!(status, 401, "the approval-gated join key can't read the session over REST");
+
+    // A bogus or absent token is refused.
+    assert_eq!(http_get(&hub, "/api/session", Some("NOPE")).await.0, 401);
+    assert_eq!(http_get(&hub, "/api/session", None).await.0, 401);
+}
+
+#[tokio::test]
+async fn only_the_session_owner_can_mint_a_watch_code() {
+    let hub = start_hub().await;
+    let mut alice = agent(&hub, "alice", None).await;
+    let inv = alice
+        .invite_with_approval(RoomKind::Channel, Some("design".into()), None, None, false)
+        .await
+        .unwrap();
+
+    // Bob joins (open key), so he's a member — but not the owner.
+    let mut bob = agent(&hub, "bob", None).await;
+    bob.join(&inv.code).await.unwrap();
+
+    // A non-owner member cannot expose the session to outside viewers.
+    assert!(bob.mint_watch_token(&inv.room, None).await.is_err(), "only the owner may mint a watch code");
+    // The owner can.
+    assert!(alice.mint_watch_token(&inv.room, None).await.is_ok());
+}
+
 // ---- idle auto-disconnect ----
 
 #[tokio::test]

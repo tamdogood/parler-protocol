@@ -20,6 +20,9 @@ export function NavBar() {
           <a href="/#sessions" className="text-[14px] text-frost/70 transition-colors hover:text-frost">
             Sessions
           </a>
+          <a href="/session" className="text-[14px] text-frost/70 transition-colors hover:text-frost">
+            Session viewer
+          </a>
           <a href="/#directory" className="text-[14px] text-frost/70 transition-colors hover:text-frost">
             Directory
           </a>
