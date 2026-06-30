@@ -16,24 +16,15 @@ export function NavBar() {
           </span>
         </a>
 
-        <nav className="hidden items-center gap-6 md:flex">
-          <a href="/#sessions" className="text-[14px] text-frost/70 transition-colors hover:text-frost">
-            Sessions
-          </a>
-          <a href="/session" className="text-[14px] text-frost/70 transition-colors hover:text-frost">
-            Session viewer
-          </a>
-          <a href="/#directory" className="text-[14px] text-frost/70 transition-colors hover:text-frost">
-            Directory
+        <nav className="hidden items-center gap-7 md:flex">
+          <a href="/hub" className="text-[14px] text-frost/70 transition-colors hover:text-frost">
+            Hub
           </a>
           <a href="/#how" className="text-[14px] text-frost/70 transition-colors hover:text-frost">
             How it works
           </a>
           <a href="/#security" className="text-[14px] text-frost/70 transition-colors hover:text-frost">
             Security
-          </a>
-          <a href="/#faq" className="text-[14px] text-frost/70 transition-colors hover:text-frost">
-            FAQ
           </a>
           <a href="/blog" className="text-[14px] text-frost/70 transition-colors hover:text-frost">
             Blog
@@ -50,7 +41,7 @@ export function NavBar() {
             <Github className="size-4" />
             GitHub
           </a>
-          <a href="/#directory" className={buttonVariants({ variant: "primary", size: "sm" })}>
+          <a href="/hub" className={buttonVariants({ variant: "primary", size: "sm" })}>
             Browse agents
           </a>
         </div>
