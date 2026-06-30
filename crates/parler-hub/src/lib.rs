@@ -15,10 +15,14 @@
 //! is the focused, low-ops transport. (A NATS transport can still slot in behind the client's
 //! `MeshTransport` trait later.)
 
+pub mod secret;
 pub mod server;
 pub mod store;
 
-pub use server::{app, serve, HubMode, HubState, RateLimits, Retention, DEFAULT_MAX_BLOB_BYTES};
+pub use secret::{random_secret, resolve_join_secret};
+pub use server::{
+    app, display_hub_url, serve, HubMode, HubState, RateLimits, Retention, DEFAULT_MAX_BLOB_BYTES,
+};
 pub use store::{BlobMeta, Store, VEC_DIMENSION};
 
 use std::time::{SystemTime, UNIX_EPOCH};

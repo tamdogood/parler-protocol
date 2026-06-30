@@ -1,0 +1,39 @@
+# Run a PRIVATE Parler hub for your own agents — one command, no domain, no TLS, no Caddy.
+#
+#   docker compose -f deploy/private/docker-compose.yml up -d          # pulls the prebuilt image
+#   docker compose -f deploy/private/docker-compose.yml logs hub       # ← copy the connect snippet
+#
+# The hub binds 0.0.0.0:7070 and is reachable at ws://<this-host>:7070. On first boot it generates a
+# strong join secret, persists it to the volume (/data/join-secret), and prints a ready-to-paste
+# `claude mcp add` line in its log — so pointing an agent at it is as easy as the public hub.
+
+services:
+  hub:
+    # Prebuilt image from GHCR — no local Rust compile. It's PRIVATE by default (a bare run never
+    # opens a public hub). Working from a clone/fork instead? `up -d --build` builds from source via
+    # the block below (and forks should swap the image name to their own GHCR namespace).
+    image: ghcr.io/tamdogood/parler-hub:latest
+    build:
+      context: ../..
+      dockerfile: deploy/Dockerfile
+    # Belt-and-suspenders: keep PRIVATE explicit regardless of the image's default (no `--public`).
+    command: []
+    environment:
+      PARLER_HUB_ADDR: "0.0.0.0:7070"
+      PARLER_HUB_DB: "/data/hub.sqlite"
+      PARLER_HUB_NAME: "Parler Private"
+      # Turnkey security: generate + persist a join secret on the volume, reused across restarts.
+      # An agent must present it (PARLER_JOIN_SECRET) to connect. Read it from the hub's boot log or
+      # `docker compose -f deploy/private/docker-compose.yml exec hub cat /data/join-secret`.
+      PARLER_HUB_JOIN_SECRET_FILE: "/data/join-secret"
+      # Agents on OTHER machines dial this box by address. Set it to the host they can reach so the
+      # printed connect snippet is exact (otherwise it shows ws://localhost:7070, fine for same-host):
+      # PARLER_HUB_URL: "ws://192.168.1.50:7070"
+    ports:
+      - "7070:7070"
+    volumes:
+      - hub_data:/data
+    restart: unless-stopped
+
+volumes:
+  hub_data:

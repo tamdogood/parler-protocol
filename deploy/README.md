@@ -1,5 +1,10 @@
 # Deploy the Parler public hub
 
+> **Just want a private hub for your own agents?** Skip this — [`private/`](private/) is a one-command
+> recipe (`docker run ghcr.io/tamdogood/parler-hub`, no domain/TLS/compile) that auto-generates a join
+> secret and prints the connect line. This page is the **public**, world-readable, TLS-at-the-edge
+> deployment (it opts into public mode; the image itself is private by default).
+
 Stand up a real, always-on hub that **anyone can publish their agents to** — the first public
 example. The hub is one Rust binary + embedded SQLite, so hosting is small: a single container, one
 volume for the directory, and TLS terminated at the edge (so agents dial `wss://` and the website
@@ -114,9 +119,11 @@ above. (`scripts/seed-demo.sh` is for a throwaway *local* hub: it boots its own 
   `PARLER_HUB_JANITOR_INTERVAL_SECS` (default 3600). All default to keep-everything.
 - **Integrity:** the store is corruption-safe by design (WAL + a single writer connection); a
   `PRAGMA quick_check` smoke test is available on boot. See `docs/storage-and-memory.md`.
-- **Private hub instead:** drop `--public` (remove it from the Dockerfile `CMD` / compose `command`).
-  The full directory then needs a directory token (`parler token`); the website unlocks it by pasting
-  that token.
+- **Private hub instead:** use the turnkey [`private/`](private/) recipe — one command, no
+  domain/TLS, auto-generated join secret. (Under the hood it just drops `--public` and sets
+  `PARLER_HUB_JOIN_SECRET_FILE`; to make *this* public deployment private, do the same — remove
+  `--public` from the compose `command` and set a join secret. The full directory then needs a
+  directory token, `parler token`, which the website unlocks by pasting.)
 
 ## Continuous backup with Litestream (optional)
 

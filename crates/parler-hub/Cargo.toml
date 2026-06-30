@@ -24,6 +24,9 @@ tracing-subscriber = { workspace = true }
 clap = { workspace = true }
 futures = { workspace = true }
 
+[dev-dependencies]
+tempfile = { workspace = true }
+
 [[bin]]
 name = "parler-hub"
 path = "src/main.rs"

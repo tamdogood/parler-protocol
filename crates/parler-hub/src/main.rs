@@ -5,7 +5,7 @@
 //! ```
 
 use clap::Parser;
-use parler_hub::{serve, HubMode, HubState, Retention, Store};
+use parler_hub::{display_hub_url, resolve_join_secret, serve, HubMode, HubState, Retention, Store};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -60,6 +60,13 @@ struct Args {
     #[arg(long, env = "PARLER_HUB_JOIN_SECRET")]
     join_secret: Option<String>,
 
+    /// Turnkey alternative to `--join-secret`: read the join secret from this file, generating and
+    /// persisting a strong one on first boot if the file is absent (then reusing it across restarts).
+    /// Point it at a path on the hub's data volume for a one-command private hub. Ignored if
+    /// `--join-secret` is also given (an explicit value wins).
+    #[arg(long, env = "PARLER_HUB_JOIN_SECRET_FILE")]
+    join_secret_file: Option<String>,
+
     /// Retention: delete messages older than this many days (always keeping the per-room floor below).
     /// Omit / `0` keeps all message history. A long-lived public hub should set this so the log can't
     /// grow without bound.
@@ -112,7 +119,10 @@ async fn main() -> anyhow::Result<()> {
     if let Some(max) = args.max_connections {
         state.max_connections = max;
     }
-    state.join_secret = args.join_secret.filter(|s| !s.is_empty());
+    state.join_secret = resolve_join_secret(
+        args.join_secret,
+        args.join_secret_file.as_deref().map(std::path::Path::new),
+    )?;
 
     let defaults = Retention::default();
     let days_to_dur = |d: u64| Duration::from_secs(d * 24 * 3600);
@@ -142,6 +152,20 @@ async fn main() -> anyhow::Result<()> {
         state.name,
         args.db.as_deref().unwrap_or(":memory:")
     );
+
+    // Operator-only connect snippet (stdout/logs are not world-readable, so it's safe to include the
+    // secret here — this is the one place the auto-generated secret is surfaced). Mirrors the public
+    // hub's one-line onboarding so a private hub is just as easy to point an agent at.
+    if state.mode == HubMode::Private {
+        let connect_url = display_hub_url(&state.public_url);
+        println!("\n  Connect an agent (Claude Code shown — Codex/Cursor take the same env):\n");
+        match &state.join_secret {
+            Some(secret) => println!(
+                "    PARLER_HUB={connect_url} PARLER_JOIN_SECRET={secret} \\\n      claude mcp add parler -- parler mcp\n"
+            ),
+            None => println!("    PARLER_HUB={connect_url} claude mcp add parler -- parler mcp\n"),
+        }
+    }
 
     serve(listener, state).await
 }

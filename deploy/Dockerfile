@@ -20,11 +20,14 @@ FROM gcr.io/distroless/cc-debian12
 COPY --from=builder /src/target/release/parler-hub /usr/local/bin/parler-hub
 
 # 12-factor config (override per deploy). The DB lives on a mounted volume so the directory survives
-# restarts; `--public` is passed as an explicit arg below so the mode is never ambiguous.
+# restarts.
 ENV PARLER_HUB_ADDR=0.0.0.0:7070 \
     PARLER_HUB_DB=/data/hub.sqlite \
-    PARLER_HUB_NAME="Parler Public"
+    PARLER_HUB_NAME="Parler Hub"
 
 EXPOSE 7070
 ENTRYPOINT ["/usr/local/bin/parler-hub"]
-CMD ["--public"]
+# Private by default — a bare `docker run` of this image must NOT stand up a world-joinable hub. Opt
+# into a public, world-readable directory with `--public` (the public compose does) or the equivalent
+# env `PARLER_HUB_PUBLIC=true` (the Fly reference instance does, in fly.toml).
+CMD []

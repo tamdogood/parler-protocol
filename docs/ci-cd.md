@@ -88,6 +88,23 @@ community-safe**:
 A separate daily [`audit.yml`](../.github/workflows/audit.yml) re-runs cargo-deny so a CVE published
 against an already-merged dependency is caught even with no PR traffic.
 
+### Prebuilt hub image (GHCR)
+
+[`.github/workflows/release-image.yml`](../.github/workflows/release-image.yml) publishes the hub as a
+prebuilt multi-arch container image so self-hosting a private hub is `docker run
+ghcr.io/<owner>/parler-hub` — seconds, not a from-source compile (see
+[`deploy/private/`](../deploy/private/)). It runs on a **`vX.Y.Z` tag** (a released image) or **manual
+`workflow_dispatch`** (publishes `:latest`, e.g. for the first image) — *not* on every push to `main`,
+since the multi-arch (amd64 + arm64, arm64 via QEMU) build is slow. Notes:
+
+- **No secrets, fork-safe.** It pushes to the runner's own namespace (`ghcr.io/${{
+  github.repository_owner }}`, lowercased) with the automatic `GITHUB_TOKEN` + `permissions: packages:
+  write` — so a fork publishes to *its* packages with zero setup. Tags come from
+  `docker/metadata-action` (`latest`, the semver, `MAJOR.MINOR`, and a short-SHA).
+- **The image is private by default** (`deploy/Dockerfile` ships `CMD []`): a bare `docker run` of it
+  never opens a world-joinable hub. The public reference instance opts in via `PARLER_HUB_PUBLIC=true`
+  in `fly.toml`; the public compose passes the `--public` flag.
+
 ### What the maintainer configures once
 
 In the GitHub repo settings (only needed for real deploys; everything else works without it):

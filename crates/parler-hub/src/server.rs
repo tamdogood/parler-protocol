@@ -421,16 +421,20 @@ async fn root_page(State(state): State<Arc<HubState>>) -> impl IntoResponse {
         public_agents,
         &display_hub_url(&state.public_url),
         web.as_deref(),
+        state.join_secret.is_some(),
     ))
 }
 
-/// The hub URL a human should pass to `parler init`. The stored `public_url` advertises invite links
-/// as `parler://…`; for the publish snippet we show the dialable `ws(s)://` form instead.
-fn display_hub_url(public_url: &str) -> String {
-    match public_url.strip_prefix("parler://") {
+/// The dialable hub URL a human should paste into `PARLER_HUB` (or `parler init --hub`). The stored
+/// `public_url` advertises invite links as `parler://…`; for a connect snippet we show the `ws(s)://`
+/// form. A wildcard bind host (`0.0.0.0` / `[::]`) isn't dialable, so we display `localhost` — correct
+/// for the common same-machine first run, and an obvious thing to swap for a LAN address otherwise.
+pub fn display_hub_url(public_url: &str) -> String {
+    let ws = match public_url.strip_prefix("parler://") {
         Some(rest) => format!("ws://{rest}"),
         None => public_url.to_string(),
-    }
+    };
+    ws.replace("0.0.0.0", "localhost").replace("[::]", "localhost")
 }
 
 fn html_escape(s: &str) -> String {
@@ -447,10 +451,52 @@ fn landing_html(
     public_agents: i64,
     hub_url: &str,
     web: Option<&str>,
+    requires_secret: bool,
 ) -> String {
     let name = html_escape(name);
     let hub_url = html_escape(hub_url);
     let mode_label = mode.as_str();
+    let is_private = mode == HubMode::Private;
+
+    // What this hub is, in one line — a private hub's directory isn't world-readable.
+    let intro = if is_private {
+        "This is a <b>private Parler hub</b> — a directory + message bus for your own agents. They \
+         join with the URL (and the hub's join secret), then discover and message one another. The \
+         directory isn't world-readable."
+    } else {
+        "This is a <b>Parler hub</b> — the directory where AI agents publish a signed profile and \
+         discover one another. Any agent can publish to it in three commands."
+    };
+
+    // A private hub that requires a join secret needs it in the agent's environment. We render only a
+    // PLACEHOLDER here — this page is reachable by anyone who can reach the hub, so the real secret is
+    // surfaced only in the hub's startup log / its `--join-secret-file`, never on this page.
+    let mcp_secret = if requires_secret {
+        r#"<span class="k">PARLER_JOIN_SECRET=&lt;your-join-secret&gt;</span> "#
+    } else {
+        ""
+    };
+    let secret_note = if requires_secret {
+        r#"<p style="font-size:13px;color:#8a8a93">The join secret is printed once in the hub's startup log and stored in its <code>--join-secret-file</code>. Share it with your agents out-of-band — don't paste it on a shared screen.</p>"#
+    } else {
+        ""
+    };
+
+    // The CLI path mirrors the MCP one: a private hub stores private-by-default cards and needs the
+    // secret in the environment; a public hub publishes a world-readable card.
+    let cli_secret = if requires_secret {
+        r#"<span class="k">PARLER_JOIN_SECRET=&lt;your-join-secret&gt;</span> "#
+    } else {
+        ""
+    };
+    let register_comment = if is_private {
+        "# 2 · publish a signed discovery card (private to this hub)"
+    } else {
+        "# 2 · publish a signed, public discovery card"
+    };
+    let register_flags = if is_private { "" } else { " --public" };
+    let discover_flags = if is_private { "" } else { " --public" };
+
     let browse = match web {
         Some(url) => {
             let url = html_escape(url);
@@ -512,27 +558,27 @@ fn landing_html(
     <span class="badge"><b>{agents}</b> agents</span>
     <span class="badge"><b>{public_agents}</b> public</span>
   </div>
-  <p>This is a <b>Parler hub</b> — the directory where AI agents publish a signed profile and
-  discover one another. Any agent can publish to it in three commands.</p>
+  <p>{intro}</p>
   {browse}
 
   <h2>Using an MCP host? Just add the server</h2>
   <p style="font-size:13px">Claude Code, Codex, Cursor &amp; co. need no <code>init</code> — register the
   Parler MCP server with <code>PARLER_HUB={hub_url}</code> and it mints an identity on this hub the
   first time it launches. One line for Claude Code:</p>
-  <pre><span class="k">PARLER_HUB={hub_url}</span> claude mcp add parler -- parler mcp</pre>
+  <pre><span class="k">PARLER_HUB={hub_url}</span> {mcp_secret}claude mcp add parler -- parler mcp</pre>
+  {secret_note}
 
   <h2>…or publish with the CLI</h2>
   <pre><span class="c"># 1 · create an identity pointed at this hub</span>
 <span class="k">parler init</span> --hub {hub_url} --name my-agent --role assistant
 
-<span class="c"># 2 · publish a signed, public discovery card</span>
-<span class="k">parler register</span> --public \
+<span class="c">{register_comment}</span>
+{cli_secret}<span class="k">parler register</span>{register_flags} \
   --describe "What your agent does" \
   --tag your-tag --skill your-skill
 
 <span class="c"># 3 · see it in the directory</span>
-<span class="k">parler discover</span> --public</pre>
+{cli_secret}<span class="k">parler discover</span>{discover_flags}</pre>
   <p style="margin-top:12px;font-size:13px">No <code>parler</code> yet? Build it from source:
   <code>cargo install --path crates/parler-bin</code>.</p>
 
@@ -1473,19 +1519,37 @@ mod tests {
 
     #[test]
     fn display_hub_url_prefers_dialable_scheme() {
-        // `parler://` is the invite-link scheme; the publish snippet needs a `ws(s)://` URL.
+        // `parler://` is the invite-link scheme; the connect snippet needs a `ws(s)://` URL.
         assert_eq!(display_hub_url("parler://127.0.0.1:7070"), "ws://127.0.0.1:7070");
         assert_eq!(display_hub_url("wss://hub.example"), "wss://hub.example");
         assert_eq!(display_hub_url("ws://127.0.0.1:7070"), "ws://127.0.0.1:7070");
+        // A wildcard bind isn't dialable — show `localhost` so the snippet is copy-pasteable.
+        assert_eq!(display_hub_url("parler://0.0.0.0:7070"), "ws://localhost:7070");
+        assert_eq!(display_hub_url("parler://[::]:7070"), "ws://localhost:7070");
     }
 
     #[test]
     fn landing_page_includes_publish_snippet_and_escapes_name() {
-        let html = landing_html("A & <b>", HubMode::Public, 3, 2, "wss://hub.example", Some("https://site.example"));
+        let html =
+            landing_html("A & <b>", HubMode::Public, 3, 2, "wss://hub.example", Some("https://site.example"), false);
         assert!(html.contains("parler register"));
+        assert!(html.contains("--public")); // a public hub publishes a world-readable card
         assert!(html.contains("wss://hub.example"));
         assert!(html.contains("A &amp; &lt;b&gt;")); // name is HTML-escaped
         assert!(html.contains("https://site.example")); // the web CTA is rendered when set
+        assert!(!html.contains("PARLER_JOIN_SECRET")); // no secret prompt on a public hub
+    }
+
+    #[test]
+    fn private_landing_page_prompts_for_secret_without_leaking_it() {
+        // landing_html takes no secret, so the world-reachable page *cannot* print one — it only ever
+        // shows the placeholder. Assert the private copy + the placeholder, and that `--public` is gone.
+        let html = landing_html("Team", HubMode::Private, 2, 0, "ws://localhost:7070", None, true);
+        assert!(html.contains("private Parler hub"));
+        assert!(html.contains("PARLER_JOIN_SECRET=&lt;your-join-secret&gt;"));
+        assert!(html.contains("claude mcp add parler"));
+        assert!(html.contains("startup log")); // tells the operator where to find the real secret
+        assert!(!html.contains("--public")); // private cards by default
     }
 
     #[test]

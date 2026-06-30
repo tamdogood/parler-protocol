@@ -1,137 +1,89 @@
-# Task: Verifiable mesh — sign/chain the conversation so the hub can relay but can't lie — 2026-06-29
+# Task: Seamless private hub — "docker compose up, agents talk in no time" — 2026-06-29
 
-**User ask (`/loop`):** audit the main features (chat sessions, etc.); pull in research/other-field
-concepts (e.g. **blockchain**) to make the protocol *better, more secure*, and the agent-to-agent
-connection *more resilient, reliable, efficient, smooth*; then come up with scenarios and run **e2e**
-of each case to prove it works. Self-paced loop — one verified increment per iteration.
+**User ask:** make the **private** (self-hosted) hub as easy to stand up as the public hub. "As easy
+as running a docker to the database, and the agents can just talk to each other in no time." Goal is
+adoption — setup must be one command on the operator side and a copy-paste snippet on the agent side,
+**symmetric with the public hub** and **without weakening the security model**.
 
-## Audit — what exists, and the gap that matters most
-Mature, security-conscious system: nkey/Ed25519 identity (agent id == pubkey), **self-signed
-discovery cards** (`canonical_card_bytes`, re-verifiable), challenge-response auth (+ optional
-constant-time join secret), rooms (1:1 / 1:many / many:1), **durable per-(room,agent) cursor** (at-
-least-once + crash-safe resume), best-effort **push** layer, approval-gated **sessions**, owner-only
-read-only **watch** tokens, content-addressed **git-bundle handoff**, FTS5 memory (+ vector
-scaffolding). AGENTS.md's headline claim: *"the hub is a relay, not a root of trust — even a
-compromised hub can't forge a listing or impersonate anyone."*
+## Today's asymmetry (the gap)
+- Public hub onboarding = `claude mcp add parler -- parler mcp` (URL baked in; MCP self-bootstraps).
+- Private hub: `deploy/` is titled "Deploy the **public** hub"; both recipes (Fly, VPS+Caddy) assume
+  public + a domain + TLS. "Private" is a one-line footnote ("drop `--public`"). There is **no**
+  one-command private recipe, and the runtime image is **distroless (no shell)** so a wrapper script
+  can't generate a secret. A LAN-reachable private hub *should* set a join secret (security invariant),
+  but inventing + distributing one by hand is friction.
 
-**The gap:** that claim holds for **cards** (signed) but **NOT for messages.** A `Send` is stored with
-a hub-set `from`, and nothing is signed. So a **compromised/malicious hub can forge a message from any
-agent, alter authored content, reorder, drop, or fabricate an entire backlog** — and a joining agent
-that gets "caught up" (the flagship session-handoff flow) has **no way to detect it**. An agent then
-*acts* on that context (decisions, file paths, "deploy to prod"). This is the highest-value place to
-apply distributed-ledger / Certificate-Transparency / reliable-messaging ideas.
+## North-star experience (symmetric, one command each side)
+```
+# Operator, one box:
+docker compose -f deploy/private/docker-compose.yml up -d
+#   → boot log prints the exact connect line, with the auto-generated secret:
+#     PARLER_HUB=ws://localhost:7070 PARLER_JOIN_SECRET=<gen> claude mcp add parler -- parler mcp
+# Each agent:
+PARLER_HUB=ws://<host>:7070 PARLER_JOIN_SECRET=<gen> claude mcp add parler -- parler mcp
+```
 
-## Roadmap (each item additive, backward-compatible, behind `scripts/verify.sh --rust-only`)
-Concepts borrowed and where they map:
-1. **[P0] Authenticated messages (signatures).** Author signs each message; carried as a
-   `com.parler.sig` **extension part** (like `com.parler.bundle`) ⇒ **zero hub/protocol/schema change,
-   works against the live deployed hub today**. Verified on receive; surfaced as ✓/⚠/✗ in CLI & MCP.
-   *Property: a malicious hub cannot forge or alter authored content — extends the signed-card
-   guarantee to the conversation itself.* [ledger: every transaction signed by its originator]
-2. **[P1] Tamper-evident, fork-detectable room log (hash chain).** Sig payload also commits to
-   `prev` = hash of the author's last-seen message in that room; `parler verify --room R` walks the
-   chain + reports a head; two members comparing heads detect hub **equivocation / split-view**.
-   [blockchain + Git DAG + Certificate-Transparency: hash-linked append-only log, gossip the head]
-3. **[P1] Exactly-once sends (idempotency).** The signed `uid` doubles as an idempotency key; hub
-   dedups within a window ⇒ a retried send after a dropped ack never duplicates. [reliable messaging:
-   at-least-once + idempotent consumer = effectively-once; Stripe idempotency-key]
-4. **[P2] Self-healing connection (auto-reconnect + resume).** Reconnecting transport re-handshakes,
-   resumes from the durable cursor, re-arms `subscribe`, with backoff. [durable cursor + reconnect =
-   session continuity]
-5. **[P2] Hardened auth challenge (domain-separated, hub-bound, expiring nonce).** Make the nonce an
-   opaque structured token so the signature is domain-separated + replay-bounded — zero client change.
-   [crypto: SIWE / EIP-712 domain separation]
+## Design decisions
+- **Auto-generated, persistent join secret via a file** (the key enabler). New flag
+  `--join-secret-file` / env `PARLER_HUB_JOIN_SECRET_FILE`: read the secret from the file; if absent,
+  generate a strong one (reuse the hub's existing token generator), persist it `0600`, reuse on later
+  boots. Precedence: explicit `--join-secret` value > file > none. **Binary default is unchanged**
+  (no secret unless asked) — this is opt-in and only the private compose sets it. Solves seamless +
+  secure-by-default + distroless (no shell needed) in one small, testable helper.
+- **Mode-aware landing page + boot banner.** The boot banner (stdout = operator-only) prints the
+  ready-to-paste connect line *with the real secret*. The `GET /` page is world-reachable, so it must
+  **never print the secret** — for a private hub it shows the snippet with a `PARLER_JOIN_SECRET=<your-
+  join-secret>` placeholder and points the operator at the boot log / secret file. Map a `0.0.0.0`
+  bind → `localhost` for display so the snippet is copy-pasteable on the common same-machine case.
+- **`deploy/private/`** — hub-only compose (no Caddy/domain/TLS), private mode, `7070:7070`, named
+  volume, `PARLER_HUB_JOIN_SECRET_FILE=/data/join-secret`. Reuses `deploy/Dockerfile`.
+- **Out of scope:** `web/` (private directory viewing already works via tokens); a prebuilt GHCR image
+  (truest `docker run`, but touches release/CD + registry namespace — offer as a follow-up).
 
-## This iteration — #1 Authenticated messages
-- **protocol** (`hub.rs`, pure): `MESSAGE_SIG_KIND="com.parler.sig"`; `canonical_message_bytes(from,
-  target, parts_without_sig, reply_to, ts, uid)` (reuses `canonicalize`); `MessageSig{sig,ts,uid,
-  target}` with `to_part()`/`from_parts()`. **Sign over parts + target + author id + reply_to + client
-  ts/uid. Exclude `mentions`** (hub normalizes them → would break the sig). + round-trip tests.
-- **connector**: `MeshAgent::send` auto-signs when an identity is present (covers send/push/session
-  seeding). `verify_message(from_id, parts, reply_to) -> SigStatus{Unsigned,Valid,Invalid}` (uses
-  `parler_auth::verify`). Add `uuid` dep for `uid`.
-- **cli/mcp**: filter the sig part from display; prefix each message with ✓ (valid) / ⚠ (unsigned) /
-  ✗ (BAD). hub `/api/session` viewer: drop the sig part server-side (Rust, in scope).
-- **e2e** (`mesh_e2e.rs`, real WS hub): (a) signed channel msg verifies; (b) signed DM verifies;
-  (c) **tampered content** ⇒ Invalid; (d) **forged `from`** ⇒ Invalid; (e) legacy unsigned ⇒ Unsigned;
-  (f) a pushed `Delivery` is also verifiable.
-- **gate:** `scripts/verify.sh --rust-only` (or `CI_SKIP_WEB=1 make ci`) green.
-- *Deferred to #2:* binding the signature to the delivered room (DM rooms use a random suffix, not a
-  reproducible hash, so room-binding rides the per-room hash chain). `mentions`/anti-reorder ride #2.
-
-## Review — iteration 1 DONE (2026-06-29) ✅ `VERIFY: PASS` (`--rust-only`)
-Shipped **authenticated messages** with **zero hub/protocol/schema change** (signature rides inside
-`parts` as a `com.parler.sig` extension — works against the live deployed hub):
-- `parler-protocol/hub.rs`: `MESSAGE_SIG_KIND`, `is_message_sig_part`, `MessageSig{sig,ts,uid,target}`
-  (`to_part`/`from_parts`), `canonical_message_bytes(...)` (JCS-style, filters the sig part so signer
-  and verifier can't disagree on framing). +2 codec tests.
-- `parler-connector`: `MeshAgent::send` auto-signs when an identity is present (so send / push /
-  session-seed are all authenticated); `verify_message(from_id, parts, reply_to) -> SigStatus`
-  (`Valid`/`Unsigned`/`Invalid`); added the `uuid` dep. +6 unit tests (valid, altered, forged-from,
-  replyTo-covered, target-covered, unsigned).
-- `parler-cli`/MCP: `render_message` prefixes `⚠` (unsigned) / `✗ UNVERIFIED` (tampered) — valid is
-  clean (silent success); `render_parts` hides the sig part. (One choke point → both CLI & MCP.)
-- `parler-hub`: `/api/session` web viewer drops the sig part server-side.
-- **e2e** (`mesh_e2e.rs`, real WS hub, +5): signed channel + DM verify; hub-altered content → `Invalid`;
-  forged `from` → `Invalid`; pushed `Delivery` verifies; legacy unsigned → `Unsigned`. **No regressions**
-  — code-handoff/push/session tests still green with signatures riding along (28/28).
-- **Property proven:** a compromised/malicious hub can no longer forge or alter authored content — it's
-  reduced to drop/withhold (a liveness problem, addressed by #3 idempotency + #2 chain), never an
-  integrity one. The signed-card guarantee now extends to the conversation itself.
-- *Next (#2):* per-room hash chain (`prev`) for tamper-evident ordering + fork/equivocation detection.
-
----
-
-# Structured handoff messages (`com.parler.handoff`) — 2026-06-29
-
-Build the "more autonomous handoff" feature promised in discussion #49. The wakeup primitive
-(`recv --watch` / `parler_recv wait_secs`, #37) and outbound timeline streaming (hooks, #50) already
-ship. The missing piece is **explicit "you're up next" semantics**: a structured handoff part that a
-worker loop / host agent can detect and act on. Rides existing room/cursor/push machinery — no new
-protocol frame, no hub change.
-
-## Design
-
-`com.parler.handoff` extension part (mirrors `BundleRef`):
-- `next: String` (required) — the instruction for the next agent
-- `summary: Option<String>` — recap of what was just done / current state
-- `to: Option<String>` — addressee: target agent **name or role**; absent = "any agent in the room"
-- `bundle: Option<String>` — optional blob id of an attached code bundle (cross-link to BundleRef)
-
-`HandoffRef::{to_part, from_part, is_for(name, role)}` + `HANDOFF_KIND` const in `parler-protocol`.
-
-## Tasks
-
-- [x] protocol: add `HANDOFF_KIND` + `HandoffRef` (to_part/from_part/is_for) + round-trip test
-- [x] cli: `parler handoff [--room|--to|--service] --next <s> [--summary <s>] [--for <who>] [--bundle <id>]`
-- [x] cli: render handoff in `render_parts` (🤝 line)
-- [x] mcp: `parler_handoff` tool (sends; defaults to active session)
-- [x] mcp: in `parler_recv`/`parler_send` results, prepend a "🤝 HANDOFF TO YOU" banner when an
-      incoming handoff is addressed to this agent (name/role match or unaddressed) — the nudge that
-      makes the host continue autonomously
-- [x] docs: `docs/agent-mesh.md` handoff section + the `recv --watch` worker pattern; README mention
-- [x] tests: protocol round-trip, mcp handoff send→recv banner; `CI_SKIP_WEB=1 make ci` green
+## Steps
+- [x] Hub lib: `secret::resolve_join_secret` + `random_secret` (generate-if-absent, persist `0600`,
+      reuse). 6 unit tests.
+- [x] `main.rs`: `--join-secret-file` arg; precedence (explicit > file > none); private connect banner.
+- [x] `server.rs`: `landing_html(requires_secret)` — private copy + `PARLER_JOIN_SECRET=<placeholder>`
+      (structurally can't leak the real secret); `0.0.0.0`/`[::]`→`localhost` in `display_hub_url`. Tests.
+- [x] `deploy/private/docker-compose.yml` (hub-only, `command: []` ⇒ private, secret-file) + README.
+- [x] Docs: README "Option C"; reframed `deploy/README.md`; AGENTS pointer row.
+- [x] `CI_SKIP_WEB=1 make ci` green; booted the real binary twice (generate→persist `0600`→reuse +
+      banner with the live secret); compose resolves to `command: []`; public compose still `--public`.
 
 ## Review
+**Done & verified.** Private-hub onboarding is now symmetric with the public hub: one command on the
+box, one copy-paste line per agent — and the hub hands you that exact line.
 
-Shipped `com.parler.handoff` — structured turn handoff with explicit "you're up next" semantics.
+- **Operator:** `docker compose -f deploy/private/docker-compose.yml up -d --build`. Boots PRIVATE,
+  auto-generates + persists a join secret (`/data/join-secret`, `0600`, stable across restarts), and
+  prints `PARLER_HUB=… PARLER_JOIN_SECRET=… claude mcp add parler -- parler mcp` in its log.
+- **Agent:** paste that line. (`parler mcp` already self-bootstraps; client already reads
+  `PARLER_JOIN_SECRET`.) Nothing else.
+- **Security held / strengthened:** the world-reachable `GET /` never receives the secret (no param —
+  shows a placeholder + "find it in the boot log"); the real secret only hits operator stdout/logs +
+  the `0600` file. Private hubs now require a secret by default (was an open "drop --public" footnote).
+- **Minimal blast radius:** binary default unchanged (feature is opt-in via `--join-secret-file`); no
+  new runtime deps (tempfile is dev-only, already in-workspace); reused the shared Dockerfile + landing
+  template. `parler-protocol` untouched, so no cross-crate ripple.
 
-- **No protocol frame / hub change.** It's an extension `Part` (like `com.parler.bundle`), so it
-  rides the existing room / cursor / push / durability machinery untouched. Old clients/hubs still
-  interoperate (they just see a renderable extension part).
-- **`HandoffRef` mirrors `BundleRef`**: `next` (required), optional `summary` / `to` / `bundle`, plus
-  `to_part` / `from_part` / `is_for(name, role)` (case-insensitive name-or-role match; unaddressed =
-  everyone).
-- **The autonomous nudge** is the receiver side: when a handoff addressed to *me* lands, the MCP
-  `parler_recv` / `parler_send` result is prefixed with a `🤝 HANDOFF TO YOU` banner — an explicit
-  instruction to act on now. Pair with `recv --watch` / `parler_recv wait_secs` (the #37 push) for a
-  worker that continues the instant it's handed the turn.
-- **Surfaces:** `parler handoff` CLI + `parler_handoff` MCP tool; rendering in `render_parts`; docs
-  in `docs/agent-mesh.md` (+ README example matching the discussion's flow).
-- **Tested end-to-end:** protocol round-trip/addressing unit test; two MCP tests that boot a real
-  in-memory hub, connect real agents, send a handoff through it, and assert the banner appears for
-  the addressee and *not* for a bystander in the same room. `CI_SKIP_WEB=1 make ci` green.
+**Verification:** `CI_SKIP_WEB=1 make ci` → "all gates passed"; live binary proof (boot1 generated
+`Pd9TW…RTgV`, persisted `0600`; boot2 reused the identical secret); `docker compose config` confirms
+private=`command:[]`, public=`command:[--public]`.
 
-Honest boundary (documented): "agent B continues with zero prompting in its *own separate chat*"
-still needs the host to inject a turn on an incoming event. Parler now delivers the handoff instantly
-and carries the intent; the final "now go" hop is the host's (or a `recv --watch` worker).
+**Follow-up SHIPPED — prebuilt GHCR image (`docker run …` in seconds, no compile):**
+- `.github/workflows/release-image.yml` — multi-arch (amd64+arm64) build→push to
+  `ghcr.io/<owner>/parler-hub` on a `v*` tag or manual dispatch. **No secrets, fork-safe** (pushes to
+  the runner's own lowercased namespace via `GITHUB_TOKEN` + `packages: write`); tags via
+  `docker/metadata-action` (`latest` / semver / `MAJOR.MINOR` / short-SHA). actionlint + selftest clean.
+- **Made the image private-by-default** (the right posture for a published image — a bare `docker run`
+  must not open a world-joinable hub). `deploy/Dockerfile` `CMD ["--public"]`→`CMD []`; default name
+  →"Parler Hub". Kept the live Fly hub public **safely** via the *existing* `PARLER_HUB_PUBLIC` env
+  (added `PARLER_HUB_PUBLIC = "true"` to `fly.toml` — verified `=true`→public, bare→private, `--public`
+  arg→public on the real binary). Public compose unaffected (already passes `--public` explicitly).
+- `deploy/private/docker-compose.yml` now `image: ghcr.io/tamdogood/parler-hub:latest` + `build:`
+  fallback (`--build` from a clone). README/deploy/private + docs/ci-cd.md document the `docker run`
+  path. Both composes verified via `docker compose config` (private=`command:[]`+secret, public=`--public`).
+- Caveat: Docker daemon was down locally so the *image build* itself runs in CI; the Dockerfile delta
+  is only the `CMD`/`ENV` lines (build otherwise identical to the proven Fly build) and the binary's
+  mode selection is directly proven. `CI_SKIP_WEB=1 make ci` green.

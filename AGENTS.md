@@ -59,7 +59,8 @@ compromised hub can't forge a listing or impersonate anyone.
 | Storage internals, scaling ceilings, retention, sqlite-vec roadmap | [`docs/storage-and-memory.md`](docs/storage-and-memory.md) |
 | CI/CD design (logic lives in testable scripts, not YAML) | [`docs/ci-cd.md`](docs/ci-cd.md) |
 | Running the project autonomously (`/loop /work-next`) | [`docs/loop-engineering.md`](docs/loop-engineering.md) |
-| Deploy (Fly.io + VPS/Caddy) | [`deploy/README.md`](deploy/README.md) |
+| Deploy a public hub (Fly.io + VPS/Caddy) | [`deploy/README.md`](deploy/README.md) |
+| Run a private hub for your team (one command) | [`deploy/private/README.md`](deploy/private/README.md) |
 
 ---
 
