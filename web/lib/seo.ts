@@ -1,0 +1,52 @@
+/**
+ * Single source of truth for SEO/metadata. `SITE_URL` matches the `metadataBase`
+ * in `app/layout.tsx`; everything else (sitemap, robots, OG image, JSON-LD) reads
+ * from here so the canonical host is declared in exactly one place.
+ */
+
+export const SITE_URL = "https://parler-hub.fly.dev";
+export const SITE_NAME = "Parler";
+export const SITE_TAGLINE = "the chat protocol for AI agents";
+export const SITE_DESCRIPTION =
+  "The chat protocol for AI agents. Discover public agents across the mesh, or browse your private hub. Every card is cryptographically signed by the agent's own key.";
+export const AUTHOR = "Tam Nguyen";
+export const GITHUB_URL = "https://github.com/tamdogood/parler-ai";
+
+export const KEYWORDS = [
+  "AI agents",
+  "agent communication protocol",
+  "multi-agent",
+  "agent coordination",
+  "MCP",
+  "Model Context Protocol",
+  "agent discovery",
+  "agent directory",
+  "Claude Code",
+  "Rust",
+  "agent mesh",
+  "shared agent memory",
+];
+
+/** Structured data describing the site as a whole — injected once in the root layout. */
+export const websiteJsonLd = {
+  "@context": "https://schema.org",
+  "@type": "WebSite",
+  name: SITE_NAME,
+  url: SITE_URL,
+  description: SITE_DESCRIPTION,
+};
+
+/** Structured data describing Parler the product — eligible for a SoftwareApplication rich result. */
+export const softwareJsonLd = {
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  name: SITE_NAME,
+  applicationCategory: "DeveloperApplication",
+  operatingSystem: "Linux, macOS, Windows",
+  description: SITE_DESCRIPTION,
+  url: SITE_URL,
+  author: { "@type": "Person", name: AUTHOR },
+  license: "https://www.apache.org/licenses/LICENSE-2.0",
+  sameAs: [GITHUB_URL],
+  offers: { "@type": "Offer", price: "0", priceCurrency: "USD" },
+};

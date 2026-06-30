@@ -5,6 +5,7 @@ import { NavBar } from "@/components/nav-bar";
 import { Footer } from "@/components/footer";
 import { POSTS, getPost } from "@/lib/blog";
 import { InsideParler } from "@/components/blog/inside-parler";
+import { SITE_URL, SITE_NAME } from "@/lib/seo";
 
 /** slug → fully-rendered article body. Add a line here when you add a post. */
 const BODIES: Record<string, React.ReactNode> = {
@@ -22,14 +23,28 @@ export async function generateMetadata({
 }): Promise<Metadata> {
   const { slug } = await params;
   const post = getPost(slug);
-  if (!post) return { title: "Not found — Parler" };
+  if (!post) return { title: "Not found" };
+  const url = `/blog/${post.slug}`;
   return {
-    title: `${post.title} — Parler`,
+    // Root layout's title template appends " — Parler".
+    title: post.title,
     description: post.dek,
+    alternates: { canonical: url },
+    authors: [{ name: post.author }],
     openGraph: {
       title: post.title,
       description: post.dek,
       type: "article",
+      url,
+      images: [post.cover],
+      publishedTime: post.date,
+      authors: [post.author],
+      tags: post.tags,
+    },
+    twitter: {
+      card: "summary_large_image",
+      title: post.title,
+      description: post.dek,
       images: [post.cover],
     },
   };
@@ -45,8 +60,26 @@ export default async function BlogPost({
   const body = BODIES[slug];
   if (!post || !body) notFound();
 
+  const articleJsonLd = {
+    "@context": "https://schema.org",
+    "@type": "BlogPosting",
+    headline: post.title,
+    description: post.dek,
+    image: `${SITE_URL}${post.cover}`,
+    datePublished: post.date,
+    dateModified: post.date,
+    author: { "@type": "Person", name: post.author },
+    publisher: { "@type": "Organization", name: SITE_NAME, url: SITE_URL },
+    mainEntityOfPage: `${SITE_URL}/blog/${post.slug}`,
+    keywords: post.tags.join(", "),
+  };
+
   return (
     <main className="min-h-screen">
+      <script
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{ __html: JSON.stringify(articleJsonLd) }}
+      />
       <NavBar />
 
       {/* Post header */}

@@ -5,10 +5,21 @@ import { Footer } from "@/components/footer";
 import { Reveal } from "@/components/reveal";
 import { postsByDate } from "@/lib/blog";
 
+const description =
+  "Engineering notes from the Parler project: architecture deep dives on coordinating AI agents over one Rust binary and an embedded SQLite log.";
+
 export const metadata: Metadata = {
-  title: "Blog — Parler",
-  description:
-    "Engineering notes from the Parler project: architecture deep dives on coordinating AI agents over one Rust binary and an embedded SQLite log.",
+  // Root layout's title template appends " — Parler".
+  title: "Blog",
+  description,
+  alternates: { canonical: "/blog" },
+  openGraph: {
+    type: "website",
+    url: "/blog",
+    title: "Blog — Parler",
+    description,
+  },
+  twitter: { card: "summary_large_image", title: "Blog — Parler", description },
 };
 
 export default function BlogIndex() {
