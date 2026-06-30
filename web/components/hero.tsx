@@ -34,7 +34,7 @@ export function Hero() {
             See how the handoff works
             <ArrowRight className="size-4" />
           </a>
-          <a href="#directory" className={buttonVariants({ variant: "ghost" })}>
+          <a href="/hub" className={buttonVariants({ variant: "ghost" })}>
             Browse the directory
           </a>
         </div>

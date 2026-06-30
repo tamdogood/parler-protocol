@@ -1,3 +1,55 @@
+# Task: Standalone full-screen Agents Console page (web) — 2026-06-29
+
+**User ask:** from the website, build an *extra standalone page* for the agents hub; on that page add
+*more agent-focused features* and make the *existing agents features (the directory) occupy most of
+the screen*.
+
+## Design — **Option A** (user-chosen): one `/hub` page, two tabs (Agents + Sessions)
+Build on the existing REST surface only (`/api/hub`, `/api/directory`, `/api/session`). Reuse
+`AgentCard`, `AgentDetail`, `TokenDialog`, `StatusDot`, design tokens. Agents tab uses a faceted-
+search model: fetch the scope+query set once, then filter **status + tags client-side** so all the
+live counts stay coherent. Sessions tab = "session hub" = the sessions explainer + the watch viewer.
+
+New:
+- [x] `components/agents-console.tsx` — full-width (`max-w-[1600px]`) console: sticky left filter rail
+      (scope · status facets w/ counts · tag facets w/ counts · token) + dominant main column.
+      New features vs. home Directory: headline live metrics (agents · online · public · verified),
+      **sort** (recent/name/status), **grid⇄list toggle**, **"Live activity"** strip, up-to-4-col grid.
+- [x] `components/sessions-feature.tsx` — extracted from home `Sessions()` (`showViewerCta` prop).
+- [x] `components/session-viewer.tsx` — extracted watch viewer from `app/session/page.tsx`.
+- [x] `components/session-hub.tsx` — Sessions tab = `<SessionsFeature/>` + `<SessionViewer/>`.
+- [x] `app/hub/page.tsx` — standalone tabbed page (hash-synced: `/hub` agents, `/hub#sessions`).
+
+Modify:
+- [x] `app/page.tsx` — use `<SessionsFeature/>`; prune now-unused imports.
+- [x] `app/session/page.tsx` — client redirect → `/hub#sessions` (carry any `&k=` watch token).
+- [x] `nav-bar.tsx` — add "Hub" link + repoint CTA + session-viewer link to `/hub`.
+- [x] `directory.tsx` + `hero.tsx` (home) — link out to `/hub`.
+- [x] Verify: `cd web && npm run build && npm run lint` green; grep no stale `/session` links.
+
+## Review — DONE (2026-06-29) ✅ `next build` green (9 routes prerender, /hub 13.2 kB)
+Shipped **Option A**: a standalone `/hub` page with **Agents** + **Sessions** tabs, additive (home
+page and REST surface untouched — no hub/protocol change).
+- **Agents tab** (`components/agents-console.tsx`): full-width `max-w-[1600px]` console so the directory
+  dominates the viewport. Sticky left rail (scope · status facets w/ live counts · tag facets w/ counts
+  · token) + a main column with: headline metrics (agents · online · public · verified), a **Live
+  activity** strip (working/waiting agents + their `activity`), **search**, **sort** (recent/name/
+  status), **grid⇄list toggle**, up-to-4-col grid, and a scannable list view. Faceted-search model:
+  fetch the scope+query set once, facet status/tags client-side so every count stays coherent.
+- **Sessions tab = "session hub"** (`components/session-hub.tsx`): the sessions explainer
+  (`sessions-feature.tsx`, extracted from the home `Sessions()`) + the watch viewer
+  (`session-viewer.tsx`, extracted from the old `/session` page) on one screen — exactly the requested
+  "combine Session viewer with session."
+- **Routing/wiring:** `app/hub/page.tsx` (hash-synced tabs: `/hub`, `/hub#sessions`, deep-link
+  `/hub#sessions&k=<token>` opens the viewer pre-connected). Old `/session` → client redirect carrying
+  the watch token. NavBar gains "Hub" + repoints the CTA; home Directory + Hero link out to `/hub`.
+  Viewer hash writes use `replaceState` so tab switches never scroll-jump to the `#sessions` anchor.
+- **Verified:** `npm ci && npm run build` clean (type-check passes, no orphan imports); `next start`
+  smoke — `/hub` 200 (both tabs render), `/session` 200 (redirect copy), `/` 200; grep shows no stale
+  `/session` links.
+
+---
+
 # Task: SEO — make the Parler website discoverable — 2026-06-29
 
 **User ask:** "how to improve SEO for my website to make it more discoverable?" → plan + implement.

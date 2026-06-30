@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Globe, KeyRound, Lock, Search, ServerCrash, Users } from "lucide-react";
+import { ArrowRight, Globe, KeyRound, Lock, Search, ServerCrash, Users } from "lucide-react";
 import type { DirectoryEntry, HubSummary, Scope } from "@/lib/types";
 import {
   fetchDirectory,
@@ -13,7 +13,7 @@ import {
 } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { Input } from "@/components/ui/input";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { HubHeader } from "@/components/hub-header";
 import { AgentCard } from "@/components/agent-card";
@@ -97,7 +97,16 @@ export function Directory() {
 
   return (
     <section id="directory" className="mx-auto max-w-[1200px] scroll-mt-20 px-6 py-16">
-      <HubHeader hub={hub} />
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+        <HubHeader hub={hub} />
+        <a
+          href="/hub"
+          className={buttonVariants({ variant: "outline", size: "sm", className: "shrink-0" })}
+        >
+          Open agents console
+          <ArrowRight className="size-3.5" />
+        </a>
+      </div>
 
       {/* Controls */}
       <div className="mt-8 flex flex-col gap-4">
