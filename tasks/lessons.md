@@ -79,3 +79,26 @@ Format: `- **<short trigger>:** <the rule>. <why, in a clause>`
 - **`web/` is human-driven *for the autonomous loop* — a direct user request overrides that:** when Tam
   explicitly asks for a website feature, build and verify `web/` too (`npm ci && npm run build`). The
   "leave a `[HUMAN] web:` note" rule is only for the unattended `/work-next` loop.
+
+- **Adding a crate dep needs a non-`--locked` build first:** `scripts/verify.sh` builds `--locked`, which
+  *refuses* to add a new dependency edge to `Cargo.lock` ("cannot update the lock file because --locked
+  was passed"). After adding `foo = { workspace = true }` to a crate's `Cargo.toml`, run a plain
+  `cargo build -p <crate>` once to record the edge, then the gate passes. (Hit when adding `uuid` to
+  `parler-connector`.)
+
+- **Don't batch an `Edit` with the `Read` that authorizes it:** an `Edit` to a file I hadn't Read yet
+  fails ("File has not been read yet"), and if it's in the same parallel block as an unrelated `Read`
+  that *succeeds*, the failure is easy to miss — here the `uuid` Cargo.toml edit silently no-op'd and
+  surfaced as a confusing `unresolved crate uuid` two steps later. Read a file, *then* edit it; don't
+  parallelize the two.
+
+- **Extension parts are the additive-feature idiom — use them before touching the hub:** a new
+  `com.parler.<x>` [`Part::Extension`] rides inside `parts`, which the hub already persists + returns
+  verbatim, so a feature can ship with **zero hub/protocol/schema change and work against the deployed
+  hub** (code-handoff did it with `com.parler.bundle`; message signing does it with `com.parler.sig`).
+  Reach for a first-class frame field only when the hub itself must act on the data.
+
+- **Sign only fields the hub doesn't rewrite:** the hub `normalize_mentions()`-es `mentions` in flight
+  but stores `reply_to`/`parts` verbatim. A signature must cover the verbatim fields and **exclude the
+  normalized ones**, or it fails verification on the receive side for messages the hub legitimately
+  touched. (Why `canonical_message_bytes` covers parts/target/replyTo/ts/uid but not mentions.)

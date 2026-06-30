@@ -1,8 +1,8 @@
 //! End-to-end: a real in-process hub + real WebSocket clients exercising the whole feature —
 //! the three delivery patterns, paste-a-code pairing, memory scoping, durable resume, and authz.
 
-use parler_connector::{BundleMeta, Config, JoinOutcome, MeshAgent};
-use parler_protocol::{BundleRef, Part, RoomKind, StoredMessage, Target};
+use parler_connector::{verify_message, BundleMeta, Config, JoinOutcome, MeshAgent, SigStatus};
+use parler_protocol::{BundleRef, EndpointRef, Part, RoomKind, StoredMessage, Target};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -650,4 +650,112 @@ async fn idle_timeout_none_keeps_connection_open() {
 
     tokio::time::sleep(Duration::from_millis(500)).await;
     assert!(alice.rooms().await.is_ok());
+}
+
+// ---- authenticated messages (the hub relays, but can't forge or alter what an agent said) ----
+
+fn status(m: &StoredMessage) -> SigStatus {
+    verify_message(&m.from.id, &m.parts, m.reply_to.as_deref())
+}
+
+#[tokio::test]
+async fn signed_channel_message_verifies_after_a_real_round_trip() {
+    let hub = start_hub().await;
+    let mut alice = agent(&hub, "alice", Some("planner")).await;
+    let mut bob = agent(&hub, "bob", None).await;
+
+    let inv = alice.invite(RoomKind::Channel, Some("team".into()), None, None).await.unwrap();
+    bob.join(&inv.code).await.unwrap();
+
+    alice.send_text(Target::Room { room: inv.room.clone() }, "ship it").await.unwrap();
+    let (msgs, _) = bob.pull(&inv.room, None, None).await.unwrap();
+
+    // The content is intact (the signature part doesn't pollute the rendered text)…
+    assert_eq!(texts(&msgs), vec!["ship it"]);
+    // …and it verifies against alice's own id: the hub relayed it, it did not author it.
+    assert_eq!(msgs[0].from.id, alice.id);
+    assert_eq!(status(&msgs[0]), SigStatus::Valid);
+}
+
+#[tokio::test]
+async fn signed_dm_verifies() {
+    let hub = start_hub().await;
+    let mut alice = agent(&hub, "alice", None).await;
+    let mut bob = agent(&hub, "bob", None).await;
+
+    let inv = alice.invite(RoomKind::Dm, None, None, None).await.unwrap();
+    let (broom, _) = bob.join(&inv.code).await.unwrap();
+    alice.send_text(Target::Dm { agent: bob.id.clone() }, "secret plan").await.unwrap();
+
+    let (m, _) = bob.pull(&broom, None, None).await.unwrap();
+    assert_eq!(status(&m[0]), SigStatus::Valid);
+}
+
+#[tokio::test]
+async fn a_tampered_or_forged_message_is_detected() {
+    let hub = start_hub().await;
+    let mut alice = agent(&hub, "alice", None).await;
+    let mut bob = agent(&hub, "bob", None).await;
+
+    let inv = alice.invite(RoomKind::Channel, Some("team".into()), None, None).await.unwrap();
+    bob.join(&inv.code).await.unwrap();
+    alice.send_text(Target::Room { room: inv.room.clone() }, "deploy v1").await.unwrap();
+
+    let (msgs, _) = bob.pull(&inv.room, None, None).await.unwrap();
+    let genuine = msgs[0].clone();
+    assert_eq!(status(&genuine), SigStatus::Valid);
+
+    // (1) A malicious hub rewrites the authored content → signature no longer matches.
+    let mut altered = genuine.clone();
+    altered.parts = altered
+        .parts
+        .iter()
+        .map(|p| match p {
+            Part::Text(_) => Part::text("deploy v1 to prod"),
+            other => other.clone(),
+        })
+        .collect();
+    assert_eq!(status(&altered), SigStatus::Invalid);
+
+    // (2) A malicious hub re-attributes alice's signature to bob → fails under bob's key.
+    let mut forged = genuine.clone();
+    forged.from.id = bob.id.clone();
+    assert_eq!(status(&forged), SigStatus::Invalid);
+}
+
+#[tokio::test]
+async fn a_pushed_delivery_is_also_verifiable() {
+    let hub = start_hub().await;
+    let mut alice = agent(&hub, "alice", None).await;
+    let mut bob = agent(&hub, "bob", None).await;
+
+    let inv = alice.invite(RoomKind::Channel, Some("team".into()), None, None).await.unwrap();
+    bob.join(&inv.code).await.unwrap();
+    assert!(bob.subscribe().await.unwrap(), "hub should support push");
+
+    alice.send_text(Target::Room { room: inv.room.clone() }, "live ping").await.unwrap();
+    let pushed = bob
+        .next_delivery(Duration::from_secs(5))
+        .await
+        .unwrap()
+        .expect("a pushed delivery within the window");
+    assert_eq!(status(&pushed), SigStatus::Valid);
+    assert_eq!(texts(std::slice::from_ref(&pushed)), vec!["live ping"]);
+}
+
+#[tokio::test]
+async fn an_unsigned_legacy_message_is_flagged_not_trusted() {
+    // A message with no com.parler.sig part — an older client, or a hub fabricating one from nothing —
+    // is reported Unsigned (surfaced as ⚠), never silently treated as authentic.
+    let m = StoredMessage {
+        seq: 1,
+        id: "x".into(),
+        room: "team".into(),
+        from: EndpointRef { id: "UGHOST".into(), name: "ghost".into(), role: None },
+        parts: vec![Part::text("trust me")],
+        mentions: None,
+        reply_to: None,
+        ts: 1,
+    };
+    assert_eq!(status(&m), SigStatus::Unsigned);
 }

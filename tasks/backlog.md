@@ -24,9 +24,45 @@ and check in the sub-items here rather than attempt it whole. Keep `[P0]`/`[P1]`
 
 ## Now (pull from the top)
 
-- [ ] **[P0] Seed `tasks/lessons.md` discipline** — on the *first* real code iteration, confirm the
-  verify gate runs clean on a no-op, then proceed. (Sanity check that the loop's feedback signal is
-  trustworthy before trusting it to gate commits.)
+### Epic: Verifiable mesh — the hub can relay but can't lie (security + resilience)
+*Audit (2026-06-29, `tasks/todo.md`): the "compromised hub can't impersonate anyone" guarantee covers
+signed cards but NOT messages — a malicious hub can forge/alter/reorder the conversation a joining
+agent is "caught up" on. Borrows distributed-ledger / Certificate-Transparency / reliable-messaging
+ideas. Each item additive + backward-compatible.*
+
+- [x] **[P0] Authenticated messages (signatures)** — DONE 2026-06-29 (see `tasks/todo.md` review).
+  Author signs each message; carried as a `com.parler.sig` extension part (mirrors `com.parler.bundle`)
+  so it needs **no hub/protocol/schema change** and works against the deployed hub. Signed payload =
+  parts(non-sig) + target + author id + replyTo + client ts/uid (excludes `mentions` — hub normalizes
+  them). `canonical_message_bytes` + `MessageSig` codec in `parler-protocol`; `MeshAgent::send`
+  auto-signs; `verify_message(...) -> SigStatus`; CLI/MCP show ⚠/✗ (valid is clean) + hide the sig
+  part; hub `/api/session` drops it; +13 tests (2 codec, 6 connector unit, 5 e2e). `VERIFY: PASS`.
+
+- [ ] **[P1] Tamper-evident room log (hash chain + fork detection)** — sig payload commits to `prev`
+  (hash of the author's last-seen message in that room); `parler verify --room R` walks the chain and
+  prints a head; comparing two members' heads detects hub equivocation/split-view. Builds on the P0
+  signature. *Done when:* chain fields in the sig payload, a CLI verifier, an e2e that detects a
+  tampered/reordered backlog, doc in `docs/`. Additive.
+
+- [ ] **[P1] Exactly-once sends (idempotency key)** — reuse the signed `uid` as an idempotency key; the
+  hub dedups a re-sent message within a window so a retry after a dropped `Sent` ack never duplicates.
+  *Done when:* hub dedup (store unique-ish on (room,uid) or a short LRU), connector retries safely, an
+  e2e that double-sends one uid and asserts one stored row + same returned id. Additive.
+
+- [ ] **[P2] Self-healing connection (auto-reconnect + cursor resume)** — a reconnecting transport
+  re-handshakes on socket loss, resumes from the durable cursor, re-arms `subscribe`, exponential
+  backoff. *Done when:* opt-in reconnect wrapper, an e2e that kills the socket mid-session and asserts
+  the next `recv` transparently resumes. Additive (pure client-side).
+
+- [ ] **[P2] Hardened auth challenge (domain-separated, hub-bound, expiring nonce)** — make the
+  challenge nonce an opaque structured string (`parler-auth:v1:<hub>:<exp>:<rand>`) so the signature is
+  domain-separated and replay-bounded; the client signs the opaque string it's handed ⇒ **zero client
+  change**. *Done when:* hub builds + validates the structured nonce (expiry + hub-id checked), unit
+  tests for expired/foreign-hub nonces, e2e auth still green. Additive.
+
+- [x] **[P0] Seed `tasks/lessons.md` discipline** — DONE 2026-06-29. The verify gate (`scripts/verify.sh
+  --rust-only`) was confirmed trustworthy: it correctly **failed** on a real error (the missing `uuid`
+  lock edge) and **passed** once fixed. Five new lessons appended after this iteration's surprises.
 
 - [ ] **[P1] Code-handoff frontier index** (`docs/code-handoff.md` Phase 3) — index the latest bundle
   per room (tip id / short summary / author / ts) in the hub store; expose `parler frontier --room R`

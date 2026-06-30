@@ -19,6 +19,7 @@ futures = { workspace = true }
 async-trait = { workspace = true }
 nkeys = { workspace = true }
 data-encoding = { workspace = true }
+uuid = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
 

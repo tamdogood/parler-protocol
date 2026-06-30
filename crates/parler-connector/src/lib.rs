@@ -13,7 +13,7 @@ pub mod agent;
 pub mod client;
 pub mod config;
 
-pub use agent::{BundleMeta, Invite, JoinOutcome, MeshAgent, PushReceipt};
+pub use agent::{verify_message, BundleMeta, Invite, JoinOutcome, MeshAgent, PushReceipt, SigStatus};
 pub use client::HubClient;
 pub use config::{home_dir, Config};
 

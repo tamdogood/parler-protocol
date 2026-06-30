@@ -8,9 +8,10 @@ use crate::{Config, HubClient, MeshTransport};
 use anyhow::{bail, Result};
 use parler_auth::Identity;
 use parler_protocol::{
-    canonical_card_bytes, AgentCard, AgentSkill, BundleRef, ClientFrame, DirectoryEntry,
-    DiscoverScope, EndpointKind, Fact, JoinRequest, Part, RecallHit, RoomInfo, RoomKind, RosterEntry,
-    ServerFrame, StoredMessage, Target, Visibility,
+    canonical_card_bytes, canonical_message_bytes, is_message_sig_part, AgentCard, AgentSkill,
+    BundleRef, ClientFrame, DirectoryEntry, DiscoverScope, EndpointKind, Fact, JoinRequest,
+    MessageSig, Part, RecallHit, RoomInfo, RoomKind, RosterEntry, ServerFrame, StoredMessage, Target,
+    Visibility,
 };
 use std::time::Duration;
 
@@ -183,14 +184,29 @@ impl MeshAgent {
         }
     }
 
-    /// Publish `parts` to a target.
+    /// Publish `parts` to a target. When this agent holds its signing seed (the normal CLI/MCP path),
+    /// the message is **authenticated**: we sign the author-controlled content and ride the signature
+    /// inside `parts` as a [`MESSAGE_SIG_KIND`](parler_protocol::MESSAGE_SIG_KIND) extension, so a
+    /// puller can verify (via [`verify_message`]) that even a compromised hub didn't forge or alter
+    /// what we said. An agent built without an identity (e.g. an in-process test transport) sends
+    /// unsigned, exactly as before — the signature is purely additive.
     pub async fn send(
         &mut self,
         target: Target,
-        parts: Vec<Part>,
+        mut parts: Vec<Part>,
         mentions: Option<Vec<String>>,
         reply_to: Option<String>,
     ) -> Result<(String, i64, String)> {
+        if let Some(identity) = &self.identity {
+            // Defensive: never double-sign (e.g. a caller re-sending parts it received).
+            parts.retain(|p| !is_message_sig_part(p));
+            let ts = now_ms();
+            let uid = uuid::Uuid::new_v4().to_string();
+            let bytes =
+                canonical_message_bytes(&self.id, &target, &parts, reply_to.as_deref(), ts, &uid);
+            let sig = parler_auth::sign(&identity.seed, &bytes)?;
+            parts.push(MessageSig { sig, ts, uid, target: target.clone() }.to_part());
+        }
         match self
             .transport
             .request(ClientFrame::Send { target, parts, mentions, reply_to })
@@ -446,5 +462,131 @@ impl MeshAgent {
             ServerFrame::Watch { token, expires_at, .. } => Ok((token, expires_at)),
             other => bail!("unexpected reply to mint watch token: {other:?}"),
         }
+    }
+}
+
+/// The outcome of verifying a received message's author signature ([`verify_message`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SigStatus {
+    /// No `com.parler.sig` part — a legacy/unauthenticated message (you have only the hub's word for
+    /// who sent it). Not a failure: signatures are additive, so older peers send these.
+    Unsigned,
+    /// A signature is present and verifies against the author's id — the content is authentic and
+    /// unaltered, regardless of whether the relaying hub is trustworthy.
+    Valid,
+    /// A signature is present but does **not** verify: the author id, the parts, the target, the
+    /// `replyTo`, or the author timestamp was forged or altered after signing. Do not trust it.
+    Invalid,
+}
+
+impl SigStatus {
+    /// A short marker for CLI/MCP rendering: `✓` valid, `⚠` unsigned, `✗` tampered.
+    pub fn marker(self) -> &'static str {
+        match self {
+            SigStatus::Valid => "✓",
+            SigStatus::Unsigned => "⚠",
+            SigStatus::Invalid => "✗",
+        }
+    }
+}
+
+/// Verify a received message's author signature **offline** — the point is not to trust the hub.
+///
+/// Recomputes [`canonical_message_bytes`] over the non-signature `parts` and checks it against
+/// `from_id` (the stored author, i.e. its public key). A forged `from` therefore fails too: the
+/// signature can't verify under an id the forger doesn't hold the seed for. Returns
+/// [`SigStatus::Unsigned`] when no signature part is present (legacy message).
+pub fn verify_message(from_id: &str, parts: &[Part], reply_to: Option<&str>) -> SigStatus {
+    let Some(ms) = MessageSig::from_parts(parts) else {
+        return SigStatus::Unsigned;
+    };
+    let bytes = canonical_message_bytes(from_id, &ms.target, parts, reply_to, ms.ts, &ms.uid);
+    if parler_auth::verify(from_id, &bytes, &ms.sig) {
+        SigStatus::Valid
+    } else {
+        SigStatus::Invalid
+    }
+}
+
+/// Current epoch time in milliseconds (the author-stamped `ts` carried in the signature).
+fn now_ms() -> i64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Hand-roll a signed message exactly as `MeshAgent::send` would, so we can test `verify_message`
+    /// (the receive side) in isolation, without a hub or a transport.
+    fn signed(id: &parler_auth::Identity, target: Target, parts: &[Part], reply_to: Option<&str>) -> Vec<Part> {
+        let ts = 1_710_000_000_000;
+        let uid = "018f-test-uid";
+        let bytes = canonical_message_bytes(&id.id, &target, parts, reply_to, ts, uid);
+        let sig = parler_auth::sign(&id.seed, &bytes).unwrap();
+        let mut out = parts.to_vec();
+        out.push(MessageSig { sig, ts, uid: uid.into(), target }.to_part());
+        out
+    }
+
+    #[test]
+    fn valid_signature_verifies() {
+        let alice = parler_auth::new_identity().unwrap();
+        let parts = signed(&alice, Target::Room { room: "team".into() }, &[Part::text("ship it")], None);
+        assert_eq!(verify_message(&alice.id, &parts, None), SigStatus::Valid);
+    }
+
+    #[test]
+    fn altered_content_is_invalid() {
+        let alice = parler_auth::new_identity().unwrap();
+        let mut parts = signed(&alice, Target::Room { room: "team".into() }, &[Part::text("deploy v1")], None);
+        // A malicious hub rewrites the authored text but keeps the signature part.
+        parts[0] = Part::text("deploy v1 to prod");
+        assert_eq!(verify_message(&alice.id, &parts, None), SigStatus::Invalid);
+    }
+
+    #[test]
+    fn forged_author_is_invalid() {
+        let alice = parler_auth::new_identity().unwrap();
+        let mallory = parler_auth::new_identity().unwrap();
+        let parts = signed(&alice, Target::Room { room: "team".into() }, &[Part::text("hi")], None);
+        // The hub re-attributes alice's signed parts to mallory; it can't verify under mallory's key.
+        assert_eq!(verify_message(&mallory.id, &parts, None), SigStatus::Invalid);
+    }
+
+    #[test]
+    fn reply_to_is_covered_by_the_signature() {
+        let alice = parler_auth::new_identity().unwrap();
+        let parts = signed(&alice, Target::Room { room: "team".into() }, &[Part::text("yes")], Some("q1"));
+        assert_eq!(verify_message(&alice.id, &parts, Some("q1")), SigStatus::Valid);
+        // The hub re-threads the reply under a different parent → detected.
+        assert_eq!(verify_message(&alice.id, &parts, Some("q2")), SigStatus::Invalid);
+        assert_eq!(verify_message(&alice.id, &parts, None), SigStatus::Invalid);
+    }
+
+    #[test]
+    fn target_is_covered_by_the_signature() {
+        let alice = parler_auth::new_identity().unwrap();
+        // Sign for a DM, then swap in a different sig part claiming a channel target with the same
+        // sig bytes — verification recomputes over the *claimed* target and fails.
+        let parts = signed(&alice, Target::Dm { agent: "UBOB".into() }, &[Part::text("psst")], None);
+        let ms = MessageSig::from_parts(&parts).unwrap();
+        let tampered_sig = MessageSig {
+            target: Target::Room { room: "public".into() },
+            ..ms
+        };
+        let mut tampered: Vec<Part> = parts.into_iter().filter(|p| !is_message_sig_part(p)).collect();
+        tampered.push(tampered_sig.to_part());
+        assert_eq!(verify_message(&alice.id, &tampered, None), SigStatus::Invalid);
+    }
+
+    #[test]
+    fn no_signature_part_is_unsigned() {
+        let alice = parler_auth::new_identity().unwrap();
+        assert_eq!(verify_message(&alice.id, &[Part::text("legacy")], None), SigStatus::Unsigned);
     }
 }

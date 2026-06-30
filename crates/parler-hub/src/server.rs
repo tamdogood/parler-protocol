@@ -20,8 +20,8 @@ use axum::response::{Html, IntoResponse};
 use axum::routing::get;
 use axum::{Json, Router};
 use parler_protocol::{
-    canonical_card_bytes, normalize_mentions, token, ClientFrame, DiscoverScope, EndpointRef, Part,
-    RoomKind, ServerFrame, StoredMessage, Target,
+    canonical_card_bytes, is_message_sig_part, normalize_mentions, token, ClientFrame, DiscoverScope,
+    EndpointRef, Part, RoomKind, ServerFrame, StoredMessage, Target,
 };
 use rand::Rng;
 use serde::Deserialize;
@@ -734,14 +734,16 @@ fn viewer_message(m: &StoredMessage) -> serde_json::Value {
     let parts: Vec<serde_json::Value> = m
         .parts
         .iter()
-        .map(|p| match p {
-            Part::Text(t) => serde_json::json!({ "kind": "text", "text": t }),
-            Part::Data(_) => serde_json::json!({ "kind": "data" }),
+        .filter_map(|p| match p {
+            Part::Text(t) => Some(serde_json::json!({ "kind": "text", "text": t })),
+            Part::Data(_) => Some(serde_json::json!({ "kind": "data" })),
+            // The detached author signature is plumbing, not conversation — keep it out of the viewer.
+            Part::Extension { .. } if is_message_sig_part(p) => None,
             Part::Extension { kind, fields } => {
                 if kind == "com.parler.observation" {
-                    serde_json::json!({ "kind": kind, "fields": fields })
+                    Some(serde_json::json!({ "kind": kind, "fields": fields }))
                 } else {
-                    serde_json::json!({ "kind": kind })
+                    Some(serde_json::json!({ "kind": kind }))
                 }
             }
         })

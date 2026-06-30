@@ -8,10 +8,10 @@ pub mod mcp;
 
 use anyhow::{bail, Result};
 use clap::{Args, Parser, Subcommand};
-use parler_connector::{BundleMeta, Config, MeshAgent};
+use parler_connector::{verify_message, BundleMeta, Config, MeshAgent, SigStatus};
 use parler_protocol::{
-    AgentSkill, BundleRef, DirectoryEntry, DiscoverScope, Part, RoomKind, StoredMessage, Target,
-    Visibility,
+    is_message_sig_part, AgentSkill, BundleRef, DirectoryEntry, DiscoverScope, Part, RoomKind,
+    StoredMessage, Target, Visibility,
 };
 use std::path::Path;
 use std::sync::Arc;
@@ -916,6 +916,9 @@ fn render_entry_full(e: &DirectoryEntry) -> String {
 pub fn render_parts(parts: &[Part]) -> String {
     let mut out = Vec::new();
     for p in parts {
+        if is_message_sig_part(p) {
+            continue; // the detached author signature is verified (see render_message), not shown
+        }
         if let Some(b) = BundleRef::from_part(p) {
             let sum = b.summary.unwrap_or_else(|| "(bundle)".into());
             let tip = b.tip.map(|t| format!(" @{}", short(&t))).unwrap_or_default();
@@ -989,7 +992,11 @@ pub(crate) fn build_git_bundle(
     Ok((bytes?, tip, summary))
 }
 
-/// One line: `[seq] name (role): text`.
+/// One line: `[seq] name (role): text`, with an authenticity marker on anything not cleanly signed.
+///
+/// Verified messages render clean (silent success); a legacy/unsigned peer is flagged `⚠` and a
+/// message whose signature fails to verify — i.e. a hub forged or altered it — is flagged
+/// `✗ UNVERIFIED` so a reader (or the agent itself) never mistakes tampered context for authentic.
 pub fn render_message(m: &StoredMessage) -> String {
     let who = m
         .from
@@ -997,7 +1004,12 @@ pub fn render_message(m: &StoredMessage) -> String {
         .as_deref()
         .map(|r| format!("{} ({r})", m.from.name))
         .unwrap_or_else(|| m.from.name.clone());
-    format!("[{}] {}: {}", m.seq, who, render_parts(&m.parts))
+    let body = render_parts(&m.parts);
+    match verify_message(&m.from.id, &m.parts, m.reply_to.as_deref()) {
+        SigStatus::Valid => format!("[{}] {}: {}", m.seq, who, body),
+        SigStatus::Unsigned => format!("[{}] ⚠ {}: {}", m.seq, who, body),
+        SigStatus::Invalid => format!("[{}] ✗ UNVERIFIED {}: {}", m.seq, who, body),
+    }
 }
 
 pub fn save_active_session(room: &str) -> Result<()> {

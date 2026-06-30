@@ -1,3 +1,87 @@
+# Task: Verifiable mesh — sign/chain the conversation so the hub can relay but can't lie — 2026-06-29
+
+**User ask (`/loop`):** audit the main features (chat sessions, etc.); pull in research/other-field
+concepts (e.g. **blockchain**) to make the protocol *better, more secure*, and the agent-to-agent
+connection *more resilient, reliable, efficient, smooth*; then come up with scenarios and run **e2e**
+of each case to prove it works. Self-paced loop — one verified increment per iteration.
+
+## Audit — what exists, and the gap that matters most
+Mature, security-conscious system: nkey/Ed25519 identity (agent id == pubkey), **self-signed
+discovery cards** (`canonical_card_bytes`, re-verifiable), challenge-response auth (+ optional
+constant-time join secret), rooms (1:1 / 1:many / many:1), **durable per-(room,agent) cursor** (at-
+least-once + crash-safe resume), best-effort **push** layer, approval-gated **sessions**, owner-only
+read-only **watch** tokens, content-addressed **git-bundle handoff**, FTS5 memory (+ vector
+scaffolding). AGENTS.md's headline claim: *"the hub is a relay, not a root of trust — even a
+compromised hub can't forge a listing or impersonate anyone."*
+
+**The gap:** that claim holds for **cards** (signed) but **NOT for messages.** A `Send` is stored with
+a hub-set `from`, and nothing is signed. So a **compromised/malicious hub can forge a message from any
+agent, alter authored content, reorder, drop, or fabricate an entire backlog** — and a joining agent
+that gets "caught up" (the flagship session-handoff flow) has **no way to detect it**. An agent then
+*acts* on that context (decisions, file paths, "deploy to prod"). This is the highest-value place to
+apply distributed-ledger / Certificate-Transparency / reliable-messaging ideas.
+
+## Roadmap (each item additive, backward-compatible, behind `scripts/verify.sh --rust-only`)
+Concepts borrowed and where they map:
+1. **[P0] Authenticated messages (signatures).** Author signs each message; carried as a
+   `com.parler.sig` **extension part** (like `com.parler.bundle`) ⇒ **zero hub/protocol/schema change,
+   works against the live deployed hub today**. Verified on receive; surfaced as ✓/⚠/✗ in CLI & MCP.
+   *Property: a malicious hub cannot forge or alter authored content — extends the signed-card
+   guarantee to the conversation itself.* [ledger: every transaction signed by its originator]
+2. **[P1] Tamper-evident, fork-detectable room log (hash chain).** Sig payload also commits to
+   `prev` = hash of the author's last-seen message in that room; `parler verify --room R` walks the
+   chain + reports a head; two members comparing heads detect hub **equivocation / split-view**.
+   [blockchain + Git DAG + Certificate-Transparency: hash-linked append-only log, gossip the head]
+3. **[P1] Exactly-once sends (idempotency).** The signed `uid` doubles as an idempotency key; hub
+   dedups within a window ⇒ a retried send after a dropped ack never duplicates. [reliable messaging:
+   at-least-once + idempotent consumer = effectively-once; Stripe idempotency-key]
+4. **[P2] Self-healing connection (auto-reconnect + resume).** Reconnecting transport re-handshakes,
+   resumes from the durable cursor, re-arms `subscribe`, with backoff. [durable cursor + reconnect =
+   session continuity]
+5. **[P2] Hardened auth challenge (domain-separated, hub-bound, expiring nonce).** Make the nonce an
+   opaque structured token so the signature is domain-separated + replay-bounded — zero client change.
+   [crypto: SIWE / EIP-712 domain separation]
+
+## This iteration — #1 Authenticated messages
+- **protocol** (`hub.rs`, pure): `MESSAGE_SIG_KIND="com.parler.sig"`; `canonical_message_bytes(from,
+  target, parts_without_sig, reply_to, ts, uid)` (reuses `canonicalize`); `MessageSig{sig,ts,uid,
+  target}` with `to_part()`/`from_parts()`. **Sign over parts + target + author id + reply_to + client
+  ts/uid. Exclude `mentions`** (hub normalizes them → would break the sig). + round-trip tests.
+- **connector**: `MeshAgent::send` auto-signs when an identity is present (covers send/push/session
+  seeding). `verify_message(from_id, parts, reply_to) -> SigStatus{Unsigned,Valid,Invalid}` (uses
+  `parler_auth::verify`). Add `uuid` dep for `uid`.
+- **cli/mcp**: filter the sig part from display; prefix each message with ✓ (valid) / ⚠ (unsigned) /
+  ✗ (BAD). hub `/api/session` viewer: drop the sig part server-side (Rust, in scope).
+- **e2e** (`mesh_e2e.rs`, real WS hub): (a) signed channel msg verifies; (b) signed DM verifies;
+  (c) **tampered content** ⇒ Invalid; (d) **forged `from`** ⇒ Invalid; (e) legacy unsigned ⇒ Unsigned;
+  (f) a pushed `Delivery` is also verifiable.
+- **gate:** `scripts/verify.sh --rust-only` (or `CI_SKIP_WEB=1 make ci`) green.
+- *Deferred to #2:* binding the signature to the delivered room (DM rooms use a random suffix, not a
+  reproducible hash, so room-binding rides the per-room hash chain). `mentions`/anti-reorder ride #2.
+
+## Review — iteration 1 DONE (2026-06-29) ✅ `VERIFY: PASS` (`--rust-only`)
+Shipped **authenticated messages** with **zero hub/protocol/schema change** (signature rides inside
+`parts` as a `com.parler.sig` extension — works against the live deployed hub):
+- `parler-protocol/hub.rs`: `MESSAGE_SIG_KIND`, `is_message_sig_part`, `MessageSig{sig,ts,uid,target}`
+  (`to_part`/`from_parts`), `canonical_message_bytes(...)` (JCS-style, filters the sig part so signer
+  and verifier can't disagree on framing). +2 codec tests.
+- `parler-connector`: `MeshAgent::send` auto-signs when an identity is present (so send / push /
+  session-seed are all authenticated); `verify_message(from_id, parts, reply_to) -> SigStatus`
+  (`Valid`/`Unsigned`/`Invalid`); added the `uuid` dep. +6 unit tests (valid, altered, forged-from,
+  replyTo-covered, target-covered, unsigned).
+- `parler-cli`/MCP: `render_message` prefixes `⚠` (unsigned) / `✗ UNVERIFIED` (tampered) — valid is
+  clean (silent success); `render_parts` hides the sig part. (One choke point → both CLI & MCP.)
+- `parler-hub`: `/api/session` web viewer drops the sig part server-side.
+- **e2e** (`mesh_e2e.rs`, real WS hub, +5): signed channel + DM verify; hub-altered content → `Invalid`;
+  forged `from` → `Invalid`; pushed `Delivery` verifies; legacy unsigned → `Unsigned`. **No regressions**
+  — code-handoff/push/session tests still green with signatures riding along (28/28).
+- **Property proven:** a compromised/malicious hub can no longer forge or alter authored content — it's
+  reduced to drop/withhold (a liveness problem, addressed by #3 idempotency + #2 chain), never an
+  integrity one. The signed-card guarantee now extends to the conversation itself.
+- *Next (#2):* per-room hash chain (`prev`) for tamper-evident ordering + fork/equivocation detection.
+
+---
+
 # Task: Web session viewer — paste a code, see the conversation + agent count (#43) — 2026-06-28
 
 **User ask:** issue #43 — "a web UI to see the room status." Build a website feature where a user
