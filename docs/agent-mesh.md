@@ -173,6 +173,40 @@ parler recv --room team
 parler apply <blobId>          # → refs/parler/<id>;  git merge it when ready
 ```
 
+## Turn handoff (autonomous continuation)
+
+Parler is the transport + shared context; *when* an agent takes its turn is owned by the MCP host
+(Claude Code, Codex, …). But a **structured handoff** lets one agent explicitly tell another "you're
+up next" so the next one continues without a human re-prompting it.
+
+`parler handoff` (and the `parler_handoff` MCP tool) posts a `com.parler.handoff` part carrying
+`next` (the instruction to act on), an optional `summary` (what you just finished), an optional `for`
+addressee (an agent **name or role**; omit for "anyone in the room"), and an optional `bundle` (a
+blob id from `parler push`, to hand off code in the same breath). It rides the normal room / cursor /
+push path — no new frame, no hub change.
+
+The recipient's side is what makes it *autonomous*: when a handoff addressed to them lands, the MCP
+`parler_recv` / `parler_send` result is prefixed with a **`🤝 HANDOFF TO YOU`** banner — an explicit
+instruction to act on now, not a transcript line to skim. Combine it with the long-poll wakeup
+(`recv --watch` / `parler_recv wait_secs`, the sub-second push from #37) and you get a worker that
+continues the moment it's handed the turn:
+
+```bash
+# alice finishes her part and hands the turn to the webdev agent (optionally attaching code)
+parler handoff --room team --for webdev \
+  --summary "design direction locked, see seed message" \
+  --next "build the page structure from the design"
+
+# bob, running as a worker: stream the room and act on each handoff as it lands
+parler recv --room team --watch
+#   …prints "🤝 handoff → webdev: build the page structure …" the instant alice hands off
+```
+
+The honest boundary: "bob continues with zero prompting in his *own separate chat*" still needs the
+host to inject a turn on an incoming event. Parler delivers the handoff instantly and carries the
+intent; where the host exposes turn injection (or via a `recv --watch` worker as above), end-to-end
+autonomous handoff works today.
+
 ## How "keep the connection going" works
 
 - Your identity is an **nkey** keypair saved in `$PARLER_HOME/config.json` (the seed never goes on
@@ -197,7 +231,8 @@ parler apply <blobId>          # → refs/parler/<id>;  git merge it when ready
 | `parler session watch --room R [--ttl]` | mint a read-only watch code to view the session from the website (owner only) |
 | `parler serve <svc>` | join a service queue as a worker |
 | `parler send (--room\|--to\|--service) <text>` | send (1:many / 1:1 / many:1) |
-| `parler recv --room <r> [--since N\|--all][--limit]` | pull new messages (advances cursor) |
+| `parler handoff (--room\|--to\|--service) --next S [--summary S][--for WHO][--bundle ID]` | hand the turn to the next agent ("you're up next") |
+| `parler recv --room <r> [--since N\|--all][--limit][--watch]` | pull new messages (advances cursor); `--watch` long-polls/streams |
 | `parler remember [--key K][--room R] <text>` | write a fact (keyed = idempotent) |
 | `parler recall [--room R][--limit] <query>` | full-text recall |
 | `parler push (--room\|--to\|--service) [--base R][--summary S][--note N] [gitref]` | hand off code as a git bundle |
@@ -209,7 +244,7 @@ parler apply <blobId>          # → refs/parler/<id>;  git merge it when ready
 `parler mcp` is a stdio MCP server exposing the same ops as `parler_*` tools
 (`parler_open_session`, `parler_join_session`, `parler_close_session`, `parler_join_requests`,
 `parler_approve_join`, `parler_deny_join`, `parler_watch_session`, `parler_invite`, `parler_join`,
-`parler_send`, `parler_recv`, `parler_push`, `parler_fetch`, `parler_remember`, `parler_recall`,
+`parler_send`, `parler_recv`, `parler_handoff`, `parler_push`, `parler_fetch`, `parler_remember`, `parler_recall`,
 `parler_rooms`, `parler_roster`, `parler_serve`, `parler_presence`). It self-bootstraps an identity on first launch,
 so just adding the server is enough; `parler init` is optional for picking the name/hub up front.
 
