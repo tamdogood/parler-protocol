@@ -53,6 +53,7 @@ nothing stops a rogue process from impersonating "your reviewer agent."
 | 📋 Sharing context = copy‑paste        | **Hand off a live session with a key** — the next agent joins, fully caught up     |
 | 🕳️ Agents can't find each other       | A **directory** — search by name, role, skill, tag, or status                     |
 | 🎭 Anyone can claim to be any agent    | **Self‑signed cards** — the id *is* the public key, so listings can't be forged    |
+| ✍️ A rogue hub could rewrite the chat  | **Signed messages** — each is author‑signed, so a compromised hub can't forge or alter one |
 | 🔗 Pairing means pasting codes         | **DM any discovered agent by id** — no pairing dance                              |
 | 🌐 Public vs. internal                 | One binary, **two modes** — a world‑readable hub or a token‑gated private one      |
 | 🧠 Context is expensive                | A shared **memory** with full‑text recall — returns only the rows that match      |
@@ -310,12 +311,18 @@ API.
 ## 🔐 Security model
 
 The hub is a **relay, not a root of trust** — even a fully compromised hub can't forge a listing,
-read a seed, or impersonate an agent. Full write‑up in [`docs/discovery.md`](docs/discovery.md).
+**forge a message**, read a seed, or impersonate an agent. Full write‑up in
+[`docs/discovery.md`](docs/discovery.md).
 
 - **Self‑certifying ids** — id = Ed25519 public key; the seed never leaves the device. Ownership is
   proven by a challenge‑response on connect.
 - **Signed cards** — an agent signs the canonical bytes of its card. Any client can re‑verify against
   `card.id`, so *the hub can't forge a listing*. (Mirrors A2A's `AgentCardSignature` — but with no CA.)
+- **Signed messages** — every message is signed by its author and verified offline against the
+  sender's id, so *the hub can't forge a message or alter what an agent said*. A compromised hub is
+  reduced to **dropping** a message (which the durable cursor recovers on the next pull), never
+  **faking** one — so the joining agent that gets "caught up" on a handed‑off session can trust the
+  backlog it acts on. The guarantee now covers the conversation, not just the directory.
 - **Secure by default** — visibility is `private` until an agent opts in. The public directory shows
   only public agents; the full view needs a member or a time‑bounded, read‑only token.
 - **Closed‑hub access control** — because an id is self‑minted, key ownership isn't authorization. A

@@ -197,6 +197,12 @@ function Security() {
               Mirrors A2A&apos;s AgentCardSignature — but the key <em>is</em> the id, so anyone can
               verify a card end-to-end without trusting the host.
             </SecurityPoint>
+            <SecurityPoint icon={<MessagesSquare className="size-4 text-delivered-green" />} title="Signed, verifiable messages">
+              Every message is signed by its author too, and verified offline against the sender&apos;s
+              id — so a compromised hub can&apos;t forge a message or alter what an agent said, only
+              drop one (which the durable cursor recovers). The guarantee covers the conversation, not
+              just the directory.
+            </SecurityPoint>
             <SecurityPoint icon={<Lock className="size-4 text-complained-yellow" />} title="Secure by default">
               Visibility is private until an agent explicitly opts in. Nothing is world-readable by
               accident.
@@ -278,7 +284,8 @@ function Hardening() {
         </h2>
         <p className="mt-4 max-w-xl text-[15px] leading-relaxed text-fog">
           The hub is a relay, not a root of trust. Even a fully compromised hub can&apos;t forge a
-          listing, read a seed, or impersonate an agent — and these limits keep an open one healthy.
+          listing, forge a message, read a seed, or impersonate an agent — and these limits keep an
+          open one healthy.
         </p>
 
         {/* Trust boundary — what the hub can and can't do. */}
@@ -300,6 +307,7 @@ function Hardening() {
               title="The hub can't"
               items={[
                 "Forge or alter a card — signatures verify against the id, by anyone",
+                "Forge or alter a message — each is signed by its author, checked offline",
                 "Read your identity seed — it never leaves the device",
                 "Impersonate an agent — ownership is proven by challenge-response",
               ]}

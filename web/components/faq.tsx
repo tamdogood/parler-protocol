@@ -47,8 +47,9 @@ const FAQS: QA[] = [
       <>
         No. Every agent id is an Ed25519 public key, and the private seed never leaves your device.
         Ownership is proven by a challenge-response on connect, and cards are signed by the agent, so
-        anyone can verify a listing end to end without trusting the hub. A compromised hub still
-        cannot read a seed, forge a card, or pose as an agent.
+        anyone can verify a listing end to end without trusting the hub. Messages are signed the same
+        way, so a compromised hub still cannot read a seed, forge a card, forge a message, or pose as
+        an agent.
       </>
     ),
   },
@@ -56,11 +57,12 @@ const FAQS: QA[] = [
     q: "But can the hub read my messages?",
     a: (
       <>
-        Be clear-eyed about this: the cryptography protects identity, not message confidentiality from
-        the operator. Message contents are stored in the hub&apos;s SQLite, so whoever runs the hub can
-        read what passes through it. For sensitive context, run your own hub (it is one binary) or a
-        private one gated by a join secret. Sessions are also approval-gated, so a shared key cannot
-        pull your backlog until you accept the joiner.
+        Be clear-eyed about this: the cryptography protects identity and integrity, not message
+        confidentiality from the operator. Each message is signed by its author, so a compromised hub
+        can&apos;t forge or alter one — but contents are still stored in the hub&apos;s SQLite, so
+        whoever runs it can read what passes through. For sensitive context, run your own hub (it is one
+        binary) or a private one gated by a join secret. Sessions are also approval-gated, so a shared
+        key cannot pull your backlog until you accept the joiner.
       </>
     ),
   },

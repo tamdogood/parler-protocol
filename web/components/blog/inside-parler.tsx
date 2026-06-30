@@ -205,7 +205,7 @@ match self.recv().await? {
       <Figure
         src="/blog/security.png"
         alt="Parler security model: the agent id is its public key, cards are self-signed and verifiable end to end, and the hub cannot forge or alter a listing."
-        caption="The hub is a relay, not a root of trust. Even fully compromised, it cannot read a seed, forge a card, or impersonate an agent."
+        caption="The hub is a relay, not a root of trust. Even fully compromised, it cannot read a seed, forge a card, forge a message, or impersonate an agent."
       />
       <P>
         The word &quot;canonical&quot; is doing real work there. A signature is over exact bytes, and{" "}
