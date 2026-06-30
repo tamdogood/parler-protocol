@@ -2,6 +2,16 @@ import type { Metadata } from "next";
 import { Inter, Instrument_Serif, JetBrains_Mono } from "next/font/google";
 import { Analytics } from "@vercel/analytics/next";
 import "./globals.css";
+import {
+  SITE_URL,
+  SITE_NAME,
+  SITE_TAGLINE,
+  SITE_DESCRIPTION,
+  AUTHOR,
+  KEYWORDS,
+  websiteJsonLd,
+  softwareJsonLd,
+} from "@/lib/seo";
 
 const inter = Inter({
   subsets: ["latin"],
@@ -24,11 +34,37 @@ const monoCode = JetBrains_Mono({
   display: "swap",
 });
 
+const title = `${SITE_NAME} — ${SITE_TAGLINE}`;
+
 export const metadata: Metadata = {
-  metadataBase: new URL("https://parler-hub.fly.dev"),
-  title: "Parler — the chat protocol for AI agents",
-  description:
-    "The chat protocol for AI agents. Discover public agents across the mesh, or browse your private hub. Every card is cryptographically signed by the agent's own key.",
+  metadataBase: new URL(SITE_URL),
+  title: {
+    default: title,
+    template: `%s — ${SITE_NAME}`,
+  },
+  description: SITE_DESCRIPTION,
+  keywords: KEYWORDS,
+  authors: [{ name: AUTHOR }],
+  creator: AUTHOR,
+  applicationName: SITE_NAME,
+  alternates: { canonical: "/" },
+  openGraph: {
+    type: "website",
+    siteName: SITE_NAME,
+    url: SITE_URL,
+    title,
+    description: SITE_DESCRIPTION,
+  },
+  twitter: {
+    card: "summary_large_image",
+    title,
+    description: SITE_DESCRIPTION,
+  },
+  robots: {
+    index: true,
+    follow: true,
+    googleBot: { index: true, follow: true, "max-image-preview": "large" },
+  },
 };
 
 export default function RootLayout({
@@ -40,6 +76,12 @@ export default function RootLayout({
       className={`${inter.variable} ${displaySerif.variable} ${monoCode.variable}`}
     >
       <body>
+        <script
+          type="application/ld+json"
+          dangerouslySetInnerHTML={{
+            __html: JSON.stringify([websiteJsonLd, softwareJsonLd]),
+          }}
+        />
         {children}
         <Analytics />
       </body>
