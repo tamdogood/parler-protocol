@@ -517,6 +517,10 @@ fn is_false(b: &bool) -> bool {
 /// The reverse-DNS [`Part`] kind that references a code/artifact bundle handed off through a room.
 pub const BUNDLE_KIND: &str = "com.parler.bundle";
 
+/// The reverse-DNS [`Part`] kind that carries a structured turn handoff — an explicit "you're up
+/// next" between agents sharing a room. See [`HandoffRef`].
+pub const HANDOFF_KIND: &str = "com.parler.handoff";
+
 /// A reference to a content-addressed artifact (a git bundle by default) carried inside a room
 /// message as a [`Part::Extension`] of kind [`BUNDLE_KIND`].
 ///
@@ -564,6 +568,69 @@ impl BundleRef {
                 serde_json::from_value(serde_json::Value::Object(fields.clone())).ok()
             }
             _ => None,
+        }
+    }
+}
+
+/// A structured turn handoff carried inside a room message as a [`Part::Extension`] of kind
+/// [`HANDOFF_KIND`] — the explicit "you're up next" signal between agents sharing a room.
+///
+/// Parler delivers it like any other part (room / cursor / push / durability all unchanged), but the
+/// typed shape lets a worker loop or MCP host *recognise* a handoff addressed to it and continue
+/// without a human re-prompting. Pair it with `recv --watch` / `parler_recv wait_secs` for the
+/// wakeup. A client that doesn't understand the kind still sees a renderable extension part.
+///
+/// Build one with [`HandoffRef::to_part`]; recover it with [`HandoffRef::from_part`]; ask whether it
+/// is meant for a given agent with [`HandoffRef::is_for`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HandoffRef {
+    /// What the next agent should do — the actual instruction to act on.
+    pub next: String,
+    /// A recap of what was just completed / the current state, so the next agent has context.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    /// The addressee: a target agent **name or role**. Absent means "any agent in the room".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to: Option<String>,
+    /// Optional content id of an attached code bundle (a [`BundleRef::blob`]) handed off alongside.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bundle: Option<String>,
+}
+
+impl HandoffRef {
+    /// Encode as the `com.parler.handoff` extension [`Part`].
+    pub fn to_part(&self) -> Part {
+        let fields = match serde_json::to_value(self) {
+            Ok(serde_json::Value::Object(m)) => m,
+            _ => serde_json::Map::new(),
+        };
+        Part::Extension { kind: HANDOFF_KIND.to_string(), fields }
+    }
+
+    /// Recover a [`HandoffRef`] from a part — `Some` iff it is a well-formed `com.parler.handoff`
+    /// extension.
+    pub fn from_part(part: &Part) -> Option<HandoffRef> {
+        match part {
+            Part::Extension { kind, fields } if kind == HANDOFF_KIND => {
+                serde_json::from_value(serde_json::Value::Object(fields.clone())).ok()
+            }
+            _ => None,
+        }
+    }
+
+    /// Whether this handoff is for the agent with the given `name` / optional `role`.
+    ///
+    /// An unaddressed handoff (`to` absent) is for everyone. An addressed one matches
+    /// case-insensitively against either the name or the role, so `--for webdev` reaches an agent
+    /// named `webdev` *or* one whose role is `webdev`.
+    pub fn is_for(&self, name: &str, role: Option<&str>) -> bool {
+        match &self.to {
+            None => true,
+            Some(addr) => {
+                let addr = addr.trim();
+                addr.eq_ignore_ascii_case(name)
+                    || role.is_some_and(|r| addr.eq_ignore_ascii_case(r))
+            }
         }
     }
 }
@@ -872,6 +939,44 @@ mod tests {
         assert_eq!(BundleRef::from_part(&back), Some(b));
         // …and a plain part is not a bundle ref.
         assert_eq!(BundleRef::from_part(&Part::text("hi")), None);
+    }
+
+    #[test]
+    fn handoff_ref_round_trips_and_addresses() {
+        let h = HandoffRef {
+            next: "build the page structure".into(),
+            summary: Some("design direction is locked".into()),
+            to: Some("webdev".into()),
+            bundle: Some("blobsha".into()),
+        };
+        let part = h.to_part();
+        match &part {
+            Part::Extension { kind, .. } => assert_eq!(kind, HANDOFF_KIND),
+            _ => panic!("expected an extension part"),
+        }
+        // Survives a JSON wire round-trip as a Part.
+        let j = serde_json::to_value(&part).unwrap();
+        assert_eq!(j["kind"], HANDOFF_KIND);
+        assert_eq!(j["next"], "build the page structure");
+        let back: Part = serde_json::from_value(j).unwrap();
+        assert_eq!(HandoffRef::from_part(&back), Some(h.clone()));
+        // …and a plain part is not a handoff ref.
+        assert_eq!(HandoffRef::from_part(&Part::text("hi")), None);
+
+        // Addressing: matches the agent's name or role, case-insensitively.
+        assert!(h.is_for("webdev", None));
+        assert!(h.is_for("bob", Some("WebDev")));
+        assert!(!h.is_for("designer", Some("planner")));
+        // An unaddressed handoff is for everyone.
+        let any = HandoffRef { to: None, ..h };
+        assert!(any.is_for("anyone", None));
+
+        // Optional fields stay absent on the wire when None.
+        let minimal = HandoffRef { next: "go".into(), summary: None, to: None, bundle: None };
+        let j = serde_json::to_value(minimal.to_part()).unwrap();
+        assert!(j.get("summary").is_none());
+        assert!(j.get("to").is_none());
+        assert!(j.get("bundle").is_none());
     }
 
     #[test]

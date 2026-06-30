@@ -10,8 +10,8 @@ use anyhow::{bail, Result};
 use clap::{Args, Parser, Subcommand};
 use parler_connector::{BundleMeta, Config, MeshAgent};
 use parler_protocol::{
-    AgentSkill, BundleRef, DirectoryEntry, DiscoverScope, Part, RoomKind, StoredMessage, Target,
-    Visibility,
+    AgentSkill, BundleRef, DirectoryEntry, DiscoverScope, HandoffRef, Part, RoomKind, StoredMessage,
+    Target, Visibility,
 };
 use std::path::Path;
 use std::sync::Arc;
@@ -60,6 +60,8 @@ enum Cmd {
     Token(TokenArgs),
     /// Send a message (one of --room / --to / --service).
     Send(SendArgs),
+    /// Hand off the turn: post a structured "you're up next" so a watching agent continues.
+    Handoff(HandoffArgs),
     /// Hand off code: bundle a git ref and push it to a room/peer/service.
     Push(PushArgs),
     /// Download a pushed bundle's bytes by its blob id.
@@ -241,6 +243,31 @@ struct SendArgs {
 }
 
 #[derive(Args)]
+struct HandoffArgs {
+    /// Hand off into a channel room (one-to-many).
+    #[arg(long)]
+    room: Option<String>,
+    /// Hand off as a DM to a peer agent id (one-to-one).
+    #[arg(long)]
+    to: Option<String>,
+    /// Hand off to a service queue (many-to-one).
+    #[arg(long)]
+    service: Option<String>,
+    /// What the next agent should do — the instruction to act on.
+    #[arg(long)]
+    next: String,
+    /// A recap of what you just finished / the current state (gives the next agent context).
+    #[arg(long)]
+    summary: Option<String>,
+    /// Address the handoff to a specific agent by name or role (default: anyone in the room).
+    #[arg(long = "for", value_name = "WHO")]
+    for_who: Option<String>,
+    /// Attach a code bundle by blob id (from a prior `parler push`).
+    #[arg(long)]
+    bundle: Option<String>,
+}
+
+#[derive(Args)]
 struct PushArgs {
     /// Push to a channel room (one-to-many).
     #[arg(long)]
@@ -380,6 +407,7 @@ pub async fn run() -> Result<()> {
         Cmd::Card { id } => cmd_card(id).await,
         Cmd::Token(a) => cmd_token(a).await,
         Cmd::Send(a) => cmd_send(a).await,
+        Cmd::Handoff(a) => cmd_handoff(a).await,
         Cmd::Push(a) => cmd_push(a).await,
         Cmd::Fetch(a) => cmd_fetch(a).await,
         Cmd::Apply(a) => cmd_apply(a).await,
@@ -683,6 +711,24 @@ async fn cmd_send(a: SendArgs) -> Result<()> {
     Ok(())
 }
 
+async fn cmd_handoff(a: HandoffArgs) -> Result<()> {
+    let target = target_from(a.room, a.to, a.service)?;
+    let handoff = HandoffRef {
+        next: a.next,
+        summary: a.summary,
+        to: a.for_who.clone(),
+        bundle: a.bundle,
+    };
+    let mut ag = connect().await?;
+    // Mention the addressee so the hub's push layer wakes them as well as the typed addressing.
+    let mentions = a.for_who.map(|w| vec![w]);
+    let (_id, seq, room) = ag.send(target, vec![handoff.to_part()], mentions, None).await?;
+    let whom = handoff.to.as_deref().unwrap_or("anyone");
+    println!("✓ handed off to {whom} in '{room}' (seq {seq})");
+    println!("  next: {}", handoff.next);
+    Ok(())
+}
+
 async fn cmd_push(a: PushArgs) -> Result<()> {
     let target = target_from(a.room, a.to, a.service)?;
     // Build the git bundle locally (in the current repo).
@@ -921,6 +967,18 @@ pub fn render_parts(parts: &[Part]) -> String {
             let tip = b.tip.map(|t| format!(" @{}", short(&t))).unwrap_or_default();
             // The blob id is shown in full so the `parler apply` command copy-pastes and works.
             out.push(format!("📦 {sum}{tip} ({} bytes) — parler apply {}", b.size, b.blob));
+            continue;
+        }
+        if let Some(h) = HandoffRef::from_part(p) {
+            let whom = h.to.as_deref().unwrap_or("anyone");
+            let mut line = format!("🤝 handoff → {whom}: {}", h.next);
+            if let Some(s) = &h.summary {
+                line.push_str(&format!("  (done: {s})"));
+            }
+            if let Some(blob) = &h.bundle {
+                line.push_str(&format!("  — parler apply {blob}"));
+            }
+            out.push(line);
             continue;
         }
         match p {

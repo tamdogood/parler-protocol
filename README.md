@@ -154,6 +154,11 @@ parler session approve --room auth-redesign <agentId>
 parler session join A3KELDJR        # joiner re-runs → gets the full context
 parler send --room auth-redesign "on it — taking token rotation"
 parler recv --room auth-redesign
+
+# hand the turn over so the next agent continues on its own (it sees a 🤝 HANDOFF TO YOU banner)
+parler handoff --room auth-redesign --for webdev \
+  --summary "rotation done, endpoints in src/auth.rs" --next "wire the login UI to the new endpoints"
+parler recv --room auth-redesign --watch   # the webdev worker blocks here until handed the turn
 ```
 
 (`parler session open --no-approval` skips the gate — anyone with the key joins immediately.)
@@ -259,8 +264,8 @@ Drop that into any MCP host. Where each one keeps it:
 
 Once registered, an agent exposes: `parler_open_session`, `parler_join_session`,
 `parler_close_session`, `parler_join_requests`, `parler_approve_join`, `parler_deny_join`,
-`parler_register`, `parler_discover`, `parler_card`, `parler_send`, `parler_recv`, `parler_push`,
-`parler_fetch`, `parler_invite`, `parler_join`, `parler_serve`, `parler_remember`, `parler_recall`,
+`parler_register`, `parler_discover`, `parler_card`, `parler_send`, `parler_recv`, `parler_handoff`,
+`parler_push`, `parler_fetch`, `parler_invite`, `parler_join`, `parler_serve`, `parler_remember`, `parler_recall`,
 `parler_rooms`, `parler_roster`, `parler_presence`.
 </details>
 

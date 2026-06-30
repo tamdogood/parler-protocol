@@ -7,7 +7,7 @@
 
 use anyhow::{anyhow, bail, Result};
 use parler_connector::{BundleMeta, Config, JoinOutcome, MeshAgent};
-use parler_protocol::{AgentSkill, DiscoverScope, RoomKind, Target, Visibility};
+use parler_protocol::{AgentSkill, DiscoverScope, HandoffRef, RoomKind, StoredMessage, Target, Visibility};
 use serde_json::{json, Value};
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -138,8 +138,8 @@ async fn handle(state: &mut McpState, method: &str, params: Value) -> Result<Val
             // other tool only touches the agent.
             let result = match name.as_str() {
                 "parler_open_session" | "parler_join_session" | "parler_close_session"
-                | "parler_send" | "parler_recv" | "parler_join_requests" | "parler_approve_join"
-                | "parler_deny_join" | "parler_watch_session" => {
+                | "parler_send" | "parler_recv" | "parler_handoff" | "parler_join_requests"
+                | "parler_approve_join" | "parler_deny_join" | "parler_watch_session" => {
                     call_session_tool(state, &name, &args).await
                 }
                 _ => call_tool(&mut state.agent, &name, &args).await,
@@ -555,6 +555,9 @@ async fn call_session_tool(state: &mut McpState, name: &str, args: &Value) -> Re
                 let me = state.agent.id.clone();
                 let incoming: Vec<_> = msgs.iter().filter(|m| m.from.id != me).collect();
                 if !incoming.is_empty() {
+                    if let Some(banner) = handoff_banner(state, &incoming) {
+                        out.push_str(&format!("\n\n{banner}"));
+                    }
                     let body =
                         incoming.into_iter().map(crate::render_message).collect::<Vec<_>>().join("\n");
                     out.push_str(&format!("\n— new messages —\n{body}"));
@@ -566,6 +569,29 @@ async fn call_session_tool(state: &mut McpState, name: &str, args: &Value) -> Re
                 out.push_str(&notice);
             }
             Ok(out)
+        }
+        "parler_handoff" => {
+            let next = s("next").ok_or_else(|| anyhow!("missing 'next' (what the next agent should do)"))?;
+            let target = if let Some(r) = s("room") {
+                Target::Room { room: r }
+            } else if let Some(t) = s("to") {
+                Target::Dm { agent: t }
+            } else if let Some(sv) = s("service") {
+                Target::Service { service: sv }
+            } else if let Some(room) = state.active_session.clone() {
+                Target::Room { room }
+            } else {
+                bail!("provide one of room / to / service, or open/join a session first");
+            };
+            let handoff = HandoffRef { next, summary: s("summary"), to: s("for"), bundle: s("bundle") };
+            let mentions = handoff.to.clone().map(|w| vec![w]);
+            let (_id, seq, room) =
+                state.agent.send(target, vec![handoff.to_part()], mentions, None).await?;
+            let whom = handoff.to.as_deref().unwrap_or("anyone in the room");
+            Ok(format!(
+                "✓ handed off to {whom} in '{room}' (seq {seq}). They'll see a 'HANDOFF TO YOU' \
+                 banner on their next parler_recv (or sooner if they're long-polling with wait_secs)."
+            ))
         }
         "parler_recv" => {
             let room = s("room")
@@ -590,8 +616,12 @@ async fn call_session_tool(state: &mut McpState, name: &str, args: &Value) -> Re
             let mut out = if msgs.is_empty() {
                 format!("(no new messages in '{room}')")
             } else {
+                let refs: Vec<&_> = msgs.iter().collect();
                 let body = msgs.iter().map(crate::render_message).collect::<Vec<_>>().join("\n");
-                format!("{body}\n— cursor at {cursor} —")
+                match handoff_banner(state, &refs) {
+                    Some(banner) => format!("{banner}\n\n{body}\n— cursor at {cursor} —"),
+                    None => format!("{body}\n— cursor at {cursor} —"),
+                }
             };
             // Surface any pending join requests so a host sees the accept/reject choice inline, even
             // when there are no new messages.
@@ -737,6 +767,43 @@ async fn pending_join_notice(state: &mut McpState, room: &str) -> Option<String>
     ))
 }
 
+/// Build the "HANDOFF TO YOU" banner if any of `msgs` carries a [`HandoffRef`] addressed to this
+/// agent (by name/role, or unaddressed). This is the nudge that turns a passive `parler_recv` into
+/// autonomous continuation: the host agent sees an explicit instruction to act on now, not just a
+/// transcript line it might skim past. Returns `None` when no incoming handoff is for us.
+fn handoff_banner(state: &McpState, msgs: &[&StoredMessage]) -> Option<String> {
+    let me = &state.agent;
+    let mut items = Vec::new();
+    for m in msgs {
+        // Don't act on our own handoff echoed back to us.
+        if m.from.id == me.id {
+            continue;
+        }
+        for part in &m.parts {
+            if let Some(h) = HandoffRef::from_part(part) {
+                if h.is_for(&me.name, me.role.as_deref()) {
+                    let mut line = format!("  • {}", h.next);
+                    if let Some(s) = &h.summary {
+                        line.push_str(&format!("\n    (context: {s})"));
+                    }
+                    if let Some(blob) = &h.bundle {
+                        line.push_str(&format!("\n    (attached code: apply via parler_apply blob={blob})"));
+                    }
+                    line.push_str(&format!("\n    — from {}", m.from.name));
+                    items.push(line);
+                }
+            }
+        }
+    }
+    if items.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "🤝 HANDOFF TO YOU — another agent handed you the turn. Act on this now:\n{}",
+        items.join("\n")
+    ))
+}
+
 /// Leave the active session: announce departure, go idle, and forget the session locally. The room
 /// itself stays alive for the others; hub-side cleanup happens via the idle timeout / disconnect.
 async fn close_session(state: &mut McpState) -> Result<String> {
@@ -870,6 +937,20 @@ fn tool_specs() -> Vec<Value> {
                 "wait_secs": { "type": "integer", "description": "block up to this many seconds for a pushed message when nothing is waiting (sub-second wake; max 60)" }
             }),
             &[],
+        ),
+        tool(
+            "parler_handoff",
+            "Hand the turn to another agent: post a structured 'you're up next' that the recipient sees as a 'HANDOFF TO YOU' banner on their next parler_recv (or instantly if they're long-polling with wait_secs), prompting them to continue without a human re-prompting. Use this when you've finished your part and want a specific teammate to take over. Defaults to your active session; or target room/to/service. Address it with `for` (an agent name or role); omit to hand off to anyone in the room. Attach handed-off code with `bundle` (a blob id from parler_push).",
+            json!({
+                "next": { "type": "string", "description": "what the next agent should do — the instruction to act on" },
+                "summary": { "type": "string", "description": "recap of what you just finished / current state, for the next agent's context" },
+                "for": { "type": "string", "description": "address the handoff to a specific agent by name or role (default: anyone in the room)" },
+                "bundle": { "type": "string", "description": "optional blob id of a code bundle handed off alongside (from parler_push)" },
+                "room": { "type": "string" },
+                "to": { "type": "string" },
+                "service": { "type": "string" }
+            }),
+            &["next"],
         ),
         tool(
             "parler_remember",
@@ -1074,6 +1155,61 @@ mod tests {
         call_session_tool(&mut alice, "parler_send", &json!({ "text": "ping bob" })).await.unwrap();
         let recv = call_session_tool(&mut bob, "parler_recv", &json!({})).await.unwrap();
         assert!(recv.contains("ping bob"));
+    }
+
+    #[tokio::test]
+    async fn handoff_addressed_to_recipient_shows_banner_only_for_them() {
+        let hub = start_hub().await;
+        let mut alice = state(&hub, "alice").await;
+        let mut bob = state(&hub, "bob").await;
+        let mut carol = state(&hub, "carol").await;
+
+        let opened = open_session(&mut alice, Some("seed"), None, None, None, false).await.unwrap();
+        let key = key_of(&opened);
+        join_session(&mut bob, &key).await.unwrap();
+        join_session(&mut carol, &key).await.unwrap();
+        // Drain each joiner's own "joined" announce so their cursors start clean.
+        call_session_tool(&mut bob, "parler_recv", &json!({})).await.unwrap();
+        call_session_tool(&mut carol, "parler_recv", &json!({})).await.unwrap();
+
+        // Alice hands the turn explicitly to bob.
+        let sent = call_session_tool(
+            &mut alice,
+            "parler_handoff",
+            &json!({ "next": "build the page structure", "summary": "design locked", "for": "bob" }),
+        )
+        .await
+        .unwrap();
+        assert!(sent.contains("handed off to bob"));
+
+        // Bob sees the actionable banner + the instruction.
+        let bob_recv = call_session_tool(&mut bob, "parler_recv", &json!({})).await.unwrap();
+        assert!(bob_recv.contains("HANDOFF TO YOU"), "addressee gets the nudge:\n{bob_recv}");
+        assert!(bob_recv.contains("build the page structure"));
+
+        // Carol is in the same room but the handoff isn't for her — no banner.
+        let carol_recv = call_session_tool(&mut carol, "parler_recv", &json!({})).await.unwrap();
+        assert!(!carol_recv.contains("HANDOFF TO YOU"), "non-addressee must not be nudged:\n{carol_recv}");
+        // She still sees the message itself (it's a normal room post), rendered as a handoff line.
+        assert!(carol_recv.contains("🤝 handoff → bob"));
+    }
+
+    #[tokio::test]
+    async fn unaddressed_handoff_nudges_anyone() {
+        let hub = start_hub().await;
+        let mut alice = state(&hub, "alice").await;
+        let mut bob = state(&hub, "bob").await;
+
+        let opened = open_session(&mut alice, Some("seed"), None, None, None, false).await.unwrap();
+        let key = key_of(&opened);
+        join_session(&mut bob, &key).await.unwrap();
+        call_session_tool(&mut bob, "parler_recv", &json!({})).await.unwrap();
+
+        call_session_tool(&mut alice, "parler_handoff", &json!({ "next": "take it from here" }))
+            .await
+            .unwrap();
+        let bob_recv = call_session_tool(&mut bob, "parler_recv", &json!({})).await.unwrap();
+        assert!(bob_recv.contains("HANDOFF TO YOU"), "an unaddressed handoff is for anyone:\n{bob_recv}");
     }
 
     #[tokio::test]
