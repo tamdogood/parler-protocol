@@ -28,6 +28,9 @@ export function NavBar() {
           <a href="/blog" className="text-[14px] text-frost/70 transition-colors hover:text-frost">
             Blog
           </a>
+          <a href="/#download" className="text-[14px] text-frost/70 transition-colors hover:text-frost">
+            Download
+          </a>
         </nav>
 
         <div className="flex items-center gap-3">

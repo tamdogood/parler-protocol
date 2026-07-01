@@ -1,3 +1,105 @@
+# Task: Parler Desktop — macOS Electron app (hub + directory + session viewer) — 2026-06-30
+
+**User ask:** a downloadable macOS app that (1) serves everything the website does (agent
+**directory** + **session viewer**), (2) can run a full **private hub locally** (WS bus + SQLite DB +
+blobs) with one toggle, (3) makes **connecting an agent** (Claude Code / Cursor / any MCP host) a
+one-click action against either the local hub or the public hub, (4) matches the website's dark
+"Resend obsidian terminal" theme exactly, and (5) streamlines setup: download → connect an agent in
+under a minute. Later: a "Download for macOS" button on the website.
+
+## Key architectural decisions (confirm before build)
+1. **Location:** new self-contained `desktop/` project at repo root (sibling to `web/`, `crates/`).
+2. **Renderer stack:** Electron + **Vite + React 19 + TS + Tailwind v4**, reusing the exact `@theme`
+   tokens + fonts from `web/app/globals.css` (fonts bundled locally for offline). Port the key
+   components (SessionViewer w/ chat+timeline replay, directory, agent-card, status-dot, hub-header,
+   ui/*). *Not* embedding the Next.js SSR app — a native SPA fits IPC + offline + OS integration.
+3. **Native binaries:** bundle compiled `parler-hub` + `parler` as electron-builder `extraResources`;
+   `desktop/scripts/build-binaries.sh` cargo-builds them per mac arch. Main process spawns/supervises
+   the hub and shells out to `parler` for privileged actions.
+4. **Distribution:** electron-builder → DMG (arm64 + x64). Signing/notarization stubbed + documented
+   (needs Apple Developer ID); unsigned works locally with a quarantine note.
+
+## Main process (Electron)
+- [ ] Hub supervisor — spawn bundled `parler-hub` (free port, default 7071), persistent
+      `userData/hub.sqlite` + `.blobs`, name `${user}'s Hub`, optional `--public`, auto-generated
+      persisted join secret via `--join-secret-file`. Health-poll `/health`; restart w/ backoff;
+      graceful SIGTERM on quit; stream stdout/stderr to a log buffer.
+- [ ] MCP host integration — detect `claude` CLI (+ Cursor config path); one-click
+      `claude mcp add parler -- <bundled parler> mcp` with `PARLER_HUB` (local|public) +
+      `PARLER_JOIN_SECRET` when private; render snippets + JSON for other hosts; detect connected state.
+- [ ] Privileged actions via bundled `parler` (open session, mint watch, approvals, whoami).
+- [ ] Typed IPC (`preload.ts`, contextIsolation on): hub start/stop/status/url, mcp list/connect,
+      session open/mint-watch, clipboard, openExternal, settings get/set.
+- [ ] Tray/menu-bar item w/ live hub status + quick toggle. Settings store (JSON in userData).
+
+## Renderer (screens)
+- [ ] Onboarding (first run): welcome → private-hub vs public-hub → connect first agent (1 click).
+- [ ] Dashboard: hub status card (up/down, URL, agents, DB size, uptime) + quick actions.
+- [ ] Local Hub: start/stop, live `/api/hub` stats, DB path+size, blob usage, live logs, connect
+      snippet, public/private toggle, reveal/rotate join secret, open data folder.
+- [ ] Directory: ported agent directory (public + hub scope), search/filter tag/skill/status.
+- [ ] Sessions: (a) Watch viewer (chat + timeline replay, ported); (b) Your sessions — open, show key,
+      mint watch code, manage join approvals.
+- [ ] Connect Agents: target picker (local|public), detected hosts, one-click connect, snippets.
+- [ ] Settings: auto-start hub, hub config, about/version (theme locked dark).
+
+## Packaging & website
+- [ ] electron-builder DMG (arm64+x64) + `build-binaries.sh`; signing/notarization config + docs.
+- [ ] `.gitignore` desktop `node_modules/dist/release`; keep `make ci` green (no heavy new gate).
+- [ ] Website "Download for macOS" button → GitHub Release DMG (wiring; release upload needs CI).
+
+## Delivery phases (each runnable)
+1. **Foundation** — scaffold, theme port, window chrome, dashboard shell, hub supervisor + health.
+2. **Features** — directory, session watch viewer, connect-agents wizard, hub controls+logs+settings,
+   onboarding.
+3. **Packaging** — DMG build, binary build script, signing docs, website download button.
+
+## Review — DONE & VERIFIED (2026-06-30) ✅
+
+Shipped the full app in new `desktop/` (Electron + electron-vite + Vite/React 19/Tailwind v4),
+plus website download CTAs. **User chose: ship unsigned for now, full-fledged all phases.**
+
+**Main process (`src/main/`)** — `HubSupervisor` (spawns bundled `parler-hub`: free-port pick from
+7071, persistent `userData/hub.sqlite` + `.blobs`, `--join-secret-file`, health poll, crash-restart
+w/ cap, log ring, graceful SIGTERM); `mcp.ts` (detect + one-click Claude Code via `claude mcp add`,
+config-merge for Cursor/Claude Desktop w/ backup, GUI-PATH resolution); `parler-cli.ts` (drives
+bundled `parler` with an **isolated** `userData/parler-home` identity — open session / mint watch /
+whoami, output parsed by regex); typed IPC + `preload` (`contextIsolation` on, prod-only CSP header);
+`tray.ts` (menu-bar status + start/stop/quit); settings JSON.
+
+**Renderer (`src/renderer/`)** — theme ported 1:1 from `web/app/globals.css` (fonts via `@fontsource`,
+offline); screens: Onboarding (3-step), Dashboard, Local Hub (start/stop, live stats, storage, streaming
+logs, secret reveal, public/private toggle, port), Directory (faceted, ported AgentCard/Detail),
+Sessions (open + full chat/timeline-replay viewer, ported), Connect (target picker + host wiring +
+snippets), Settings. Frameless titlebar w/ global Local⇄Public target switch + hub pill.
+
+**Packaging** — electron-builder DMG (arm64), unsigned (ad-hoc/linker-signed → launches on Apple
+Silicon), bundles `parler`+`parler-hub`+tray icons as extraResources; generated icons
+(`scripts/gen-icons.mjs`), `scripts/build-binaries.sh`, README w/ signing/notarize docs +
+`xattr -dr com.apple.quarantine` note.
+
+**Website** — `MAC_DOWNLOAD_URL` in `lib/seo.ts`; hero "Download for macOS" + subline; nav "Download";
+new `components/download.tsx` section (`#download`) with on-brand faux-window preview. `next build` green.
+
+**Verification (all green):**
+- `npm run typecheck` (main+renderer) clean; `npm run build` bundles main/preload/renderer; fonts offline.
+- Headless Electron boot: renderer loads, **zero console errors**, self-quits (env-gated smoke hooks).
+- **Full-path hub smoke inside Electron**: supervisor spawned the bundled hub → `phase=running
+  healthy=true` → `/api/hub` 200 ("tamnguyen's Hub", private) → clean stop; created hub.sqlite+blobs.
+- **Binary/CLI integration smoke** vs real binaries: hub `--join-secret-file` boot, `parler init` w/
+  secret, `session open`→parsed room+KEY, `session watch`→parsed token, `/api/session` bearer 200 +
+  content, bad token 401, `whoami` parsed.
+- `npm run dist` → `release/Parler-0.1.0-arm64.dmg` (102 MB); packaged `.app` bundles both binaries +
+  icns + tray png; packaged app **launches clean** headlessly.
+- `desktop/` is invisible to `make ci` (not a cargo workspace member, not `web/`), so CI is unaffected.
+
+**Follow-ups (noted, not blocking):** Apple Developer ID signing+notarization (config stubbed, flip
+when creds exist); universal/x64 arch (script supports a target triple, needs `rustup target add`);
+CI job to build+upload the DMG to a GitHub Release so `MAC_DOWNLOAD_URL` resolves to a real asset;
+optional in-app "mint directory token" for one-click private hub-scope directory viewing.
+
+---
+
 # Task: Standalone full-screen Agents Console page (web) — 2026-06-29
 
 **User ask:** from the website, build an *extra standalone page* for the agents hub; on that page add

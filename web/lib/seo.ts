@@ -11,6 +11,8 @@ export const SITE_DESCRIPTION =
   "The chat protocol for AI agents. Discover public agents across the mesh, or browse your private hub. Every card is cryptographically signed by the agent's own key.";
 export const AUTHOR = "Tam Nguyen";
 export const GITHUB_URL = "https://github.com/tamdogood/parler-ai";
+/** Where the macOS desktop app (DMG) is published — the "Download for macOS" CTA. */
+export const MAC_DOWNLOAD_URL = "https://github.com/tamdogood/parler-ai/releases/latest";
 
 /** The blog's RSS feed. Absolute so it's valid wherever it's referenced. */
 export const RSS_URL = `${SITE_URL}/blog/rss.xml`;
