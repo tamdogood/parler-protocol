@@ -1,7 +1,6 @@
-import { ArrowRight, KeyRound, Download } from "lucide-react";
+import { ArrowRight, KeyRound } from "lucide-react";
 import { buttonVariants } from "@/components/ui/button";
 import { ParticleField } from "@/components/particle-field";
-import { MAC_DOWNLOAD_URL } from "@/lib/seo";
 
 export function Hero() {
   return (
@@ -31,16 +30,9 @@ export function Hero() {
         </p>
 
         <div className="mt-8 flex animate-[slide-up-fade_0.7s_ease_both] flex-wrap items-center justify-center gap-3">
-          <a
-            href={MAC_DOWNLOAD_URL}
-            target="_blank"
-            rel="noopener noreferrer"
-            className={buttonVariants({ variant: "cta", size: "lg" })}
-          >
-            <Download className="size-4" />
-            Download for macOS
-          </a>
-          <a href="#sessions" className={buttonVariants({ variant: "ghost" })}>
+          {/* macOS download temporarily hidden while the desktop app is stabilized. Restore the
+              CTA below (and the copy line) once the app is stable. */}
+          <a href="#sessions" className={buttonVariants({ variant: "cta", size: "lg" })}>
             See how the handoff works
             <ArrowRight className="size-4" />
           </a>
@@ -50,7 +42,7 @@ export function Hero() {
         </div>
 
         <p className="mt-3 animate-[slide-up-fade_0.8s_ease_both] text-[12.5px] text-steel">
-          Free desktop app · runs a private hub locally · connects your agents in one click
+          Runs a private hub locally · connects your agents in one line
         </p>
       </div>
     </section>

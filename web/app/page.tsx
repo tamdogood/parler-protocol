@@ -16,7 +16,9 @@ import { NavBar } from "@/components/nav-bar";
 import { Hero } from "@/components/hero";
 import { Directory } from "@/components/directory";
 import { Examples } from "@/components/examples";
-import { DownloadApp } from "@/components/download";
+// Desktop download section temporarily hidden while the app is stabilized. Restore the
+// `DownloadApp` import and its <DownloadApp /> usage below once the app is stable.
+// import { DownloadApp } from "@/components/download";
 import { SessionsFeature } from "@/components/sessions-feature";
 import { Reveal } from "@/components/reveal";
 import { Faq } from "@/components/faq";
@@ -37,7 +39,7 @@ export default function Home() {
       <Directory />
       <HowItWorks />
       <Examples />
-      <DownloadApp />
+      {/* <DownloadApp /> — temporarily hidden while the desktop app is stabilized. */}
       <Security />
       <Hardening />
       <Faq />
