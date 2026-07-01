@@ -424,3 +424,69 @@ sitemap `<image:loc>` present.
 Offered, not done (need a judgment call / visual QA): convert covers to `next/image` (Core Web Vitals —
 they're 92–388 KB raw PNGs; touches rendering so wants visual QA); `Organization`/`publisher.logo`
 (needs a light-bg square logo asset); AI-crawler policy in robots (a product decision).
+
+---
+
+## 2026-06-30 — Desktop app "melts the Mac" on DMG install (crash-restart storm)
+
+**Report:** clicking install via the DMG "created a loop", the Mac turned hot and had to be hard
+powered off. `npm run dev` works fine; only the packaged DMG loops.
+
+**Root cause (`desktop/src/main/hub-supervisor.ts`):** an *unbounded* hub restart loop. The restart
+counter was reset to 0 on **every** `/health` success (old line 164 `this.restarts = 0`), while the
+cap was only checked against that counter. So a hub that becomes healthy → dies → repeats resets its
+own budget every cycle and respawns **forever** (~every 800 ms). Each respawn is a full Rust process
+(SQLite open, migrations, FTS, sqlite-vec, WS bind) → CPU pegged → fans max → stall. Dev runs one
+instance so the hub stays up and never trips; packaging is where a hub flaps — a **second app
+instance** (no single-instance lock) spawning a competing hub over the **same SQLite DB** is the most
+likely trigger, and a quarantined binary can flap too.
+
+**Fix (3 changes, main-process only):**
+- [x] New `desktop/src/main/restart-gate.ts` — a pure, unit-testable rolling-window rate limiter:
+      at most `MAX_RESTARTS` (5) respawns per `RESTART_WINDOW_MS` (60 s), then give up + error.
+      Removed the reset-on-health line; the window ages attempts out so a long-up hub still recovers.
+- [x] `start()` re-entrancy guard (`launching` flag) so concurrent starts (onboarding + auto-start +
+      tray + renderer) can't slip past the `child` check during `await findFreePort` and spawn an
+      untracked orphan hub. Flag claimed only after the synchronous mkdirs so a throw can't wedge it.
+- [x] `index.ts` single-instance lock (`app.requestSingleInstanceLock()` + `second-instance` →
+      focus) so a second launch can't run a competing hub over the same DB.
+
+**Verify:**
+- [x] Reproduced the loop in a model: OLD policy = 1000 respawns over 1000 flaps (unbounded); NEW
+      gate = 5 respawns then gives up. Recovery-after-window and reset-on-stop asserted. All pass.
+- [x] `npm run typecheck` green (node + web); `npx electron-vite build` green; confirmed the gate +
+      single-instance code inlined into `out/main/index.js`.
+
+**Not in scope (separate, not the melt):** unsigned/quarantined DMG still needs right-click→Open (a
+signing/notarization task); this fix makes the app *safe* regardless — worst case is an error state,
+never a meltdown. Re-enabling the web download CTAs (hidden in #64) can follow once signing lands.
+
+### Follow-up: full desktop audit (requested "make sure there are no other issues")
+
+Read every main + renderer + shared + preload file and the build scripts. **No other critical/HIGH
+issues.** Verified safe: all 3 process-spawn sites are on-demand + `execFile` array args (no shell
+injection) with timeouts, only the hub spawn needed rate-limiting (fixed); IPC is a typed enumerated
+bridge with `contextIsolation` on / `nodeIntegration` off; `shell.openExternal` only ever gets two
+hardcoded https URLs; no `dangerouslySetInnerHTML`/`eval` anywhere (React escapes all hub-supplied
+strings); CSP set in packaged builds; timers all bounded + cleaned up; icon generator is
+dependency-free.
+
+Fixed two robustness gaps (stability-class, self-contained):
+- [x] **React error boundary** (`renderer/src/components/error-boundary.tsx`, wrapped in `main.tsx`)
+      — a single throwing component (e.g. a malformed public-hub directory entry missing `card`) was
+      white-screening the whole window; now shows a recoverable fallback + Reload.
+- [x] **Cap the session viewer's message buffer** (`.slice(-1000)`) — the only unbounded renderer
+      array; a long-running watch grew it without limit.
+
+Reported, not fixed (LOW — left for a follow-up so this stays scoped):
+- `mcp.ts` `writeConfigServer` renames the live config to `.parler-backup` on every connect, so a
+  second connect clobbers the *pristine* pre-parler backup (the user's other servers are still
+  preserved in the merge — only the safety snapshot is lost). Guard with `if (!existsSync(backup))`.
+- `api.ts` fetch has no timeout; a hung hub connection leaves a spinner (local hub is instant + public
+  is fast, so unlikely). Mirror `probeHealth`'s AbortController.
+- No main-process `unhandledRejection` logger; the supervisor's `void this.start()` on a mkdir throw
+  would reject unhandled (mkdir of userData ~never fails). A log-only handler would surface it.
+- `session-viewer` poll `setInterval(load,…)` isn't re-entrancy-guarded — only matters if a fetch
+  takes >4s (not on localhost). An in-flight guard removes the theoretical double-append.
+
+Verify: `npm run typecheck` green (node + web); `npx electron-vite build` green (all 3 bundles).

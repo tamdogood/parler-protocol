@@ -7,6 +7,9 @@ import { Button } from "@/components/ui/button";
 import { StatusDot, statusMeta } from "@/components/status-dot";
 
 const POLL_MS = 4000;
+// This is a live view, not an archive — keep the tail bounded so a long-running watch can't grow the
+// message buffer without limit.
+const MAX_MESSAGES = 1000;
 
 /**
  * Read-only session viewer, gated by a watch token. Deliberately minimal: connect with a code, then
@@ -49,7 +52,7 @@ export function SessionViewer({ base, initialToken }: { base: string; initialTok
       setError(null);
       setUnauthorized(false);
       if (v.messages.length) {
-        setMessages((prev) => [...prev, ...v.messages]);
+        setMessages((prev) => [...prev, ...v.messages].slice(-MAX_MESSAGES));
         cursor.current = v.cursor;
       }
     } catch (e) {
