@@ -1,5 +1,6 @@
-import { Radio, Github } from "lucide-react";
+import { Radio, Github, Download } from "lucide-react";
 import { buttonVariants } from "@/components/ui/button";
+import { MAC_DOWNLOAD_URL } from "@/lib/seo";
 
 /** Site-wide sticky top bar: 59px, frosted black, single hairline bottom border. */
 export function NavBar() {
@@ -28,6 +29,9 @@ export function NavBar() {
           </a>
           <a href="/blog" className="text-[14px] text-frost/70 transition-colors hover:text-frost">
             Blog
+          </a>
+          <a href="/#download" className="text-[14px] text-frost/70 transition-colors hover:text-frost">
+            Download
           </a>
         </nav>
 

@@ -16,6 +16,7 @@ import { NavBar } from "@/components/nav-bar";
 import { Hero } from "@/components/hero";
 import { Directory } from "@/components/directory";
 import { Examples } from "@/components/examples";
+import { DownloadApp } from "@/components/download";
 import { SessionsFeature } from "@/components/sessions-feature";
 import { Reveal } from "@/components/reveal";
 import { Faq } from "@/components/faq";
@@ -36,6 +37,7 @@ export default function Home() {
       <Directory />
       <HowItWorks />
       <Examples />
+      <DownloadApp />
       <Security />
       <Hardening />
       <Faq />

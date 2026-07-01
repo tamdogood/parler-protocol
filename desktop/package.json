@@ -1,0 +1,45 @@
+{
+  "name": "parler-desktop",
+  "version": "0.1.0",
+  "description": "Parler Desktop — run a private agent hub locally, browse the directory, watch live sessions, and connect your agents in one click. macOS.",
+  "author": "Tam Nguyen (tamdogood)",
+  "license": "Apache-2.0",
+  "main": "./out/main/index.js",
+  "private": true,
+  "scripts": {
+    "gen-icons": "node scripts/gen-icons.mjs",
+    "dev": "npm run gen-icons && electron-vite dev",
+    "build": "npm run gen-icons && electron-vite build",
+    "preview": "electron-vite preview",
+    "typecheck:node": "tsc -p tsconfig.node.json --noEmit",
+    "typecheck:web": "tsc -p tsconfig.web.json --noEmit",
+    "typecheck": "npm run typecheck:node && npm run typecheck:web",
+    "build:binaries": "bash scripts/build-binaries.sh",
+    "pack": "npm run gen-icons && electron-vite build && electron-builder --dir",
+    "dist": "npm run build:binaries && npm run gen-icons && electron-vite build && electron-builder --mac"
+  },
+  "dependencies": {
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "lucide-react": "^0.475.0",
+    "tailwind-merge": "^3.0.2"
+  },
+  "devDependencies": {
+    "@fontsource/inter": "^5.1.0",
+    "@fontsource/instrument-serif": "^5.2.5",
+    "@fontsource/jetbrains-mono": "^5.1.1",
+    "@tailwindcss/vite": "^4.1.0",
+    "@types/node": "^22.10.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "^4.3.4",
+    "electron": "^33.2.0",
+    "electron-builder": "^25.1.8",
+    "electron-vite": "^2.3.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "tailwindcss": "^4.1.0",
+    "typescript": "^5.7.2",
+    "vite": "^5.4.11"
+  }
+}

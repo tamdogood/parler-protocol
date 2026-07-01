@@ -1,0 +1,17 @@
+node_modules/
+out/
+dist/
+release/
+*.log
+*.tsbuildinfo
+
+# Bundled Rust binaries are build artifacts, produced by scripts/build-binaries.sh.
+resources/bin/parler
+resources/bin/parler-hub
+
+# Generated icons (scripts/gen-icons.mjs runs on dev/build).
+build/icon.png
+resources/trayTemplate.png
+resources/trayTemplate@2x.png
+
+.DS_Store

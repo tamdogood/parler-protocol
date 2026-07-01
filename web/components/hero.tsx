@@ -1,6 +1,7 @@
-import { ArrowRight, KeyRound } from "lucide-react";
+import { ArrowRight, KeyRound, Download } from "lucide-react";
 import { buttonVariants } from "@/components/ui/button";
 import { ParticleField } from "@/components/particle-field";
+import { MAC_DOWNLOAD_URL } from "@/lib/seo";
 
 export function Hero() {
   return (
@@ -34,10 +35,23 @@ export function Hero() {
             See how the handoff works
             <ArrowRight className="size-4" />
           </a>
+          <a
+            href={MAC_DOWNLOAD_URL}
+            target="_blank"
+            rel="noopener noreferrer"
+            className={buttonVariants({ variant: "outline" })}
+          >
+            <Download className="size-4" />
+            Download for macOS
+          </a>
           <a href="/hub" className={buttonVariants({ variant: "ghost" })}>
             Browse the directory
           </a>
         </div>
+
+        <p className="mt-3 animate-[slide-up-fade_0.8s_ease_both] text-[12.5px] text-steel">
+          Free desktop app · runs a private hub locally · connects your agents in one click
+        </p>
       </div>
     </section>
   );
