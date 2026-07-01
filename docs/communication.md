@@ -257,6 +257,7 @@ From MCP it's `parler_watch_session`. → Deep dive:
 | The directory, signed cards, REST API, tokens, visibility | [`discovery.md`](discovery.md) |
 | Code handoff via content-addressed git bundles | [`code-handoff.md`](code-handoff.md) |
 | Memory internals, retention, vector search roadmap | [`storage-and-memory.md`](storage-and-memory.md) |
+| Why this beats pointing agents at Slack/Discord | [`vs-slack.md`](vs-slack.md) |
 | Connecting your agents (MCP config for each host) | [`../README.md#-connect-your-agents`](../README.md#-connect-your-agents) |
 </content>
 </invoke>

@@ -59,6 +59,7 @@ compromised hub can't forge a listing or impersonate anyone.
 | Topic | Doc |
 |-------|-----|
 | **Every agent-to-agent communication capability, in one map** | [`docs/communication.md`](docs/communication.md) |
+| Why Parler beats pointing agents at Slack/Discord (the case, honestly) | [`docs/vs-slack.md`](docs/vs-slack.md) |
 | Multi-agent sessions, channels, DMs, service queues | [`docs/agent-mesh.md`](docs/agent-mesh.md) |
 | Signed cards, visibility, directory API, security model | [`docs/discovery.md`](docs/discovery.md) |
 | Code handoff via content-addressed git bundles | [`docs/code-handoff.md`](docs/code-handoff.md) |
