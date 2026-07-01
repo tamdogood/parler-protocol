@@ -6,11 +6,15 @@ import { EventEmitter } from "node:events";
 import type { HubStatus, HubStorage } from "../shared/types";
 import { hubBinary, hubDbPath, hubBlobDir, joinSecretPath, dataDir } from "./paths";
 import { loadSettings } from "./settings";
+import { RestartGate } from "./restart-gate";
 
 const HEALTH_INTERVAL_MS = 3000;
 const START_TIMEOUT_MS = 15000;
 const LOG_RING = 500;
+// At most MAX_RESTARTS respawns within RESTART_WINDOW_MS. Rate-limited (not a simple counter) so a
+// hub that flaps healthy→dead can't respawn forever and cook the machine; see RestartGate.
 const MAX_RESTARTS = 5;
+const RESTART_WINDOW_MS = 60_000;
 
 /** Find a free TCP port on 127.0.0.1, starting at `start` and stepping up. */
 function findFreePort(start: number, tries = 20): Promise<number> {
@@ -53,7 +57,8 @@ export class HubSupervisor extends EventEmitter {
   private child: ChildProcessWithoutNullStreams | null = null;
   private logs: string[] = [];
   private healthTimer: NodeJS.Timeout | null = null;
-  private restarts = 0;
+  private readonly restarts = new RestartGate(MAX_RESTARTS, RESTART_WINDOW_MS);
+  private launching = false;
   private stopping = false;
   private status: HubStatus = {
     phase: "stopped",
@@ -89,18 +94,24 @@ export class HubSupervisor extends EventEmitter {
     }
   }
 
-  /** Start the hub if not already running. Idempotent. */
+  /** Start the hub if not already running. Idempotent and re-entrancy-safe. */
   async start(): Promise<HubStatus> {
-    if (this.child) return this.getStatus();
+    if (this.child || this.launching) return this.getStatus();
     this.stopping = false;
     const settings = loadSettings();
     mkdirSync(dataDir(), { recursive: true });
     mkdirSync(hubBlobDir(), { recursive: true });
 
+    // Claim the launch slot only now: everything above is synchronous (no second start() can
+    // interleave, and a throwing mkdir won't wedge the slot). `launching` then guards the one async
+    // gap below (findFreePort) where a concurrent start() would otherwise spawn a second, untracked
+    // hub over the same DB.
+    this.launching = true;
     let port: number;
     try {
       port = await findFreePort(settings.hubPort);
     } catch (e) {
+      this.launching = false;
       this.setStatus({ phase: "error", error: (e as Error).message });
       return this.getStatus();
     }
@@ -142,10 +153,12 @@ export class HubSupervisor extends EventEmitter {
         env: { ...process.env, RUST_LOG: process.env.RUST_LOG || "info" },
       });
     } catch (e) {
+      this.launching = false;
       this.setStatus({ phase: "error", error: `failed to launch hub: ${(e as Error).message}` });
       return this.getStatus();
     }
     this.child = child;
+    this.launching = false;
     this.setStatus({ pid: child.pid ?? null });
 
     child.stdout.on("data", (b: Buffer) => this.log(b.toString()));
@@ -161,7 +174,9 @@ export class HubSupervisor extends EventEmitter {
     const waitHealthy = async (): Promise<void> => {
       while (Date.now() < deadline && this.child === child && !this.stopping) {
         if (await probeHealth(url)) {
-          this.restarts = 0;
+          // Note: we intentionally do NOT clear the restart budget here. Resetting on every health
+          // check let a hub that became healthy then died respawn forever; the rolling window in
+          // RestartGate ages attempts out on its own once the hub stays up past RESTART_WINDOW_MS.
           this.setStatus({ phase: "running", healthy: true });
           this.beginHealthLoop(url, child);
           return;
@@ -196,25 +211,28 @@ export class HubSupervisor extends EventEmitter {
       this.setStatus({ phase: "stopped", pid: null, healthy: false, startedAt: null });
       return;
     }
-    // Unexpected exit: restart with a cap so a persistently-broken binary doesn't loop forever.
-    if (this.restarts < MAX_RESTARTS) {
-      this.restarts += 1;
-      this.log(`restarting hub (attempt ${this.restarts}/${MAX_RESTARTS})…`);
-      this.setStatus({ phase: "starting", pid: null, healthy: false });
-      setTimeout(() => void this.start(), 800 * this.restarts);
-    } else {
+    // Unexpected exit: restart, but rate-limited. A hub that crashes right after becoming healthy
+    // must not respawn forever (that pegs the CPU and cooks the machine) — the gate allows at most
+    // MAX_RESTARTS attempts per RESTART_WINDOW_MS, then we give up and surface an error.
+    const attempt = this.restarts.tryAcquire();
+    if (attempt === null) {
       this.setStatus({
         phase: "error",
         pid: null,
         healthy: false,
         error: "hub crashed repeatedly — check the logs and port availability",
       });
+      return;
     }
+    this.log(`restarting hub (attempt ${attempt}/${MAX_RESTARTS})…`);
+    this.setStatus({ phase: "starting", pid: null, healthy: false });
+    setTimeout(() => void this.start(), Math.min(800 * attempt, 5000));
   }
 
   /** Stop the hub (graceful SIGTERM, then SIGKILL). */
   async stop(): Promise<HubStatus> {
     this.stopping = true;
+    this.restarts.reset(); // a deliberate stop/restart clears the crash budget
     if (this.healthTimer) {
       clearInterval(this.healthTimer);
       this.healthTimer = null;

@@ -11,9 +11,24 @@ import type { HubStatus } from "../shared/types";
 
 app.setName("Parler");
 
+// Only one instance may own the local hub + its SQLite store. A second instance would spawn a
+// competing hub over the same database — two writers fighting over one file is a fast path to a
+// crash-restart storm. Bounce extra launches and focus the window that's already running.
+const hasSingleInstanceLock = app.requestSingleInstanceLock();
+if (!hasSingleInstanceLock) app.quit();
+
 const supervisor = new HubSupervisor();
 let mainWindow: BrowserWindow | null = null;
 let isQuitting = false;
+
+function focusMainWindow(): void {
+  if (!mainWindow) return;
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
+}
+
+app.on("second-instance", focusMainWindow);
 
 function createWindow(): void {
   mainWindow = new BrowserWindow({
@@ -93,6 +108,9 @@ function wireEvents(): void {
 }
 
 app.whenReady().then(() => {
+  // A second instance lost the lock above and is on its way out — don't spin up a window or hub.
+  if (!hasSingleInstanceLock) return;
+
   // Dock icon in dev (packaged builds use the bundled .icns).
   if (!app.isPackaged && process.platform === "darwin" && existsSync(appIcon())) {
     try {
