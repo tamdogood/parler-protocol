@@ -1,3 +1,56 @@
+# Task: Parler Desktop — SIMPLIFY for 10/10 UX (declutter) — 2026-06-30
+
+**User:** too many features/buttons; clunky & cluttered. Simplify as much as possible, still intuitive.
+
+**Model:** *the app IS your local hub.* It auto-runs in the background; you connect agents to it and
+watch them. Public hub becomes an advanced option inside Connect, not a global axis.
+
+**Cuts (6 screens → 3 + gear):**
+- Nav = **Agents · Connect · Sessions** + a Settings **gear** in the footer. Remove **Dashboard**
+  (redundant) and **Local Hub** from the nav (fold into Settings → "Manage local hub", still there for
+  power users). Remove the **global Local/Public titlebar switch** (app = local hub).
+- **Agents** (home): your hub's agents show with **zero friction** — app auto-mints a directory token
+  (`parler token`) so the private hub's full roster is visible without a paste. Just search + cards.
+  Drop scope toggle, sort, grid/list toggle, tag facets, token-gate.
+- **Connect**: local by default; "public hub" demoted to a small advanced toggle. One action per host.
+  Manual snippet collapsed under "Other MCP hosts".
+- **Sessions**: keep watch viewer but **remove Timeline Replay** (play/scrub/speed buttons) — chat
+  only. "Open a session" = recap + Open; topic/no-approval under a small "Options" disclosure.
+- **Settings**: minimal + one collapsible "Local hub (advanced)" (start/stop, mode, port, secret,
+  logs, data folder). Drop the default-connect-target setting.
+- **Onboarding**: 2 steps (Welcome → Connect first agent to the auto-started local hub). Drop hub-choice.
+- **Titlebar**: clean drag bar + tiny status pill → Settings.
+
+**Files:** main: +`parler token` mint + `hub.directoryToken` IPC (cached). renderer: rewrite
+`session-viewer` (chat-only), simplify `directory`/`connect`/`sessions`/`settings`/`onboarding`/
+`sidebar`/`titlebar`/`App`; delete `dashboard`, replace `directory-screen`→`agents-screen`.
+
+**Verify:** typecheck + build + headless boot clean; `dist` DMG launches. Then update PR.
+
+## Review — DONE & VERIFIED (2026-06-30) ✅
+Halved the surface (6 nav destinations → **3 + a Settings gear**) and cut per-screen clutter, around
+one model: *the app is your local hub; connect agents and watch them.*
+- **Removed:** Dashboard, Local Hub from nav (now Settings → "Manage"), the global Local/Public
+  titlebar switch, and the Session viewer's **Timeline Replay** (play/scrub/speed). Nav = Agents ·
+  Connect · Sessions + gear.
+- **Agents (home):** your hub's full private roster shows with **zero paste** — app auto-mints a
+  directory token (`parler token`) and reads `scope=hub`; falls back to public if the hub's down.
+  Just search + status chips; dropped scope/sort/grid-list/tag-facets/token-gate. Friendly empty state.
+- **Connect:** local by default, public demoted to a one-line link; one action per host; manual
+  snippet collapsed. **Sessions:** recap + Open (topic/approval under "Options"); chat-only viewer.
+  **Settings:** trimmed; hub advanced kept behind "Manage". **Onboarding:** 3 steps → 2.
+- **Main:** added `hub.directoryToken` IPC (cached, cleared when hub leaves `running`) + `parler token`
+  driver; hardened event forwarding against a torn-down window (fixed an `Object has been destroyed`
+  teardown rejection).
+- **Verified:** typecheck + build clean; headless boot loads renderer with **no console errors and no
+  rejection**; in-app hub smoke → running/healthy/api 200; **directory-token smoke** → `parler token`
+  parsed, `/api/directory?scope=hub` 401 without / 200 + roster with; `dist` DMG rebuilt, packaged app
+  launches clean. Deleted `dashboard.tsx` + `directory-screen.tsx`.
+
+## Review — (superseded by the section above)
+
+---
+
 # Task: Parler Desktop — macOS Electron app (hub + directory + session viewer) — 2026-06-30
 
 **User ask:** a downloadable macOS app that (1) serves everything the website does (agent

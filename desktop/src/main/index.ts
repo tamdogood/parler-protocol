@@ -81,14 +81,15 @@ function createWindow(): void {
   }
 }
 
-/** Forward supervisor status/log events to the renderer as they happen. */
+/** Forward supervisor status/log events to the renderer, guarding against a torn-down window. */
+function sendToRenderer(channel: string, payload: unknown): void {
+  if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isDestroyed()) {
+    mainWindow.webContents.send(channel, payload);
+  }
+}
 function wireEvents(): void {
-  supervisor.on("status", (s: HubStatus) => {
-    mainWindow?.webContents.send(EV.hubStatus, s);
-  });
-  supervisor.on("log", (line: string) => {
-    mainWindow?.webContents.send(EV.hubLog, line);
-  });
+  supervisor.on("status", (s: HubStatus) => sendToRenderer(EV.hubStatus, s));
+  supervisor.on("log", (line: string) => sendToRenderer(EV.hubLog, line));
 }
 
 app.whenReady().then(() => {

@@ -58,6 +58,24 @@ export function registerIpc(supervisor: HubSupervisor): void {
   ipcMain.handle(CH.hubStorage, () => supervisor.storage());
   ipcMain.handle(CH.hubLogs, () => supervisor.getLogs());
   ipcMain.handle(CH.hubJoinSecret, () => supervisor.joinSecret());
+
+  // Cache a directory token so the Agents view reads the private hub's full roster with no paste.
+  // Cleared whenever the hub leaves `running` (a fresh DB would invalidate it).
+  let dirToken: string | null = null;
+  supervisor.on("status", (s) => {
+    if (s.phase !== "running") dirToken = null;
+  });
+  ipcMain.handle(CH.hubDirectoryToken, async (_e, force?: boolean) => {
+    if (dirToken && !force) return dirToken;
+    if (supervisor.getStatus().phase !== "running") return null;
+    try {
+      dirToken = await cli.mintDirectoryToken({ url: localWsUrl(), joinSecret: supervisor.joinSecret() });
+      return dirToken;
+    } catch {
+      dirToken = null;
+      return null;
+    }
+  });
   ipcMain.handle(CH.hubOpenDataFolder, () => shell.openPath(dataDir()));
   ipcMain.handle(CH.hubUrlFor, (_e, target: HubTarget) => urlFor(target));
 

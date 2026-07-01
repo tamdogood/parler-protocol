@@ -12,6 +12,7 @@ import {
   Globe,
   Lock,
   Loader2,
+  ChevronLeft,
 } from "lucide-react";
 import type { HubStatus, HubStorage, Settings } from "@shared/types";
 import { parler } from "@/lib/ipc";
@@ -24,10 +25,12 @@ export function LocalHubScreen({
   status,
   settings,
   onUpdateSettings,
+  onBack,
 }: {
   status: HubStatus | null;
   settings: Settings | null;
   onUpdateSettings: (patch: Partial<Settings>) => Promise<void>;
+  onBack: () => void;
 }) {
   const [storage, setStorage] = useState<HubStorage | null>(null);
   const [logs, setLogs] = useState<string[]>([]);
@@ -84,6 +87,9 @@ export function LocalHubScreen({
 
   return (
     <div className="mx-auto max-w-[900px] px-8 py-8">
+      <button onClick={onBack} className="no-drag mb-5 inline-flex items-center gap-1.5 text-[13px] text-steel transition-colors hover:text-frost">
+        <ChevronLeft className="size-4" /> Settings
+      </button>
       <div className="flex flex-wrap items-center justify-between gap-4">
         <div className="flex items-center gap-3">
           <span className="flex size-11 items-center justify-center rounded-[12px] border border-graphite-rail surface-lift">

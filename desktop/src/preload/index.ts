@@ -25,6 +25,7 @@ const api: ParlerApi = {
     storage: () => ipcRenderer.invoke(CH.hubStorage),
     logs: () => ipcRenderer.invoke(CH.hubLogs),
     joinSecret: () => ipcRenderer.invoke(CH.hubJoinSecret),
+    directoryToken: (force) => ipcRenderer.invoke(CH.hubDirectoryToken, force),
     openDataFolder: () => ipcRenderer.invoke(CH.hubOpenDataFolder),
     urlFor: (target) => ipcRenderer.invoke(CH.hubUrlFor, target),
     onStatus: (cb) => subscribe(EV.hubStatus, cb),

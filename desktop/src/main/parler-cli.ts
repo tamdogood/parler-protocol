@@ -101,6 +101,24 @@ export async function openSession(
   return { key, room, watch };
 }
 
+/**
+ * Mint a directory token so the app can read this (private) hub's full roster without a manual paste.
+ * Long TTL — the app caches it and re-mints on demand.
+ */
+export async function mintDirectoryToken(ctx: HubContext, ttlSecs = 86400): Promise<string> {
+  await ensureIdentity(ctx);
+  const r = await run(["token", "--ttl", String(ttlSecs)], ctx);
+  if (r.code !== 0) throw new Error(cleanErr(r.stderr || r.stdout) || "failed to mint directory token");
+  const lines = r.stdout.split(/\r?\n/);
+  const headerIdx = lines.findIndex((l) => l.includes("directory token"));
+  const token = lines
+    .slice(headerIdx + 1)
+    .map((l) => l.trim())
+    .find((l) => l.length >= 12 && !/\s/.test(l));
+  if (!token) throw new Error("could not parse the directory token from parler output");
+  return token;
+}
+
 /** Mint a read-only watch code for a session this identity owns. */
 export async function mintWatch(room: string, ctx: HubContext): Promise<{ token: string; room: string }> {
   const r = await run(["session", "watch", "--room", room], ctx);

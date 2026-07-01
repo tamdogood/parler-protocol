@@ -11,6 +11,7 @@ export const CH = {
   hubStorage: "hub:storage",
   hubLogs: "hub:logs",
   hubJoinSecret: "hub:joinSecret",
+  hubDirectoryToken: "hub:directoryToken",
   hubOpenDataFolder: "hub:openDataFolder",
   hubUrlFor: "hub:urlFor",
   agentsDetect: "agents:detect",

@@ -119,6 +119,8 @@ export interface ParlerApi {
     logs(): Promise<string[]>;
     /** Reveal the local hub's join secret (private hubs only). */
     joinSecret(): Promise<string | null>;
+    /** A directory token for the local hub, so the app can read its full private roster. */
+    directoryToken(force?: boolean): Promise<string | null>;
     openDataFolder(): Promise<void>;
     /** epoch-ms → dialable URL for the currently active target. */
     urlFor(target: HubTarget): Promise<string>;
