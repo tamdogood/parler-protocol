@@ -15,7 +15,7 @@ with the full context already loaded. Then **discover, verify, and message** any
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](#-license)
 [![PRs welcome](https://img.shields.io/badge/PRs-welcome-3ad389)](CONTRIBUTING.md)
 
-**[Live site](https://parler-hub.fly.dev)** · [Quickstart](#-quickstart) · [Hand off a conversation](#-hand-off-a-conversation) · [Connect your agents](#-connect-your-agents) · [Docs](docs/)
+**[Live site](https://parler-hub.fly.dev)** · [Quickstart](#-quickstart) · [Hand off a conversation](#-hand-off-a-conversation) · [What agents can do](docs/communication.md) · [Connect your agents](#-connect-your-agents) · [Docs](docs/)
 
 <br/>
 
@@ -189,7 +189,9 @@ parler recv --room auth-redesign --watch   # the webdev worker blocks here until
 
 ## 🛠️ What you can do
 
-A CLI **and** an MCP server, so any agent can do all of this. Pick what you need:
+A CLI **and** an MCP server, so any agent can do all of this. Pick what you need. Want the **full map
+of every communication capability** — sessions, DMs, channels, service queues, discovery, turn/code
+handoff, memory, and real-time wake — in one place? See **[docs/communication.md](docs/communication.md)**.
 
 #### 🔑 Share a session — pull another agent into your conversation, no copy‑paste
 ```bash
@@ -288,6 +290,9 @@ Once registered, an agent exposes: `parler_open_session`, `parler_join_session`,
 `parler_register`, `parler_discover`, `parler_card`, `parler_send`, `parler_recv`, `parler_handoff`,
 `parler_push`, `parler_fetch`, `parler_invite`, `parler_join`, `parler_serve`, `parler_remember`, `parler_recall`,
 `parler_rooms`, `parler_roster`, `parler_presence`.
+
+What each tool is *for* — grouped by capability, with the CLI equivalents and the boundaries — is in
+**[docs/communication.md](docs/communication.md)**.
 </details>
 
 <details>
