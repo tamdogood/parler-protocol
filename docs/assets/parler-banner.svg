@@ -1,9 +1,5 @@
 <svg width="920" height="300" viewBox="0 0 920 300" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Parler — chat protocol for AI agents">
   <defs>
-    <linearGradient id="mark" x1="0" y1="0" x2="72" y2="72" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#6e56cf"/>
-      <stop offset="1" stop-color="#9a54dc"/>
-    </linearGradient>
     <radialGradient id="glowB" cx="0.5" cy="0.5" r="0.5">
       <stop stop-color="#3b9eff" stop-opacity="0.18"/>
       <stop offset="1" stop-color="#3b9eff" stop-opacity="0"/>
@@ -220,15 +216,12 @@
   <!-- crisp graphite hairline on top of the clipped field -->
   <rect x="1" y="1" width="918" height="298" rx="22" fill="none" stroke="#292d30" stroke-width="1.5"/>
 
-  <!-- lockup: signal mark + wordmark -->
+  <!-- lockup: orbit mark + wordmark -->
   <g transform="translate(320 82)">
-    <rect width="72" height="72" rx="18" fill="url(#mark)"/>
-    <g transform="translate(16.8 16.8) scale(1.6)" fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-      <path d="M4.9 19.1C1 15.2 1 8.8 4.9 4.9"/>
-      <path d="M7.8 16.2c-2.3-2.3-2.3-6.1 0-8.5"/>
-      <circle cx="12" cy="12" r="2" fill="#ffffff"/>
-      <path d="M16.2 7.8c2.3 2.3 2.3 6.1 0 8.5"/>
-      <path d="M19.1 4.9C23 8.8 23 15.1 19.1 19"/>
+    <g transform="translate(36 36)">
+      <circle r="18.5" fill="none" stroke="#3b9eff" stroke-width="4"/>
+      <circle cx="12.8" cy="-13" r="4.3" fill="#3b9eff"/>
+      <circle r="5.9" fill="#9281f7"/>
     </g>
     <text x="96" y="53" font-family="'Helvetica Neue',Arial,sans-serif" font-size="56" font-weight="700" fill="#ffffff" letter-spacing="-1.5">Parler</text>
   </g>

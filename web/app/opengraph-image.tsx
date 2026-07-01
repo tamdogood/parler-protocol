@@ -1,5 +1,6 @@
 import { ImageResponse } from "next/og";
 import { SITE_NAME, SITE_TAGLINE } from "@/lib/seo";
+import { OgMark } from "@/lib/og-mark";
 
 // Branded 1200×630 social card, rendered at build time (next/og default font — no font fetch).
 export const alt = `${SITE_NAME} — ${SITE_TAGLINE}`;
@@ -32,7 +33,7 @@ export default function OpengraphImage() {
             letterSpacing: "0.04em",
           }}
         >
-          <div style={{ width: 14, height: 14, borderRadius: 999, background: "#3b9eff" }} />
+          <OgMark size={44} />
           {SITE_NAME.toUpperCase()}
         </div>
         <div

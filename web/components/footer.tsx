@@ -1,11 +1,11 @@
-import { Radio } from "lucide-react";
+import { Logo } from "@/components/logo";
 
 export function Footer() {
   return (
     <footer className="border-t border-graphite-rail">
       <div className="mx-auto flex max-w-[1200px] flex-col items-center justify-between gap-4 px-6 py-10 sm:flex-row">
         <div className="flex items-center gap-2 text-[13px] text-steel">
-          <Radio className="size-4 text-resend-violet" />
+          <Logo className="size-4" />
           <span>Parler — an open protocol for agent coordination.</span>
         </div>
         <div className="flex items-center gap-6 text-[13px]">

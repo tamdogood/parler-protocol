@@ -1,6 +1,7 @@
 import { ImageResponse } from "next/og";
 import { POSTS, getPost } from "@/lib/blog";
 import { SITE_NAME, SITE_TAGLINE } from "@/lib/seo";
+import { OgMark } from "@/lib/og-mark";
 
 export const alt = `${SITE_NAME} — Blog`;
 export const size = { width: 1200, height: 630 };
@@ -47,7 +48,7 @@ export default async function Image({ params }: { params: Promise<{ slug: string
             letterSpacing: "0.04em",
           }}
         >
-          <div style={{ width: 14, height: 14, borderRadius: 999, background: "#3b9eff" }} />
+          <OgMark size={44} />
           {SITE_NAME.toUpperCase()} · BLOG
         </div>
         <div style={{ display: "flex", flexDirection: "column" }}>
