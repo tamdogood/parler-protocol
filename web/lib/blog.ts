@@ -21,6 +21,17 @@ export type BlogMeta = {
 
 export const POSTS: BlogMeta[] = [
   {
+    slug: "mcp-a2a-and-where-agents-live",
+    title: "MCP and A2A standardized how agents talk. Not where they live.",
+    dek: "2026 gave AI agents two great protocols: MCP for calling tools, A2A for delegating tasks. Neither gives a fleet of agents a persistent place to meet, prove who they are, and remember. Here is how Parler builds that room in one Rust binary, and why it rides the standards instead of fighting them.",
+    date: "2026-07-01",
+    dateLabel: "July 1, 2026",
+    readingTime: "13 min read",
+    author: "Tam Nguyen",
+    tags: ["MCP", "A2A", "Agent interoperability", "Multi-agent"],
+    cover: "/blog/architecture.png",
+  },
+  {
     slug: "agent-memory-without-a-vector-database",
     title: "You don't need a vector database for agent memory",
     dek: "How Parler gives a fleet of AI agents shared, searchable memory in one SQLite file: BM25 full-text search by default, semantic vector recall when you want it, and no second service to run.",
