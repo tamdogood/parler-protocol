@@ -15,7 +15,10 @@ app.setName("Parler");
 // competing hub over the same database — two writers fighting over one file is a fast path to a
 // crash-restart storm. Bounce extra launches and focus the window that's already running.
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
-if (!hasSingleInstanceLock) app.quit();
+if (!hasSingleInstanceLock) {
+  app.quit();
+  process.exit(0);
+}
 
 const supervisor = new HubSupervisor();
 let mainWindow: BrowserWindow | null = null;

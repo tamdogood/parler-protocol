@@ -7,6 +7,7 @@ release/
 
 # Bundled Rust binaries are build artifacts, produced by scripts/build-binaries.sh.
 resources/bin/parler
+resources/bin/parler-cli
 resources/bin/parler-hub
 
 # Generated icons (scripts/gen-icons.mjs runs on dev/build).

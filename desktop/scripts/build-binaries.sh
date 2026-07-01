@@ -35,8 +35,15 @@ for bin in parler parler-hub; do
     echo "error: expected $REL/$bin — did the cargo build succeed?" >&2
     exit 1
   fi
-  cp "$REL/$bin" "$BIN_OUT/$bin"
-  chmod +x "$BIN_OUT/$bin"
+  # On macOS, running a helper binary named 'parler' inside 'Parler.app' causes
+  # LaunchServices/OS to case-insensitively resolve it to 'Parler.app' (the Electron GUI itself),
+  # triggering a recursive infinite loop of app launches. We rename the helper to 'parler-cli' to avoid this.
+  dest_name="$bin"
+  if [ "$bin" = "parler" ]; then
+    dest_name="parler-cli"
+  fi
+  cp "$REL/$bin" "$BIN_OUT/$dest_name"
+  chmod +x "$BIN_OUT/$dest_name"
 done
 
 echo "✓ bundled → $BIN_OUT"
