@@ -7,10 +7,12 @@ import { POSTS, getPost } from "@/lib/blog";
 import { InsideParler } from "@/components/blog/inside-parler";
 import { AgentMemory } from "@/components/blog/agent-memory-without-a-vector-database";
 import { McpA2aWhereAgentsLive } from "@/components/blog/mcp-a2a-and-where-agents-live";
+import { AgentMemory2026 } from "@/components/blog/ai-agent-memory-in-2026";
 import { SITE_URL, SITE_NAME, ALT_RSS } from "@/lib/seo";
 
 /** slug → fully-rendered article body. Add a line here when you add a post. */
 const BODIES: Record<string, React.ReactNode> = {
+  "ai-agent-memory-in-2026": <AgentMemory2026 />,
   "mcp-a2a-and-where-agents-live": <McpA2aWhereAgentsLive />,
   "agent-memory-without-a-vector-database": <AgentMemory />,
   "stop-copy-pasting-between-ai-agents": <InsideParler />,
