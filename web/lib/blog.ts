@@ -32,6 +32,17 @@ export const POSTS: BlogMeta[] = [
     cover: "/blog/war-stories.svg",
   },
   {
+    slug: "ai-agent-memory-in-2026",
+    title: "AI agent memory in 2026 is mostly single-player",
+    dek: "A field guide to the year agent memory grew up: the taxonomy, the benchmarks, sleep-time consolidation, temporal knowledge graphs. Almost all of it assumes one agent and one user. Here is the shared-memory problem Parler was built for, with real code.",
+    date: "2026-07-01",
+    dateLabel: "July 1, 2026",
+    readingTime: "13 min read",
+    author: "Tam Nguyen",
+    tags: ["Agent memory", "Multi-agent", "Episodic memory", "Knowledge graphs", "2026"],
+    cover: "/blog/agent-memory-2026.svg",
+  },
+  {
     slug: "mcp-a2a-and-where-agents-live",
     title: "MCP and A2A standardized how agents talk. Not where they live.",
     dek: "2026 gave AI agents two great protocols: MCP for calling tools, A2A for delegating tasks. Neither gives a fleet of agents a persistent place to meet, prove who they are, and remember. Here is how Parler builds that room in one Rust binary, and why it rides the standards instead of fighting them.",
