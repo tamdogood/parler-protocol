@@ -72,6 +72,27 @@ export interface ActionResult {
   message: string;
 }
 
+/** One host's outcome from `parler connect --json` (wire or `--remove`). */
+export interface ConnectResult {
+  id: string;
+  name: string;
+  /** "wired" | "removed" | "not-configured" | "error". */
+  status: string;
+  detail: string;
+}
+
+/** Result of wiring every detected agent in one action. */
+export interface ConnectAllResult {
+  ok: boolean;
+  /** How many agents were wired. */
+  connected: number;
+  /** How many hosts the CLI acted on. */
+  total: number;
+  results: ConnectResult[];
+  /** Set only when nothing happened (e.g. no agents detected), for surfacing. */
+  message?: string;
+}
+
 /** A copy-paste connect snippet for a given target (for manual/unsupported hosts). */
 export interface ConnectSnippet {
   /** The exact env used, e.g. { PARLER_HUB, PARLER_JOIN_SECRET? }. */
@@ -130,6 +151,8 @@ export interface ParlerApi {
   agents: {
     detectHosts(): Promise<McpHost[]>;
     connect(hostId: string, target: HubTarget): Promise<ActionResult>;
+    /** Wire every detected agent at once — the CLI's `parler connect` in one click. */
+    connectAll(target: HubTarget): Promise<ConnectAllResult>;
     disconnect(hostId: string): Promise<ActionResult>;
     snippet(target: HubTarget): Promise<ConnectSnippet>;
   };

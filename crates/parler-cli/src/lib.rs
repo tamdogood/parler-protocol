@@ -167,6 +167,9 @@ struct ConnectArgs {
     /// List detected agents and their current Parler status; write nothing.
     #[arg(long)]
     list: bool,
+    /// Remove Parler from the named agents (or every configured one when none are named).
+    #[arg(long)]
+    remove: bool,
     /// Emit machine-readable JSON (used by the Parler desktop app).
     #[arg(long)]
     json: bool,
@@ -543,6 +546,7 @@ fn cmd_connect(a: ConnectArgs) -> Result<()> {
         join_secret: a.join_secret,
         print: a.print,
         list: a.list,
+        remove: a.remove,
         json: a.json,
     })
 }

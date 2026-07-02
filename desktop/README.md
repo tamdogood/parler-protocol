@@ -4,10 +4,11 @@ A native macOS app that makes Parler one download away:
 
 - **Run a private hub locally** — one toggle spawns the real `parler-hub` binary with a persistent
   SQLite directory + memory + blob store in the app's data folder. No Docker, no terminal.
-- **Connect agents in one click** — detects Claude Code / Cursor / Windsurf / Gemini / Claude Desktop
-  and wires the `parler` MCP server to either your local hub or the shared hub (join secret injected).
-  This mirrors the CLI's `parler connect`, the single source of truth for wiring (which also covers
-  Codex's TOML config); a future revision has the app shell out to it directly for one code path.
+- **Connect every agent in one click** — one button wires the `parler` MCP server into every agent on
+  the Mac (Claude Code, Codex, Cursor, Windsurf, Gemini, Claude Desktop), pointed at your local hub or
+  the shared hub (join secret injected). It does this by **shelling out to the bundled `parler
+  connect --json`** — literally the same code path as the CLI, so the app and terminal support exactly
+  the same agents and wire them identically (per-agent identity, Codex TOML, and all).
 - **Browse the directory** and **watch live sessions** (chat + timeline replay) — everything the
   website does, in the same dark "Resend obsidian terminal" theme, but pointed at any hub.
 - **Open sessions** — mint a join key + read-only watch code seeded with a context recap.
@@ -19,7 +20,7 @@ It ships the compiled Rust binaries inside the app, so users need nothing else i
 ```
 Electron main (Node)                         Renderer (Vite + React + Tailwind v4)
  ├─ HubSupervisor  ── spawns parler-hub ──▶  SQLite + blobs in userData/
- ├─ mcp.ts         ── claude mcp add / edits Cursor & Claude Desktop config
+ ├─ mcp.ts         ── drives `parler connect` (detect · connect all · disconnect)
  ├─ parler-cli.ts  ── drives bundled `parler` (open session, mint watch, whoami)
  ├─ settings.ts    ── userData/settings.json
  └─ ipc.ts / preload ── typed window.parler bridge (contextIsolation on)

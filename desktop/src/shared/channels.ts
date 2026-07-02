@@ -16,6 +16,7 @@ export const CH = {
   hubUrlFor: "hub:urlFor",
   agentsDetect: "agents:detect",
   agentsConnect: "agents:connect",
+  agentsConnectAll: "agents:connectAll",
   agentsDisconnect: "agents:disconnect",
   agentsSnippet: "agents:snippet",
   sessionOpen: "session:open",

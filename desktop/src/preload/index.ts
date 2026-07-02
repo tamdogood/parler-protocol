@@ -34,6 +34,7 @@ const api: ParlerApi = {
   agents: {
     detectHosts: () => ipcRenderer.invoke(CH.agentsDetect),
     connect: (hostId, target) => ipcRenderer.invoke(CH.agentsConnect, hostId, target),
+    connectAll: (target) => ipcRenderer.invoke(CH.agentsConnectAll, target),
     disconnect: (hostId) => ipcRenderer.invoke(CH.agentsDisconnect, hostId),
     snippet: (target) => ipcRenderer.invoke(CH.agentsSnippet, target),
   },
