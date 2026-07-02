@@ -1,3 +1,71 @@
+# Task: Desktop app = same simplicity as the CLI (single source of truth) — 2026-07-01
+
+**User:** "make sure the macOS app has the same simplicity as the CLI and the whole thesis of the
+app; make it intuitive and easy to use."
+
+**Thesis (AGENTS.md/README + connect.rs module doc):** setup is ONE command — `parler connect`
+auto-detects *every* agent and wires them all; it is "the single source of truth ... the desktop app
+shells out to `parler connect --json`." Flagship flow = session handoff.
+
+**Gaps found (app diverges from the CLI/thesis):**
+1. Not one click — `ConnectScreen` wires one host at a time; no "connect everything".
+2. App re-implements wiring in `mcp.ts` instead of driving `parler connect` → **Codex missing
+   entirely** + agents get no per-agent `PARLER_HOME`/`PARLER_NAME` (they collide on one identity).
+3. No `parler connect --remove`, so the app kept its own removal path (last straggler).
+This is the **documented follow-up** of the 2026-07-01 "One good way to set up Parler" task
+("Full CLI-delegation + Codex-in-GUI left as a follow-up (needs ... a connect `remove`/enriched
+`--list`)").
+
+**Plan:**
+- [ ] CLI: `parler connect --remove [hosts…]` (symmetric unwire) + add `hub` to `--list --json`
+      (so the app can classify local/public) + tests. `CI_SKIP_WEB=1 make ci` green.
+- [ ] App main `mcp.ts`: thin driver over bundled `parler` — detect (`--list --json`),
+      `connect`/`connectAll` (`connect [host] --hub … [--join-secret] --json`), `disconnect`
+      (`connect --remove host --json`). Codex + per-agent identity fixed for free.
+- [ ] IPC/types/preload: add `agents.connectAll(target)`.
+- [ ] `ConnectScreen`: primary one-click **"Connect all detected agents"**; per-host demoted.
+- [ ] `onboarding`: "Connect all my agents" (not just Claude Code).
+- [ ] Verify: `make ci` (Rust) + desktop `npm run typecheck` + `npm run build`.
+
+## Review — DONE & VERIFIED (2026-07-01) ✅
+
+Made the macOS app's setup **literally the CLI in a button**: the app now shells out to the bundled
+`parler connect --json` for all agent wiring, and Connect leads with a one-click "Connect all detected
+agents." This closes the documented follow-up and makes the AGENTS.md/connect.rs thesis ("the desktop
+app shells out to `parler connect --json`") true for the first time.
+
+**What changed (thesis + simplicity):**
+- **One click wires everything.** New `agents.connectAll(target)` runs `parler connect --hub …
+  [--join-secret …] --json` (no host args = auto-detect + wire all). ConnectScreen's hero is now
+  "Connect all detected agents (N)"; per-host rows demoted to "Or connect one at a time." Onboarding
+  step 2 is "Connect your agents" → one "Connect all" button (was Claude-Code-only).
+- **Single source of truth.** `desktop/src/main/mcp.ts` went from ~260 lines of re-implemented
+  detection/JSON-writing to a thin driver: `detectHosts` → `connect --list --json`,
+  `connect`/`connectAll` → `connect [host] --json`, `disconnect` → `connect --remove host --json`.
+- **Fixed real divergences for free:** the app now supports **Codex** (was missing entirely) and each
+  wired agent gets its own `PARLER_HOME`/`PARLER_NAME` (they used to collide on one unnamed identity).
+- **CLI gained the missing inverse:** `parler connect --remove [hosts…]` (symmetric unwire, preserves
+  the user's other MCP servers in JSON + TOML), and `--list --json` now reports each host's wired
+  `hub` so the app can classify local vs shared. +6 unit tests.
+
+**Files:** Rust — `crates/parler-cli/src/connect.rs` (`--remove`/`run_remove`/`unwire`/`remove_json`/
+`remove_toml`/`configured_hub`/`parse_hub_from_text` + `hub` in `--list`), `src/lib.rs` (`--remove`
+arg). Desktop — `mcp.ts` (rewrite), `shared/types.ts` + `channels.ts` + `preload/index.ts` +
+`main/ipc.ts` (`connectAll` + `hubArgs`), `screens/connect.tsx` + `screens/onboarding.tsx`, README.
+
+**Verified:**
+- `CI_SKIP_WEB=1 make ci` → "all gates passed" (build · clippy -D warnings · test --locked · doc ·
+  cargo-deny). 12/12 connect unit tests.
+- **Live CLI cycle** (isolated `$HOME`): `connect cursor codex --hub ws://127.0.0.1:7071 --json` →
+  both `wired`; `--list --json` reports `hub: ws://127.0.0.1:7071` for both; Codex TOML kept the
+  user's `# comment` + `[mcp_servers.other]`; `--remove codex --json` → `removed` (parler table gone,
+  other kept); second `--remove` → `not-configured` (idempotent).
+- Desktop `npm run typecheck` (main + renderer) clean; `npm run build` bundles all three.
+- **Not GUI-tested** (needs a display + `npm run build:binaries`): the Electron UI itself — the app
+  calls the same bundled binary the live CLI cycle exercised, just renamed `parler-cli`.
+
+---
+
 # Task: A2A interoperability — Agent Card discovery bridge — 2026-07-01
 
 **Why:** Competitor deep-dive found A2A (Google → Linux Foundation, 150+ orgs, v1.0) is the de-facto

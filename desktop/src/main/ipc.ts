@@ -22,7 +22,7 @@ export function registerIpc(supervisor: HubSupervisor): void {
 
   const urlFor = (target: HubTarget): string => (target === "local" ? localHttpUrl() : PUBLIC_HUB);
 
-  /** Env to inject into an MCP host for a given target hub. */
+  /** Env to inject into an MCP host for a given target hub (used to render the manual snippet). */
   const envFor = (target: HubTarget): Record<string, string> => {
     if (target === "public") return { PARLER_HUB: PUBLIC_HUB };
     const env: Record<string, string> = { PARLER_HUB: localWsUrl() };
@@ -31,10 +31,19 @@ export function registerIpc(supervisor: HubSupervisor): void {
     return env;
   };
 
+  /** `parler connect` hub-selection flags for a target — the app drives the CLI as the source of truth. */
+  const hubArgsFor = (target: HubTarget): string[] => {
+    if (target === "public") return ["--hub", PUBLIC_HUB];
+    const args = ["--hub", localWsUrl()];
+    const secret = supervisor.joinSecret();
+    if (secret) args.push("--join-secret", secret);
+    return args;
+  };
+
   const mcpContext = (target: HubTarget): mcp.McpContext => ({
+    hubArgs: hubArgsFor(target),
     env: envFor(target),
     binPath: parlerBinary(),
-    localUrl: localWsUrl(),
   });
 
   /** Hub context for the app's *own* identity: prefer the local hub when running, else public. */
@@ -83,6 +92,7 @@ export function registerIpc(supervisor: HubSupervisor): void {
   ipcMain.handle(CH.agentsConnect, (_e, hostId: string, target: HubTarget) =>
     mcp.connect(hostId, mcpContext(target)),
   );
+  ipcMain.handle(CH.agentsConnectAll, (_e, target: HubTarget) => mcp.connectAll(mcpContext(target)));
   ipcMain.handle(CH.agentsDisconnect, (_e, hostId: string) => mcp.disconnect(hostId));
   ipcMain.handle(CH.agentsSnippet, (_e, target: HubTarget) => mcp.snippet(mcpContext(target)));
 

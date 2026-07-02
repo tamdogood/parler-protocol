@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import { ArrowRight, Check, Loader2, Terminal, ShieldCheck, Sparkles } from "lucide-react";
-import type { HubStatus, McpHost } from "@shared/types";
+import { ArrowRight, Check, Loader2, Terminal, ShieldCheck, Sparkles, AlertTriangle } from "lucide-react";
+import type { ConnectAllResult, HubStatus, McpHost } from "@shared/types";
 import { parler } from "@/lib/ipc";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -70,26 +70,24 @@ function Welcome({ onNext }: { onNext: () => void }) {
 }
 
 function ConnectFirst({ status, onFinish }: { status: HubStatus | null; onFinish: () => void }) {
-  const [claude, setClaude] = useState<McpHost | null>(null);
+  const [installed, setInstalled] = useState<McpHost[] | null>(null);
   const [snippet, setSnippet] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [done, setDone] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
+  const [result, setResult] = useState<ConnectAllResult | null>(null);
 
   useEffect(() => {
-    parler.agents.detectHosts().then((hs) => setClaude(hs.find((h) => h.id === "claude-code") ?? null));
+    parler.agents.detectHosts().then((hs) => setInstalled(hs.filter((h) => h.installed)));
     parler.agents.snippet("local").then((s) => setSnippet(s.shell));
   }, [status?.phase]);
 
   const ready = status?.phase === "running";
+  const hasAgents = (installed?.length ?? 0) > 0;
+  const done = (result?.connected ?? 0) > 0;
 
   const connect = async () => {
     setBusy(true);
-    setErr(null);
     try {
-      const res = await parler.agents.connect("claude-code", "local");
-      if (res.ok) setDone(true);
-      else setErr(res.message);
+      setResult(await parler.agents.connectAll("local"));
     } finally {
       setBusy(false);
     }
@@ -102,9 +100,9 @@ function ConnectFirst({ status, onFinish }: { status: HubStatus | null; onFinish
           <Terminal className="size-5" />
         </span>
       </div>
-      <h2 className="mt-5 text-[22px] font-semibold tracking-tight text-pure-white">Connect your first agent</h2>
+      <h2 className="mt-5 text-[22px] font-semibold tracking-tight text-pure-white">Connect your agents</h2>
       <p className="mx-auto mt-1.5 max-w-sm text-[13px] text-fog">
-        Adding the MCP server is the whole setup — it mints an identity on your hub the first time it launches.
+        Adding the MCP server is the whole setup — each agent mints its identity the first time it launches.
       </p>
 
       {!ready && (
@@ -114,28 +112,39 @@ function ConnectFirst({ status, onFinish }: { status: HubStatus | null; onFinish
       )}
 
       <div className="mt-6 text-left">
-        {claude?.installed ? (
-          done ? (
-            <div className="flex items-center gap-3 rounded-[14px] border border-delivered-green/40 bg-delivered-green/5 p-4 text-[13px] text-delivered-green">
-              <Check className="size-5 shrink-0" />
-              <div>Connected to Claude Code. Restart it to load the server — then it appears under Agents.</div>
+        {installed === null ? (
+          <p className="flex items-center gap-2 text-[13px] text-steel">
+            <Loader2 className="size-4 animate-spin" /> Looking for agents on this Mac…
+          </p>
+        ) : done ? (
+          <div className="rounded-[14px] border border-delivered-green/40 bg-delivered-green/5 p-4 text-[13px] text-delivered-green">
+            <div className="flex items-center gap-2 font-medium">
+              <Check className="size-5 shrink-0" /> Connected {result?.connected} agent{(result?.connected ?? 0) > 1 ? "s" : ""}.
             </div>
-          ) : (
-            <div className="rounded-[14px] border border-graphite-rail bg-void-black p-4">
-              <div className="flex items-center justify-between gap-3">
+            <p className="mt-1.5 text-[12.5px] text-delivered-green/90">Restart them to load Parler — then they appear under Agents.</p>
+          </div>
+        ) : hasAgents ? (
+          <div className="rounded-[14px] border border-graphite-rail bg-void-black p-4">
+            <div className="flex items-center justify-between gap-3">
+              <div className="min-w-0">
                 <div className="flex items-center gap-2 text-[14px] font-medium text-frost">
-                  <Terminal className="size-4 text-electric-blue" /> Claude Code detected
+                  <Terminal className="size-4 text-electric-blue" /> {installed!.length} agent{installed!.length > 1 ? "s" : ""} detected
                 </div>
-                <Button variant="primary" size="sm" onClick={connect} disabled={busy || !ready}>
-                  {busy ? <Loader2 className="size-3.5 animate-spin" /> : <Sparkles className="size-3.5" />} Connect
-                </Button>
+                <p className="mt-0.5 truncate text-[12px] text-steel">{installed!.map((h) => h.name).join(", ")}</p>
               </div>
-              {err && <p className="mt-2 text-[12.5px] text-bounced-red">{err}</p>}
+              <Button variant="primary" size="sm" onClick={connect} disabled={busy || !ready}>
+                {busy ? <Loader2 className="size-3.5 animate-spin" /> : <Sparkles className="size-3.5" />} Connect all
+              </Button>
             </div>
-          )
+            {result && result.results.some((r) => r.status !== "wired") && (
+              <p className="mt-2 flex items-center gap-1.5 text-[12.5px] text-complained-yellow">
+                <AlertTriangle className="size-3.5" /> Some agents couldn&apos;t be wired — retry from the Connect tab.
+              </p>
+            )}
+          </div>
         ) : (
           <div>
-            <p className="mb-2 text-[12px] uppercase tracking-wide text-steel">Add to any MCP host</p>
+            <p className="mb-2 text-[12px] uppercase tracking-wide text-steel">No agents detected — add to any MCP host</p>
             {snippet && <CodeBlock code={snippet} />}
           </div>
         )}

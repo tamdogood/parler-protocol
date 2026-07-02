@@ -72,6 +72,9 @@ pub struct Options {
     pub print: bool,
     /// List detected agents + their Parler status and exit; write nothing.
     pub list: bool,
+    /// Remove Parler from the named hosts (or every configured host when `hosts` is empty). The
+    /// inverse of the default wire action — the desktop app's "Disconnect" drives this.
+    pub remove: bool,
     /// Emit machine-readable JSON (used by the desktop app).
     pub json: bool,
 }
@@ -196,6 +199,50 @@ fn is_configured(def: &HostDef) -> bool {
             .map(|d| d.get("mcp_servers").and_then(|t| t.get(SERVER_NAME)).is_some())
             .unwrap_or(false),
     }
+}
+
+/// The `PARLER_HUB` a host is currently wired to (so `--list --json` can tell the desktop app whether
+/// an agent points at the local or the shared hub). Best-effort: `None` if unconfigured/unreadable.
+fn configured_hub(def: &HostDef) -> Option<String> {
+    match &def.wiring {
+        Wiring::ClaudeCli => {
+            let claude = resolve_claude()?;
+            let out = Command::new(claude).args(["mcp", "get", SERVER_NAME]).output().ok()?;
+            if !out.status.success() {
+                return None;
+            }
+            parse_hub_from_text(&String::from_utf8_lossy(&out.stdout))
+        }
+        Wiring::Json(path) => read_json(path)
+            .ok()?
+            .get("mcpServers")?
+            .get(SERVER_NAME)?
+            .get("env")?
+            .get("PARLER_HUB")?
+            .as_str()
+            .map(String::from),
+        Wiring::Toml(path) => {
+            let doc: toml_edit::DocumentMut = std::fs::read_to_string(path).ok()?.parse().ok()?;
+            doc.get("mcp_servers")?
+                .get(SERVER_NAME)?
+                .get("env")?
+                .get("PARLER_HUB")?
+                .as_str()
+                .map(String::from)
+        }
+    }
+}
+
+/// Pull the first `PARLER_HUB=<value>` (or `: <value>`) token out of free-form text — used to read the
+/// hub back from `claude mcp get`'s human output without pulling in a regex dependency.
+fn parse_hub_from_text(s: &str) -> Option<String> {
+    let idx = s.find("PARLER_HUB")?;
+    let rest = s[idx + "PARLER_HUB".len()..].trim_start_matches([':', '=', ' ', '"']);
+    let val: String = rest
+        .chars()
+        .take_while(|c| !c.is_whitespace() && *c != '"' && *c != ',')
+        .collect();
+    (!val.is_empty()).then_some(val)
 }
 
 /// Resolve the absolute `claude` path. Unlike a GUI app, the CLI inherits the login shell's PATH, but
@@ -341,6 +388,65 @@ fn wire(def: &HostDef, env: &[(String, String)], binpath: &str) -> Result<String
     }
 }
 
+/// Remove Parler from a host in place, leaving the user's other servers untouched. `Ok(true)` if an
+/// entry was actually removed, `Ok(false)` if there was nothing to remove.
+fn unwire(def: &HostDef) -> Result<bool> {
+    match &def.wiring {
+        Wiring::ClaudeCli => {
+            let claude = resolve_claude()
+                .ok_or_else(|| anyhow!("Claude Code CLI not found on PATH — install it, then re-run"))?;
+            // `claude mcp remove` exits non-zero when it wasn't configured; treat that as "nothing
+            // to remove" rather than an error.
+            let out = Command::new(&claude)
+                .args(["mcp", "remove", SERVER_NAME, "--scope", "user"])
+                .output()
+                .context("running claude mcp remove")?;
+            Ok(out.status.success())
+        }
+        Wiring::Json(path) => remove_json(path),
+        Wiring::Toml(path) => remove_toml(path),
+    }
+}
+
+/// Drop `mcpServers.parler` from a JSON config, preserving everything else. `Ok(false)` if absent.
+fn remove_json(path: &Path) -> Result<bool> {
+    if !path.exists() {
+        return Ok(false);
+    }
+    let mut root = read_json(path)?;
+    let removed = root
+        .get_mut("mcpServers")
+        .and_then(|s| s.as_object_mut())
+        .map(|servers| servers.remove(SERVER_NAME).is_some())
+        .unwrap_or(false);
+    if removed {
+        write_secure(path, &(serde_json::to_string_pretty(&root)? + "\n"))?;
+    }
+    Ok(removed)
+}
+
+/// Drop `[mcp_servers.parler]` from a TOML config, preserving comments + other tables. `Ok(false)`
+/// if absent.
+fn remove_toml(path: &Path) -> Result<bool> {
+    use toml_edit::DocumentMut;
+    if !path.exists() {
+        return Ok(false);
+    }
+    let mut doc: DocumentMut = std::fs::read_to_string(path)
+        .with_context(|| format!("reading {}", path.display()))?
+        .parse()
+        .with_context(|| format!("{} isn't valid TOML — fix or move it, then re-run", path.display()))?;
+    let removed = doc
+        .get_mut("mcp_servers")
+        .and_then(|t| t.as_table_mut())
+        .map(|t| t.remove(SERVER_NAME).is_some())
+        .unwrap_or(false);
+    if removed {
+        write_secure(path, &doc.to_string())?;
+    }
+    Ok(removed)
+}
+
 // ---------------------------------------------------------------------------------------------
 // Snippet rendering (for --print and unknown hosts)
 // ---------------------------------------------------------------------------------------------
@@ -410,6 +516,10 @@ pub fn run(opts: Options) -> Result<()> {
 
     if opts.list {
         return print_list(opts.json);
+    }
+
+    if opts.remove {
+        return run_remove(&opts);
     }
 
     // Resolve the set of targets.
@@ -490,6 +600,91 @@ pub fn run(opts: Options) -> Result<()> {
         emit_json(&opts, &hub_url, secret.as_deref(), &binpath, &reports, &snippets);
     } else {
         emit_human(&opts, &hub_url, secret.as_deref(), &reports, &snippets);
+    }
+    Ok(())
+}
+
+/// `parler connect --remove` — the inverse of a wire. Unwires the named hosts, or every configured
+/// host when none are named. Reuses the same registry so it stays symmetric with wiring.
+fn run_remove(opts: &Options) -> Result<()> {
+    let mut targets: Vec<Target> = Vec::new();
+    if opts.hosts.is_empty() {
+        for def in registry() {
+            if is_installed(&def) {
+                targets.push(Target::Known(def));
+            }
+        }
+    } else {
+        for token in &opts.hosts {
+            match canonical_id(token) {
+                Some(id) => {
+                    let def = registry().into_iter().find(|d| d.id == id).expect("id from canonical_id");
+                    targets.push(Target::Known(def));
+                }
+                None => targets.push(Target::Unknown(token.clone())),
+            }
+        }
+    }
+
+    let mut reports: Vec<Report> = Vec::new();
+    for t in &targets {
+        match t {
+            Target::Known(def) => match unwire(def) {
+                Ok(true) => reports.push(Report {
+                    id: def.id.into(),
+                    name: def.name.into(),
+                    status: "removed",
+                    detail: "removed".into(),
+                    config: None,
+                }),
+                Ok(false) => reports.push(Report {
+                    id: def.id.into(),
+                    name: def.name.into(),
+                    status: "not-configured",
+                    detail: "wasn't connected".into(),
+                    config: None,
+                }),
+                Err(e) => reports.push(Report {
+                    id: def.id.into(),
+                    name: def.name.into(),
+                    status: "error",
+                    detail: format!("{e}"),
+                    config: None,
+                }),
+            },
+            Target::Unknown(name) => reports.push(Report {
+                id: name.clone(),
+                name: name.clone(),
+                status: "not-configured",
+                detail: "unknown host — nothing to remove".into(),
+                config: None,
+            }),
+        }
+    }
+
+    if opts.json {
+        let results: Vec<Value> = reports
+            .iter()
+            .map(|r| json!({ "id": r.id, "name": r.name, "status": r.status, "detail": r.detail }))
+            .collect();
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({ "action": "remove", "results": results })).unwrap_or_default()
+        );
+    } else {
+        println!("\nParler · disconnecting your agents\n");
+        for r in &reports {
+            let mark = match r.status {
+                "removed" => "  ✓",
+                "error" => "  ✗",
+                _ => "  ·",
+            };
+            println!("{mark} {:<15} {}", r.name, r.detail);
+        }
+        if reports.iter().any(|r| r.status == "removed") {
+            println!("\nRestart those apps to unload Parler.");
+        }
+        println!();
     }
     Ok(())
 }
@@ -620,7 +815,9 @@ fn print_list(as_json: bool) -> Result<()> {
                     Wiring::ClaudeCli => "claude mcp (user scope)".to_string(),
                     Wiring::Json(p) | Wiring::Toml(p) => display_path(p),
                 };
-                json!({ "id": d.id, "name": d.name, "installed": is_installed(d), "connected": is_configured(d), "config": path })
+                let connected = is_configured(d);
+                let hub = connected.then(|| configured_hub(d)).flatten();
+                json!({ "id": d.id, "name": d.name, "installed": is_installed(d), "connected": connected, "config": path, "hub": hub })
             })
             .collect();
         println!("{}", serde_json::to_string_pretty(&json!({ "hosts": hosts })).unwrap_or_default());
@@ -772,6 +969,60 @@ mod tests {
     }
 
     #[test]
+    fn remove_json_drops_only_our_entry() {
+        let path = tmp("rm-json").join("mcp.json");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, r#"{"mcpServers":{"other":{"command":"foo"}}}"#).unwrap();
+        write_json(&path, &env(), "/usr/local/bin/parler").unwrap();
+
+        assert!(remove_json(&path).unwrap(), "first remove reports it removed something");
+        assert!(!remove_json(&path).unwrap(), "second remove is a no-op");
+
+        let v = read_json(&path).unwrap();
+        let servers = v.get("mcpServers").unwrap().as_object().unwrap();
+        assert!(servers.contains_key("other"), "must keep the user's other server");
+        assert!(!servers.contains_key("parler"), "our entry is gone");
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn remove_toml_drops_only_our_table() {
+        let path = tmp("rm-toml").join("config.toml");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "# keep me\nmodel = \"o3\"\n\n[mcp_servers.other]\ncommand = \"foo\"\n").unwrap();
+        write_toml(&path, &env(), "/usr/local/bin/parler").unwrap();
+
+        assert!(remove_toml(&path).unwrap());
+        assert!(!remove_toml(&path).unwrap());
+
+        let txt = std::fs::read_to_string(&path).unwrap();
+        assert!(txt.contains("# keep me"), "must preserve comments");
+        assert!(txt.contains("[mcp_servers.other]"), "must keep the user's other server");
+        assert!(!txt.contains("[mcp_servers.parler]"), "our table is gone");
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn remove_json_on_missing_file_is_a_noop() {
+        let path = tmp("rm-missing").join("mcp.json");
+        assert!(!remove_json(&path).unwrap());
+    }
+
+    #[test]
+    fn parse_hub_from_text_reads_the_wired_hub() {
+        assert_eq!(
+            parse_hub_from_text("PARLER_HOME=/x\nPARLER_HUB=ws://127.0.0.1:7071\nPARLER_NAME=cursor"),
+            Some("ws://127.0.0.1:7071".to_string())
+        );
+        // Tolerate the `KEY: value` shape claude's human output uses.
+        assert_eq!(
+            parse_hub_from_text("  PARLER_HUB: wss://parler-hub.fly.dev  "),
+            Some("wss://parler-hub.fly.dev".to_string())
+        );
+        assert_eq!(parse_hub_from_text("nothing here"), None);
+    }
+
+    #[test]
     fn json_refuses_to_clobber_malformed_config() {
         let path = tmp("broken").join("mcp.json");
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -829,6 +1080,7 @@ mod tests {
             join_secret: None,
             print: false,
             list: false,
+            remove: false,
             json: false,
         };
         let with = env_for("codex", &opts, "wss://h", Some("s3cr3t"));
