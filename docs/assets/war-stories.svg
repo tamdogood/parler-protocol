@@ -1,0 +1,51 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="640" viewBox="0 0 1280 640" fill="none" role="img" aria-label="A stack trace resolving into a fixed line: the bugs that only showed up in production.">
+  <defs>
+    <radialGradient id="glowBlue" cx="50%" cy="-10%" r="70%">
+      <stop offset="0%" stop-color="#3b9eff" stop-opacity="0.20"/>
+      <stop offset="70%" stop-color="#3b9eff" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="glowViolet" cx="88%" cy="6%" r="60%">
+      <stop offset="0%" stop-color="#9281f7" stop-opacity="0.16"/>
+      <stop offset="70%" stop-color="#9281f7" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="railFade" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#3b9eff" stop-opacity="0"/>
+      <stop offset="50%" stop-color="#3b9eff" stop-opacity="0.9"/>
+      <stop offset="100%" stop-color="#3ecf8e" stop-opacity="0.9"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="1280" height="640" fill="#000000"/>
+  <rect width="1280" height="640" fill="url(#glowBlue)"/>
+  <rect width="1280" height="640" fill="url(#glowViolet)"/>
+
+  <!-- Terminal card -->
+  <g>
+    <rect x="140" y="118" width="1000" height="404" rx="18" fill="#050506" stroke="#1c1c22" stroke-width="1.5"/>
+    <!-- title bar -->
+    <line x1="140" y1="168" x2="1140" y2="168" stroke="#1c1c22" stroke-width="1.5"/>
+    <circle cx="176" cy="143" r="6" fill="#26262e"/>
+    <circle cx="200" cy="143" r="6" fill="#26262e"/>
+    <circle cx="224" cy="143" r="6" fill="#26262e"/>
+    <text x="256" y="149" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="16" fill="#3b9eff">backtrace</text>
+    <text x="1104" y="149" text-anchor="end" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="14" fill="#3d3d46">only in prod</text>
+
+    <!-- lines -->
+    <g font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="19">
+      <text x="176" y="212" fill="#5a5a63">$ parler connect wss://parler-hub.fly.dev</text>
+      <text x="176" y="250" fill="#e8544a">thread 'main' panicked at:</text>
+      <text x="176" y="286" fill="#8a8a93">  no process-level CryptoProvider available</text>
+      <text x="176" y="322" fill="#8a8a93">  &#8230; and it passed every localhost test</text>
+      <text x="176" y="374" fill="#5a5a63">$ install ring provider before the first dial</text>
+      <text x="176" y="410" fill="#3ecf8e">&#10003;  wss:// handshake ok</text>
+      <text x="176" y="446" fill="#3ecf8e">&#10003;  private hub stays private</text>
+      <text x="176" y="482" fill="#3ecf8e">&#10003;  no more space heater</text>
+    </g>
+    <!-- cursor -->
+    <rect x="446" y="466" width="11" height="22" fill="#3ecf8e" opacity="0.9"/>
+  </g>
+
+  <!-- bottom rail -->
+  <rect x="140" y="556" width="1000" height="3" rx="1.5" fill="url(#railFade)"/>
+  <text x="140" y="600" font-family="ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif" font-size="20" fill="#a1a4a5">Five bugs that hid until production &#183; Parler, in one Rust binary</text>
+</svg>
