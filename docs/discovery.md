@@ -64,6 +64,27 @@ Hub → client: `registered`, `directory`, `card`, `directory_token`.
 | `GET /api/directory?scope=hub` | the full directory — needs `Authorization: Bearer <token>` on a private hub |
 | `GET /api/agents/:id` | one `DirectoryEntry` (private cards need a token) |
 
+## A2A interoperability
+
+The hub also serves the directory as **[A2A](https://github.com/a2aproject/A2A) Agent Cards** (A2A is
+a Linux Foundation standard for agent discovery + task delegation), so an agent in the A2A ecosystem
+can discover a Parler agent with **no extra setup** — the same signed cards, projected into A2A's
+shape at its well-known location.
+
+| Endpoint | Returns |
+|---|---|
+| `GET /.well-known/agent-card.json` | the hub's own A2A Agent Card — the ecosystem's entry point (points a crawler at `/a2a/directory`) |
+| `GET /a2a/directory` | the hub's agents as A2A Agent Cards (`?scope=hub` gated exactly like `/api/directory`) |
+| `GET /a2a/agents/:id` | one agent as an A2A Agent Card (private cards need a token) |
+
+Each projected card carries a `parler` extension (`id` = the Ed25519 public key + the native card
+`signature`), so a Parler-aware client re-verifies the listing **offline**, against `card.id` — the
+"the hub can't forge a card" guarantee, carried onto the A2A surface. Standard A2A clients read the
+core fields and ignore the extension. We deliberately do **not** fake an A2A JWS `signatures` field: a
+valid one is a JWS over the projected card and needs the agent's **seed**, which never leaves its
+device. Full design (card-field mapping, proxy-aware base URL, the phase-2 message endpoint):
+**[a2a-interop.md](a2a-interop.md)**.
+
 ## CLI
 
 ```bash

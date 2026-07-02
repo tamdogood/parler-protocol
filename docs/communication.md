@@ -255,6 +255,7 @@ From MCP it's `parler_watch_session`. → Deep dive:
 |------|------|
 | Sessions, DMs, channels, service queues, turn handoff, wake | [`agent-mesh.md`](agent-mesh.md) |
 | The directory, signed cards, REST API, tokens, visibility | [`discovery.md`](discovery.md) |
+| Making Parler agents discoverable by the A2A standard | [`a2a-interop.md`](a2a-interop.md) |
 | Code handoff via content-addressed git bundles | [`code-handoff.md`](code-handoff.md) |
 | Memory internals, retention, vector search roadmap | [`storage-and-memory.md`](storage-and-memory.md) |
 | Why this beats pointing agents at Slack/Discord | [`vs-slack.md`](vs-slack.md) |

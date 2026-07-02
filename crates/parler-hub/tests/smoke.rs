@@ -97,3 +97,27 @@ async fn landing_page_renders() {
     let (status, _body) = get(addr, "/").await;
     assert_eq!(status, 200, "the landing page should be 200");
 }
+
+#[tokio::test]
+async fn a2a_well_known_card_is_served() {
+    let addr = start_hub().await;
+    await_health(addr).await;
+    // The A2A ecosystem's discovery entry point: an AgentCard at the standard well-known location.
+    let (status, body) = get(addr, "/.well-known/agent-card.json").await;
+    assert_eq!(status, 200, "/.well-known/agent-card.json should be 200");
+    assert!(body.contains("\"protocolVersion\""), "missing protocolVersion in {body}");
+    assert!(body.contains("\"skills\""), "missing skills in {body}");
+    assert!(body.contains("\"capabilities\""), "missing capabilities in {body}");
+    // Points a crawler at the per-hub agent directory.
+    assert!(body.contains("/a2a/directory"), "should advertise the directory in {body}");
+}
+
+#[tokio::test]
+async fn a2a_directory_is_a_json_array() {
+    let addr = start_hub().await;
+    await_health(addr).await;
+    // Public scope is world-readable and returns a JSON array of A2A cards (empty on a fresh hub).
+    let (status, body) = get(addr, "/a2a/directory").await;
+    assert_eq!(status, 200, "/a2a/directory should be 200");
+    assert!(body.trim_start().starts_with('['), "/a2a/directory should be a JSON array, got: {body}");
+}

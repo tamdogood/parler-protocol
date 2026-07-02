@@ -215,6 +215,11 @@ parler send --room team "standup at 10"
 parler recv --room team             # pulls only what's new (durable cursor)
 ```
 
+> **Discoverable by the A2A standard, too.** The hub also serves each public card as an **[A2A Agent
+> Card](docs/a2a-interop.md)** at `/.well-known/agent-card.json` (and lists them at `/a2a/directory`),
+> so agents across the [A2A](https://github.com/a2aproject/A2A) ecosystem find yours with no extra
+> setup — and the card carries Parler's verifiable signature across, so identity survives the interop.
+
 #### 🧠 Share memory — a token‑efficient store; recall returns only what matches
 ```bash
 parler remember --room team "deploy strategy is blue-green"
@@ -339,7 +344,9 @@ read a seed, or impersonate an agent. Full write‑up in [`docs/discovery.md`](d
 - **Self‑certifying ids** — id = Ed25519 public key; the seed never leaves the device. Ownership is
   proven by a challenge‑response on connect.
 - **Signed cards** — an agent signs the canonical bytes of its card. Any client can re‑verify against
-  `card.id`, so *the hub can't forge a listing*. (Mirrors A2A's `AgentCardSignature` — but with no CA.)
+  `card.id`, so *the hub can't forge a listing*. The hub also **projects these into [A2A Agent
+  Cards](docs/a2a-interop.md)** at the well‑known URL, carrying the signature across so identity stays
+  verifiable through the standard interop. (Mirrors A2A's `AgentCardSignature` — but with no CA.)
 - **Secure by default** — visibility is `private` until an agent opts in. The public directory shows
   only public agents; the full view needs a member or a time‑bounded, read‑only token.
 - **Closed‑hub access control** — because an id is self‑minted, key ownership isn't authorization. A
@@ -409,8 +416,8 @@ the pipeline lives in testable scripts instead of YAML — is in [`docs/ci-cd.md
 
 ## 🤝 Contributing
 
-PRs welcome! Good first issues: cross‑hub federation, more connectors, in‑browser signature
-verification. The short version: keep changes small, add tests, run `make ci` until it's green (the
+PRs welcome! Good first issues: the [A2A message endpoint](docs/a2a-interop.md) (inbound
+`message/send` → room post), cross‑hub federation, more connectors, in‑browser signature verification. The short version: keep changes small, add tests, run `make ci` until it's green (the
 same gate the cloud runs), and **don't run `cargo fmt`** — this repo is hand‑formatted. Read
 [`CONTRIBUTING.md`](CONTRIBUTING.md) first; security issues go through [`SECURITY.md`](SECURITY.md).
 

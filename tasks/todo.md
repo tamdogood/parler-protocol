@@ -1,3 +1,58 @@
+# Task: A2A interoperability — Agent Card discovery bridge — 2026-07-01
+
+**Why:** Competitor deep-dive found A2A (Google → Linux Foundation, 150+ orgs, v1.0) is the de-facto
+agent-discovery standard. Our cards are "A2A-inspired" but we speak zero A2A on the wire, so the A2A
+ecosystem can't find a Parler agent. Highest-leverage competitive gap. Ship the discovery half first:
+project our already-signed directory cards into A2A AgentCard JSON at the standard well-known location.
+
+**Scope (purely additive at the hub's HTTP edge — no protocol-frame change, no connector/CLI ripple):**
+- [x] `docs/a2a-interop.md` — design doc (vision · phase 1 = discovery · phase 2 = message endpoint)
+- [x] `GET /.well-known/agent-card.json` — the hub's own A2A entry-point card
+- [x] `GET /a2a/directory` — public (hub-scope w/ token) agents as A2A cards
+- [x] `GET /a2a/agents/:id` — one agent projected to an A2A card (respects visibility)
+- [x] `a2a_card()` projection: Parler card → A2A v0.3 AgentCard, with a `parler` extension carrying the
+      verifiable nkey id + native signature (A2A clients ignore unknown fields; Parler-aware clients
+      re-verify offline — the "hub can't forge a card" guarantee, carried onto the A2A surface)
+- [x] Unit test for the projection; smoke tests for the well-known + directory endpoints
+- [x] Link the doc from AGENTS.md + docs/communication.md
+- [x] `CI_SKIP_WEB=1 make ci` green (clippy -D warnings is a hard gate)
+
+**Out of scope (documented as phase 2):** inbound A2A `message/send`/`message/stream` (JSON-RPC) →
+room post; proper A2A JWS signatures (needs the agent's seed, which lives on the agent, not the hub).
+
+## Review — DONE & VERIFIED (2026-07-01) ✅
+
+Shipped the A2A **discovery bridge**: the hub now projects our already-signed directory cards into
+A2A AgentCard JSON at the standard well-known location, so the A2A ecosystem (150+ orgs) can discover
+a Parler agent. Purely additive at the hub's HTTP edge — **no `parler-protocol` change**, so zero
+ripple into connector/CLI/web.
+
+- **3 routes** (`crates/parler-hub/src/server.rs`): `GET /.well-known/agent-card.json` (hub
+  self-card / entry point), `GET /a2a/directory` (agents as A2A cards; `scope=hub` reuses the existing
+  directory-token gate), `GET /a2a/agents/:id` (one card; private cards gated like `/api/agents/:id`).
+- **`a2a_card()` projection** + proxy-aware `request_base_url()` (honors `X-Forwarded-Proto` for
+  Fly/Caddy). Carries a `parler` extension (`id` = Ed25519 pubkey + native `signature` → offline
+  re-verifiable), and **deliberately does not fake an A2A JWS `signatures` field** (would need the
+  agent's seed).
+- **Tests:** 3 unit (`a2a_card_projects_core_and_parler_fields`,
+  `a2a_card_synthesizes_a_skill_from_tags_when_none_given`, `request_base_url_is_proxy_aware_and_falls_back`)
+  + 2 HTTP smoke (`a2a_well_known_card_is_served`, `a2a_directory_is_a_json_array`).
+- **Doc:** `docs/a2a-interop.md` (vision · phase 1 shipped · phase 2 = message endpoint + Task
+  lifecycle + team assembly). Linked from AGENTS.md + docs/communication.md.
+
+**Verified:** `CI_SKIP_WEB=1 make ci` → "all gates passed" (build · clippy -D warnings · test --locked
+· cargo doc -D warnings · cargo-deny). 45 hub lib tests + 6 smoke tests green. **Live end-to-end** vs
+`scripts/seed-demo.sh` (public hub, real signed agents): well-known card is proxy-aware
+(`https://parler-hub.fly.dev/a2a/directory`, `publicAgents:5`); `/a2a/directory` returns 5 projected
+cards each carrying `parler.id` + `verified:true` + a real `signature`, and **no faked `signatures`
+field**; the public↔hub scope split (5 public vs 7 with a directory token) proves private agents are
+excluded from the world-readable view; unknown agent → 404.
+
+**Phase 2 (documented, not built):** inbound A2A `message/send`/`message/stream` → room post; the
+`Task` lifecycle it maps onto; agent-produced A2A JWS; an outbound A2A client.
+
+---
+
 # Task: One good way to set up Parler — kill the fragmentation — 2026-07-01
 
 **User:** "too technical & hard to set up even for an SE; too cumbersome for little reward. I don't

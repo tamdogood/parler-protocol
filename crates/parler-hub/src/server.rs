@@ -20,8 +20,8 @@ use axum::response::{Html, IntoResponse};
 use axum::routing::get;
 use axum::{Json, Router};
 use parler_protocol::{
-    canonical_card_bytes, is_message_sig_part, normalize_mentions, token, ClientFrame, DiscoverScope,
-    EndpointRef, Part, RoomKind, ServerFrame, StoredMessage, Target,
+    canonical_card_bytes, is_message_sig_part, normalize_mentions, token, ClientFrame, DirectoryEntry,
+    DiscoverScope, EndpointRef, Part, RoomKind, ServerFrame, StoredMessage, Target,
 };
 use rand::Rng;
 use serde::Deserialize;
@@ -319,6 +319,12 @@ pub fn app(state: Arc<HubState>) -> Router {
         .route("/api/directory", get(api_directory))
         .route("/api/agents/:id", get(api_agent))
         .route("/api/session", get(api_session))
+        // A2A interoperability (discovery): project our signed cards into A2A AgentCard JSON so the
+        // A2A ecosystem can find a Parler agent at the standard well-known location. See
+        // `docs/a2a-interop.md`.
+        .route("/.well-known/agent-card.json", get(a2a_well_known))
+        .route("/a2a/directory", get(a2a_directory))
+        .route("/a2a/agents/:id", get(a2a_agent))
         .layer(cors)
         .with_state(state)
 }
@@ -817,6 +823,214 @@ fn hub_scope_authorized(state: &HubState, headers: &HeaderMap) -> bool {
 fn bearer_token(headers: &HeaderMap) -> Option<String> {
     let h = headers.get(axum::http::header::AUTHORIZATION)?.to_str().ok()?;
     h.strip_prefix("Bearer ").map(|s| s.trim().to_string())
+}
+
+// ---- A2A interoperability: project signed cards into A2A AgentCard JSON ----
+//
+// A2A (Agent2Agent, Linux Foundation) is the de-facto standard for agent discovery: an agent
+// publishes a self-describing card at `/.well-known/agent-card.json` and peers read it to learn what
+// it can do and how to reach it. Our directory already stores exactly this — a signed `AgentCard` —
+// so we project it into the A2A shape here. This is the *discovery* half of interop (phase 1);
+// inbound A2A `message/send` is a documented follow-up. See `docs/a2a-interop.md`.
+
+/// The A2A AgentCard schema version we conform to. We implement the card/discovery subset (not the
+/// full task-RPC surface), so `capabilities` advertises exactly what the hub supports today.
+const A2A_PROTOCOL_VERSION: &str = "0.3.0";
+
+/// The public base URL to advertise in projected A2A cards, derived from the request so it matches the
+/// host the caller actually reached (proxy-aware via `X-Forwarded-Proto`). Falls back to the hub's
+/// configured `public_url` when there's no usable `Host` header.
+fn request_base_url(headers: &HeaderMap, fallback: &str) -> String {
+    if let Some(host) = headers.get(axum::http::header::HOST).and_then(|h| h.to_str().ok()) {
+        let host = host.trim();
+        if !host.is_empty() {
+            let proto = headers
+                .get("x-forwarded-proto")
+                .and_then(|v| v.to_str().ok())
+                .map(|s| s.split(',').next().unwrap_or(s).trim())
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| default_scheme(host));
+            return format!("{proto}://{host}");
+        }
+    }
+    // No usable Host: reuse the dialable form of the configured URL, as http(s) rather than ws(s).
+    display_hub_url(fallback).replace("wss://", "https://").replace("ws://", "http://")
+}
+
+/// The default URL scheme for a bare host with no `X-Forwarded-Proto`: `http` for loopback/wildcard
+/// binds (local dev), `https` for anything else (a deployed hub sits behind TLS).
+fn default_scheme(host: &str) -> &'static str {
+    let h = host.split(':').next().unwrap_or(host);
+    if h == "localhost" || h == "0.0.0.0" || h.starts_with("127.") || h.starts_with("[::") {
+        "http"
+    } else {
+        "https"
+    }
+}
+
+/// Project a Parler [`DirectoryEntry`] into an A2A v0.3 AgentCard JSON object.
+///
+/// Standard A2A clients read `name`/`description`/`url`/`skills`/`capabilities` and ignore the
+/// `parler` extension object; a Parler-aware client uses `parler.id` (the agent's Ed25519 public key)
+/// and `parler.signature` to re-verify the listing offline — the same "the hub can't forge a card"
+/// guarantee that backs the native directory, carried onto the A2A surface. We deliberately do *not*
+/// synthesize an A2A JWS `signatures` field: a valid A2A signature is over the projected card and
+/// needs the agent's seed, which never leaves the agent — faking one at the hub would be dishonest.
+fn a2a_card(entry: &DirectoryEntry, base_url: &str, hub_name: &str) -> serde_json::Value {
+    let card = &entry.card;
+    let tags: Vec<String> = card.tags.clone().unwrap_or_default();
+    let mut skills: Vec<serde_json::Value> = card
+        .skills
+        .as_deref()
+        .unwrap_or(&[])
+        .iter()
+        .map(|s| {
+            serde_json::json!({
+                "id": s.id,
+                "name": s.name,
+                "description": s.description.clone().unwrap_or_else(|| s.name.clone()),
+                "tags": tags,
+            })
+        })
+        .collect();
+    // A2A carries tags on skills, not on the card. If the agent published tags/role but no explicit
+    // skills, synthesize one so its capabilities still surface to an A2A crawler.
+    if skills.is_empty() && (!tags.is_empty() || card.role.is_some()) {
+        let name = card.role.clone().unwrap_or_else(|| "general".into());
+        let description = card
+            .description
+            .clone()
+            .unwrap_or_else(|| format!("{} — a Parler agent.", card.name));
+        skills.push(serde_json::json!({ "id": "general", "name": name, "description": description, "tags": tags }));
+    }
+    let description = card
+        .description
+        .clone()
+        .or_else(|| card.role.as_ref().map(|r| format!("A Parler agent in the {r} role.")))
+        .unwrap_or_else(|| format!("{} — a Parler agent.", card.name));
+    serde_json::json!({
+        "protocolVersion": A2A_PROTOCOL_VERSION,
+        "name": card.name,
+        "description": description,
+        "url": format!("{base_url}/a2a/agents/{}", card.id),
+        "preferredTransport": "JSONRPC",
+        "version": card.protocol_version.clone().unwrap_or_else(|| "1.0.0".into()),
+        "provider": { "organization": hub_name, "url": base_url },
+        "capabilities": { "streaming": true, "pushNotifications": false, "stateTransitionHistory": false },
+        "defaultInputModes": ["text/plain"],
+        "defaultOutputModes": ["text/plain"],
+        "skills": skills,
+        // Parler-native, offline-verifiable identity. Standard A2A clients ignore unknown fields.
+        "parler": {
+            "id": card.id,
+            "hub": entry.hub,
+            "visibility": entry.visibility.as_str(),
+            "verified": entry.verified,
+            "status": entry.status,
+            "signature": entry.sig,
+            "canonicalization": "parler/canonical-card-v1",
+        },
+    })
+}
+
+/// `GET /.well-known/agent-card.json` — the hub's own A2A AgentCard (the ecosystem's entry point).
+/// Describes the hub as an A2A-speaking directory and points at `/a2a/directory` for the agents it
+/// hosts. World-readable: it advertises only public, aggregate facts.
+async fn a2a_well_known(State(state): State<Arc<HubState>>, headers: HeaderMap) -> impl IntoResponse {
+    let base = request_base_url(&headers, &state.public_url);
+    let (agents, public_agents) = state.store.directory_counts().unwrap_or((0, 0));
+    Json(serde_json::json!({
+        "protocolVersion": A2A_PROTOCOL_VERSION,
+        "name": state.name,
+        "description": "A Parler hub — a directory + message bus where AI agents publish signed cards \
+            and coordinate. This endpoint exposes the hub's public agents as A2A Agent Cards.",
+        "url": format!("{base}/a2a"),
+        "preferredTransport": "JSONRPC",
+        "version": parler_protocol::PROTOCOL_VERSION,
+        "provider": { "organization": state.name, "url": base },
+        "capabilities": { "streaming": true, "pushNotifications": false, "stateTransitionHistory": false },
+        "defaultInputModes": ["text/plain"],
+        "defaultOutputModes": ["text/plain"],
+        "skills": [{
+            "id": "directory",
+            "name": "Agent directory",
+            "description": "Discover the hub's public agents as A2A Agent Cards at /a2a/directory.",
+            "tags": ["directory", "discovery"],
+        }],
+        "parler": {
+            "mode": state.mode.as_str(),
+            "agents": agents,
+            "publicAgents": public_agents,
+            "directory": format!("{base}/a2a/directory"),
+        },
+    }))
+}
+
+/// `GET /a2a/directory` — the hub's agents as A2A Agent Cards. Default `scope=public` is
+/// world-readable; `scope=hub` (private agents too) needs the same hub-scope authorization as
+/// `/api/directory`.
+async fn a2a_directory(
+    State(state): State<Arc<HubState>>,
+    headers: HeaderMap,
+    Query(q): Query<DirectoryQuery>,
+) -> impl IntoResponse {
+    let want_hub = q.scope.as_deref() == Some("hub");
+    if want_hub && !hub_scope_authorized(&state, &headers) {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({
+                "error": "a directory token is required to view the hub-scope directory"
+            })),
+        )
+            .into_response();
+    }
+    let scope = if want_hub { DiscoverScope::Hub } else { DiscoverScope::Public };
+    let base = request_base_url(&headers, &state.public_url);
+    match state.store.discover(
+        scope,
+        &state.name,
+        q.q.as_deref(),
+        q.tag.as_deref(),
+        q.skill.as_deref(),
+        q.status.as_deref(),
+        q.limit,
+        now_ms(),
+    ) {
+        Ok(entries) => {
+            let cards: Vec<serde_json::Value> =
+                entries.iter().map(|e| a2a_card(e, &base, &state.name)).collect();
+            Json(cards).into_response()
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": e.to_string() })),
+        )
+            .into_response(),
+    }
+}
+
+/// `GET /a2a/agents/:id` — one agent as an A2A Agent Card. A `private` card requires hub-scope
+/// authorization, mirroring `/api/agents/:id`.
+async fn a2a_agent(
+    State(state): State<Arc<HubState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let base = request_base_url(&headers, &state.public_url);
+    let hub_scope = hub_scope_authorized(&state, &headers);
+    match state.store.lookup_card(&id, &state.name, hub_scope, now_ms()) {
+        Ok(Some(entry)) => Json(a2a_card(&entry, &base, &state.name)).into_response(),
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": "no such public agent" })),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": e.to_string() })),
+        )
+            .into_response(),
+    }
 }
 
 /// Per-connection authentication state.
@@ -1608,5 +1822,103 @@ mod tests {
         let sig = parler_auth::sign(&id.seed, nonce.as_bytes()).unwrap();
         let ok = handle_hello(&state, &mut conn, id.id, "a".into(), None, Some(sig), None);
         assert!(matches!(ok, ServerFrame::Welcome { .. }));
+    }
+
+    fn sample_entry(
+        role: Option<&str>,
+        skills: Option<Vec<parler_protocol::AgentSkill>>,
+        tags: Option<Vec<String>>,
+        sig: Option<&str>,
+        verified: bool,
+    ) -> DirectoryEntry {
+        use parler_protocol::{AgentCard, EndpointKind, Visibility};
+        DirectoryEntry {
+            card: AgentCard {
+                id: "UABC".into(),
+                name: "planner".into(),
+                kind: EndpointKind::Agent,
+                role: role.map(str::to_string),
+                description: Some("Decomposes goals into ordered plans.".into()),
+                tags,
+                skills,
+                meta: None,
+                protocol_version: Some("0.2".into()),
+            },
+            visibility: Visibility::Public,
+            status: "idle".into(),
+            activity: None,
+            hub: "Test Hub".into(),
+            verified,
+            sig: sig.map(str::to_string),
+            first_seen: 1,
+            last_seen: 2,
+        }
+    }
+
+    #[test]
+    fn a2a_card_projects_core_and_parler_fields() {
+        use parler_protocol::AgentSkill;
+        let entry = sample_entry(
+            Some("planner"),
+            Some(vec![AgentSkill { id: "decompose".into(), name: "Decompose".into(), description: None }]),
+            Some(vec!["planning".into()]),
+            Some("BASE64SIG"),
+            true,
+        );
+        let card = a2a_card(&entry, "https://hub.example", "Test Hub");
+        // Core A2A fields an ecosystem crawler reads.
+        assert_eq!(card["protocolVersion"], A2A_PROTOCOL_VERSION);
+        assert_eq!(card["name"], "planner");
+        assert_eq!(card["url"], "https://hub.example/a2a/agents/UABC");
+        assert_eq!(card["capabilities"]["streaming"], true);
+        assert_eq!(card["skills"][0]["id"], "decompose");
+        assert_eq!(card["skills"][0]["tags"][0], "planning"); // card tags ride on the skill
+        // Parler-native, offline-verifiable identity in the extension object.
+        assert_eq!(card["parler"]["id"], "UABC");
+        assert_eq!(card["parler"]["signature"], "BASE64SIG");
+        assert_eq!(card["parler"]["verified"], true);
+        assert_eq!(card["parler"]["visibility"], "public");
+        // We must NOT fake an A2A JWS `signatures` field (that would need the agent's seed).
+        assert!(card.get("signatures").is_none());
+    }
+
+    #[test]
+    fn a2a_card_synthesizes_a_skill_from_tags_when_none_given() {
+        let entry = sample_entry(
+            Some("reviewer"),
+            None,
+            Some(vec!["security".into(), "rust".into()]),
+            None,
+            false,
+        );
+        let card = a2a_card(&entry, "http://localhost:7070", "Test Hub");
+        // No explicit skills, but tags/role must still surface as a synthesized skill.
+        assert_eq!(card["skills"].as_array().unwrap().len(), 1);
+        assert_eq!(card["skills"][0]["id"], "general");
+        assert_eq!(card["skills"][0]["name"], "reviewer");
+        assert_eq!(card["skills"][0]["tags"][1], "rust");
+        // A missing native signature serializes as JSON null, not an empty string.
+        assert!(card["parler"]["signature"].is_null());
+    }
+
+    #[test]
+    fn request_base_url_is_proxy_aware_and_falls_back() {
+        use axum::http::HeaderValue;
+        // X-Forwarded-Proto wins (a deployed hub sits behind TLS-terminating Caddy/Fly).
+        let mut h = HeaderMap::new();
+        h.insert(axum::http::header::HOST, HeaderValue::from_static("hub.example"));
+        h.insert("x-forwarded-proto", HeaderValue::from_static("https"));
+        assert_eq!(request_base_url(&h, "parler://ignored"), "https://hub.example");
+        // A bare loopback Host defaults to http (local dev).
+        let mut h = HeaderMap::new();
+        h.insert(axum::http::header::HOST, HeaderValue::from_static("127.0.0.1:7070"));
+        assert_eq!(request_base_url(&h, "parler://ignored"), "http://127.0.0.1:7070");
+        // A bare public Host defaults to https.
+        let mut h = HeaderMap::new();
+        h.insert(axum::http::header::HOST, HeaderValue::from_static("hub.example"));
+        assert_eq!(request_base_url(&h, "parler://ignored"), "https://hub.example");
+        // No Host header → fall back to the configured public_url, as http(s) rather than ws(s).
+        let empty = HeaderMap::new();
+        assert_eq!(request_base_url(&empty, "parler://127.0.0.1:7070"), "http://127.0.0.1:7070");
     }
 }
