@@ -441,12 +441,11 @@ async fn call_tool(agent: &mut MeshAgent, name: &str, args: &Value) -> Result<St
                 .invite(kind, s("name"), args.get("ttl_secs").and_then(Value::as_u64), u32opt("max_uses"))
                 .await?;
             Ok(format!(
-                "invite ready — {} room '{}'.\ncode: {}\nlink: {}\nHave the other agent call parler_join with code {}",
+                "invite ready — {} room '{}'.\ncode: {}\nlink: {}\nThe other agent calls parler_join with the code.",
                 inv.kind.as_str(),
                 inv.room,
                 inv.code,
                 inv.url,
-                inv.code
             ))
         }
         "parler_join" => {
@@ -482,13 +481,12 @@ async fn call_tool(agent: &mut MeshAgent, name: &str, args: &Value) -> Result<St
             };
             let r = agent.push(target, &bytes, meta, s("note")).await?;
             Ok(format!(
-                "pushed git bundle to '{}' (seq {}, {} bytes).\ntip: {} {summary}\nblob: {}\nThe peer can run: parler apply {}",
+                "pushed git bundle to '{}' (seq {}, {} bytes). tip: {} {summary}\nThe peer runs: parler apply {}",
                 r.room,
                 r.seq,
                 bytes.len(),
                 tip,
                 r.blob_id,
-                r.blob_id
             ))
         }
         "parler_fetch" => {
@@ -699,10 +697,9 @@ async fn call_session_tool(state: &mut McpState, name: &str, args: &Value) -> Re
             let (token, _expires_at) = state.agent.mint_watch_token(&room, ttl).await?;
             Ok(format!(
                 "read-only WATCH code for session '{room}':\n{token}\n\
-                 Give it to the user to paste into the Parler website's session viewer (the /session \
-                 page) — they'll see the conversation and how many agents are in the room, without \
-                 joining. It's read-only and expiring, but anyone with the code can read the session, \
-                 so treat it like a password."
+                 Give it to the user to paste into the website's /session viewer (they'll see the \
+                 conversation + agent count, without joining). Anyone with the code can read the \
+                 session, so treat it like a password."
             ))
         }
         "parler_send" => {
@@ -861,9 +858,8 @@ async fn open_session(
     let _ = crate::save_active_session(&room);
     let _ = state.agent.presence("working", topic.or_else(|| Some("shared session".into()))).await;
     let gate = if require_approval {
-        "When another agent redeems this key it will ask to join, and YOU must approve it before it \
-         can see the conversation — you'll be shown a prompt to accept or reject (or call \
-         parler_join_requests). This keeps a leaked key from quietly reading your context."
+        "Joiners ask to join; YOU approve each (a prompt appears, or parler_join_requests) before they \
+         can read it — a leaked key can't quietly pull your context."
     } else {
         "Anyone with this key joins immediately (approval disabled)."
     };
@@ -882,19 +878,14 @@ async fn open_session(
         format!("claude mcp add parler {env} -- parler mcp")
     };
     Ok(format!(
-        "session open — room '{room}', now your active session (parler_send / parler_recv default to it).\n\
+        "session open — room '{room}', now your active session.\n\
          KEY: {code}\n\
-         \n\
-         Share with a teammate (or your own agent in another repo) — send them either:\n\
-         • the KEY above (they call parler_join_session with it), or\n\
-         • this one-liner, which adds Parler already joined to this session:\n    \
+         Give a teammate the KEY (they call parler_join_session) or this ready-to-run one-liner:\n    \
          {oneliner}\n\
-         Either way they land in the SAME conversation with the full context — no copy-paste.\n\
+         Either lands them in this same conversation, caught up — no copy-paste.\n\
          {gate}\n\
-         Keep a rolling recap so late joiners catch up cheaply: parler_remember key=\"session-digest\" \
-         room=\"{room}\" text=\"SESSION DIGEST: …\" (re-save to update).\n\
-         To let the user watch this session in their browser, call parler_watch_session for a read-only \
-         web viewer code.\n\
+         Keep late joiners cheap: parler_remember key=\"session-digest\" room=\"{room}\" text=\"SESSION DIGEST: …\" (re-save to update).\n\
+         parler_watch_session gives the user a read-only web viewer code.\n\
          link: {url}",
         code = inv.code,
         url = inv.url,
@@ -1493,6 +1484,10 @@ mod tests {
     /// baseline was 1,657 chars; P0.4's AUTOPULL_LIMIT=10 cap brings it to ~740. Ceiling leaves
     /// headroom for longer bodies (each capped at MSG_MAX_CHARS).
     const SEND_RENDER_BUDGET: usize = 2_000;
+    /// `open_session` result string (P1.4 trim). Measured 615 chars on the public hub; a private-hub
+    /// one-liner adds a PARLER_HUB/PARLER_JOIN_SECRET env, so leave headroom. Keeps the prose from
+    /// bloating back up.
+    const OPEN_RESULT_BUDGET: usize = 800;
 
     /// A body of exactly `len` ASCII chars (deterministic sizing for budget assertions).
     fn body_of(len: usize) -> String {
@@ -1809,7 +1804,15 @@ mod tests {
         // The output carries a ready-to-paste teammate one-liner with the session key preset.
         assert!(opened.contains("claude mcp add parler"), "shareable one-liner present:\n{opened}");
         assert!(opened.contains("PARLER_SESSION_KEY="), "one-liner presets the session key");
+        // Every actionable artifact survives the P1.4 trim.
+        assert!(opened.contains("link:"), "share link present");
+        assert!(opened.contains("session-digest"), "digest guidance present");
+        assert!(opened.contains("parler_watch_session"), "watch-viewer pointer present");
         assert!(alice.active_session.is_some());
+        // P1.4: the result is trimmed. The one-liner + a variable-length key/link dominate; assert a
+        // ceiling so the prose can't bloat back up.
+        println!("[budget] open_session result: {} chars", opened.chars().count());
+        assert!(opened.len() <= OPEN_RESULT_BUDGET, "open_session result {} B over budget {OPEN_RESULT_BUDGET} B", opened.len());
 
         let key = key_of(&opened);
         let joined = join_session(&mut bob, &key, Backlog::Recent).await.unwrap();

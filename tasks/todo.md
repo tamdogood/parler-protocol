@@ -988,3 +988,15 @@ fetch-by-key (no BM25) is the queued P2.1 upgrade.
 
 Tests: `join_surfaces_session_digest_fact` (host remembers it → joiner sees the header + recap),
 `join_without_digest_fact_is_silent` (absent → no header, no error). Gate green.
+
+### P1.4 — Trim chatty tool results (DONE)
+Shortened the wordy result strings, keeping every actionable artifact + test-pinned marker:
+- `open_session`: ~850 → **615 chars**. Kept `KEY: `, the `claude mcp add parler … PARLER_SESSION_KEY=`
+  one-liner, the approval `gate` sentence, the `session-digest` guidance, the watch-viewer pointer, and
+  `link:`; cut the narration. Tightened the approval-gate prose too. `OPEN_RESULT_BUDGET=800` pins it.
+- `parler_watch_session`: kept the code + "treat it like a password" warning; cut filler.
+- `parler_invite`: dropped the duplicated trailing code echo.
+- `parler_push`: folded the `blob:` line into the `parler apply <blob>` line (one blob id, not two).
+
+Test: `open_then_join_shares_context_and_sets_active_session` now also asserts `link:`, `session-digest`,
+`parler_watch_session` survive and that the result is under `OPEN_RESULT_BUDGET`. Gate green.
