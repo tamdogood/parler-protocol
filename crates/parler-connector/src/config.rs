@@ -8,7 +8,7 @@ use parler_auth::{new_identity, Identity};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 struct ConfigFile {
     hub_url: String,
     id: String,
@@ -16,6 +16,19 @@ struct ConfigFile {
     name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     role: Option<String>,
+}
+
+// `seed` is private key material — keep it out of any `{:?}` / log line (mirrors `Identity`'s Debug).
+impl std::fmt::Debug for ConfigFile {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ConfigFile")
+            .field("hub_url", &self.hub_url)
+            .field("id", &self.id)
+            .field("seed", &"<redacted>")
+            .field("name", &self.name)
+            .field("role", &self.role)
+            .finish()
+    }
 }
 
 /// The agent's local configuration + identity.
@@ -70,10 +83,9 @@ impl Config {
         config_path().exists()
     }
 
-    /// Persist to `$PARLER_HOME/config.json` with `0600` perms.
+    /// Persist to `$PARLER_HOME/config.json`, owner-only (`0600`) — it holds the private seed, so the
+    /// write is atomic (temp file + rename) and never leaves the seed at the default umask.
     pub fn save(&self) -> Result<()> {
-        let dir = home_dir();
-        std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
         let f = ConfigFile {
             hub_url: self.hub_url.clone(),
             id: self.identity.id.clone(),
@@ -82,12 +94,9 @@ impl Config {
             role: self.role.clone(),
         };
         let path = config_path();
-        std::fs::write(&path, serde_json::to_string_pretty(&f)?)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
-        }
+        let body = serde_json::to_string_pretty(&f)?;
+        parler_auth::write_private_file(&path, body.as_bytes())
+            .with_context(|| format!("writing {}", path.display()))?;
         Ok(())
     }
 }

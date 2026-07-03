@@ -68,8 +68,7 @@ struct Args {
     join_secret_file: Option<String>,
 
     /// Retention: delete messages older than this many days (always keeping the per-room floor below).
-    /// Omit / `0` keeps all message history. A long-lived public hub should set this so the log can't
-    /// grow without bound.
+    /// Defaults to 30 days; pass `0` to keep all message history.
     #[arg(long, env = "PARLER_HUB_RETENTION_DAYS")]
     retention_days: Option<u64>,
 
@@ -77,12 +76,13 @@ struct Args {
     #[arg(long, env = "PARLER_HUB_KEEP_MESSAGES_PER_ROOM")]
     keep_messages_per_room: Option<i64>,
 
-    /// Retention: keep only this many newest unkeyed facts per (author, room). Omit keeps all.
+    /// Retention: keep only this many newest unkeyed facts per (author, room). Defaults to 500; pass a
+    /// negative value to keep all.
     #[arg(long, env = "PARLER_HUB_KEEP_FACTS")]
     keep_facts: Option<i64>,
 
-    /// Retention: garbage-collect blob bytes neither fetched nor created within this many days. Omit
-    /// keeps blobs until the disk budget fills.
+    /// Retention: garbage-collect blob bytes neither fetched nor created within this many days.
+    /// Defaults to 14 days; pass `0` to keep blobs until the disk budget fills.
     #[arg(long, env = "PARLER_HUB_BLOB_TTL_DAYS")]
     blob_ttl_days: Option<u64>,
 
@@ -126,14 +126,28 @@ async fn main() -> anyhow::Result<()> {
 
     let defaults = Retention::default();
     let days_to_dur = |d: u64| Duration::from_secs(d * 24 * 3600);
+    // Absent flag ⇒ the (now non-trivial) default; an explicit `0` (or negative `keep_facts`) ⇒
+    // keep-everything, so an operator can still opt out of trimming entirely.
     state.retention = Retention {
-        message_max_age: args.retention_days.filter(|d| *d > 0).map(days_to_dur),
+        message_max_age: match args.retention_days {
+            None => defaults.message_max_age,
+            Some(0) => None,
+            Some(d) => Some(days_to_dur(d)),
+        },
         keep_messages_per_room: args
             .keep_messages_per_room
             .map(|k| k.max(0))
             .unwrap_or(defaults.keep_messages_per_room),
-        keep_unkeyed_facts: args.keep_facts.filter(|k| *k >= 0),
-        blob_max_idle: args.blob_ttl_days.filter(|d| *d > 0).map(days_to_dur),
+        keep_unkeyed_facts: match args.keep_facts {
+            None => defaults.keep_unkeyed_facts,
+            Some(k) if k < 0 => None,
+            Some(k) => Some(k),
+        },
+        blob_max_idle: match args.blob_ttl_days {
+            None => defaults.blob_max_idle,
+            Some(0) => None,
+            Some(d) => Some(days_to_dur(d)),
+        },
         interval: args
             .janitor_interval_secs
             .filter(|s| *s > 0)

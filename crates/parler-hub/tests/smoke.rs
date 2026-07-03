@@ -78,6 +78,9 @@ async fn api_hub_reports_identity_and_protocol() {
     assert!(body.contains("\"name\""), "missing name in {body}");
     assert!(body.contains("\"protocolVersion\""), "missing protocolVersion in {body}");
     assert!(body.contains("\"mode\""), "missing mode in {body}");
+    // Lightweight observability counters are exposed for monitoring.
+    assert!(body.contains("\"stats\""), "missing stats in {body}");
+    assert!(body.contains("\"messagesTotal\""), "missing messagesTotal in {body}");
 }
 
 #[tokio::test]

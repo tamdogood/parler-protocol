@@ -27,8 +27,9 @@ use rand::Rng;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use parking_lot::Mutex;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tower_http::cors::{Any, CorsLayer};
@@ -101,11 +102,15 @@ pub struct Retention {
 
 impl Default for Retention {
     fn default() -> Self {
+        // Sane, conservative bounds *on* by default so a long-lived hub can't grow without limit —
+        // the ceiling `docs/storage-and-memory.md` warned about. An operator can widen or disable any
+        // knob (a `0`/negative flag ⇒ keep-everything). The per-room floor means recent history is
+        // never trimmed by age, only old backlog beyond it.
         Retention {
-            message_max_age: None,
+            message_max_age: Some(Duration::from_secs(30 * 24 * 3600)), // 30 days
             keep_messages_per_room: 10_000,
-            keep_unkeyed_facts: None,
-            blob_max_idle: None,
+            keep_unkeyed_facts: Some(500),
+            blob_max_idle: Some(Duration::from_secs(14 * 24 * 3600)), // 14 days
             interval: Duration::from_secs(3600),
         }
     }
@@ -128,6 +133,19 @@ struct Window {
 struct AgentRate {
     sends: Window,
     blobs: Window,
+}
+
+/// Cumulative, lock-free hub counters for observability — surfaced under `/api/hub` so an operator can
+/// watch throughput without a metrics backend. In-memory, so they reset on restart (like the rate
+/// windows and the subscriber registry).
+#[derive(Default)]
+struct Metrics {
+    /// Connections accepted (past the capacity gate) since boot.
+    connections_total: AtomicU64,
+    /// Messages appended to any room since boot.
+    messages_total: AtomicU64,
+    /// Live pushes delivered to subscribers since boot (a dropped/best-effort push is not counted).
+    pushes_total: AtomicU64,
 }
 
 /// Whether a hub's directory is world-readable.
@@ -187,12 +205,15 @@ pub struct HubState {
     /// Hands out a unique id per connection, so a subscription can be removed precisely on disconnect
     /// (one agent may hold several connections).
     next_conn: AtomicU64,
+    /// Cumulative counters for observability (reset on restart).
+    metrics: Metrics,
 }
 
 /// One subscribed connection's push channel, tagged with its connection id for clean removal.
+/// Carries `Arc<ServerFrame>` so a fan-out to N members shares one frame instead of cloning it N times.
 struct Subscriber {
     conn: u64,
-    tx: mpsc::Sender<ServerFrame>,
+    tx: mpsc::Sender<Arc<ServerFrame>>,
 }
 
 impl HubState {
@@ -219,6 +240,7 @@ impl HubState {
             conn_count: AtomicUsize::new(0),
             subscribers: Mutex::new(HashMap::new()),
             next_conn: AtomicU64::new(1),
+            metrics: Metrics::default(),
         }
     }
 
@@ -229,8 +251,8 @@ impl HubState {
 
     /// Register connection `conn` (of `agent`) to receive live pushes on `tx`. Idempotent: a repeat
     /// `Subscribe` on the same connection replaces its sender rather than duplicating it.
-    fn subscribe(&self, agent: &str, conn: u64, tx: mpsc::Sender<ServerFrame>) {
-        let mut subs = self.subscribers.lock().unwrap();
+    fn subscribe(&self, agent: &str, conn: u64, tx: mpsc::Sender<Arc<ServerFrame>>) {
+        let mut subs = self.subscribers.lock();
         let v = subs.entry(agent.to_string()).or_default();
         v.retain(|s| s.conn != conn);
         v.push(Subscriber { conn, tx });
@@ -238,7 +260,7 @@ impl HubState {
 
     /// Drop connection `conn`'s subscription (on disconnect). A no-op if it never subscribed.
     fn unsubscribe(&self, agent: &str, conn: u64) {
-        let mut subs = self.subscribers.lock().unwrap();
+        let mut subs = self.subscribers.lock();
         if let Some(v) = subs.get_mut(agent) {
             v.retain(|s| s.conn != conn);
             if v.is_empty() {
@@ -252,7 +274,7 @@ impl HubState {
     /// and a closed channel prunes that dead subscription. The author is never pushed its own message.
     fn fanout(&self, room: &str, author: &str, msg: StoredMessage) {
         // Only touch the registry if anyone is subscribed at all (the common case is nobody).
-        if self.subscribers.lock().unwrap().is_empty() {
+        if self.subscribers.lock().is_empty() {
             return;
         }
         let members = match self.store.room_member_ids(room) {
@@ -262,15 +284,24 @@ impl HubState {
                 return;
             }
         };
-        let frame = ServerFrame::Delivery { message: msg };
-        let mut subs = self.subscribers.lock().unwrap();
+        // One heap allocation shared by every recipient: `Arc::clone` hands each subscriber a pointer,
+        // not a deep copy of the (possibly multi-KB) `Delivery` frame.
+        let frame = Arc::new(ServerFrame::Delivery { message: msg });
+        let mut subs = self.subscribers.lock();
         for member in members {
             if member == author {
                 continue;
             }
             if let Some(conns) = subs.get_mut(&member) {
-                conns.retain(|s| {
-                    !matches!(s.tx.try_send(frame.clone()), Err(mpsc::error::TrySendError::Closed(_)))
+                conns.retain(|s| match s.tx.try_send(frame.clone()) {
+                    Ok(()) => {
+                        self.metrics.pushes_total.fetch_add(1, Ordering::Relaxed);
+                        true
+                    }
+                    // Full ⇒ drop this push (the subscriber recovers it via its durable cursor) but
+                    // keep the subscription; only a closed channel means the connection is gone.
+                    Err(mpsc::error::TrySendError::Full(_)) => true,
+                    Err(mpsc::error::TrySendError::Closed(_)) => false,
                 });
             }
         }
@@ -285,7 +316,7 @@ impl HubState {
         if limit == 0 {
             return true;
         }
-        let mut map = self.rate.lock().unwrap();
+        let mut map = self.rate.lock();
         let ar = map.entry(agent.to_string()).or_default();
         let w = match kind {
             RateKind::Send => &mut ar.sends,
@@ -384,7 +415,7 @@ async fn run_janitor(state: Arc<HubState>) {
 /// with a fresh window on the agent's next event — identical to the window rollover it would have had.
 fn prune_rate_windows(state: &HubState, now: i64) {
     const MAX_WINDOW_MS: i64 = 3_600_000; // the blob window (the longer of the two)
-    let mut map = state.rate.lock().unwrap();
+    let mut map = state.rate.lock();
     map.retain(|_, ar| now - ar.sends.start < MAX_WINDOW_MS || now - ar.blobs.start < MAX_WINDOW_MS);
 }
 
@@ -624,12 +655,20 @@ async fn ws_handler(ws: WebSocketUpgrade, State(state): State<Arc<HubState>>) ->
 /// `GET /api/hub` — the hub's public summary card.
 async fn api_hub(State(state): State<Arc<HubState>>) -> impl IntoResponse {
     let (agents, public_agents) = state.store.directory_counts().unwrap_or((0, 0));
+    let m = &state.metrics;
     Json(serde_json::json!({
         "name": state.name,
         "mode": state.mode.as_str(),
         "agents": agents,
         "publicAgents": public_agents,
         "protocolVersion": parler_protocol::PROTOCOL_VERSION,
+        // Cumulative-since-boot counters + the live connection gauge, for lightweight monitoring.
+        "stats": {
+            "liveConnections": state.conn_count.load(Ordering::Relaxed),
+            "connectionsTotal": m.connections_total.load(Ordering::Relaxed),
+            "messagesTotal": m.messages_total.load(Ordering::Relaxed),
+            "pushesTotal": m.pushes_total.load(Ordering::Relaxed),
+        },
     }))
 }
 
@@ -1044,7 +1083,7 @@ struct ConnState {
     /// subscription precisely.
     conn_id: u64,
     /// The push channel's sender, handed to the subscriber registry when the client `Subscribe`s.
-    push_tx: Option<mpsc::Sender<ServerFrame>>,
+    push_tx: Option<mpsc::Sender<Arc<ServerFrame>>>,
 }
 
 #[derive(Clone)]
@@ -1083,12 +1122,13 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<HubState>) {
         .await;
         return;
     }
+    state.metrics.connections_total.fetch_add(1, Ordering::Relaxed);
 
     // Each connection owns a bounded push channel. The sender is registered in `state.subscribers`
     // only when (if) the client sends `Subscribe`; until then `push_rx` simply never yields. Holding
     // `push_tx` in `conn` keeps the channel open (so `push_rx.recv()` parks rather than returning
     // `None`) and lets the `Subscribe` handler register a clone.
-    let (push_tx, mut push_rx) = mpsc::channel::<ServerFrame>(PUSH_BUFFER);
+    let (push_tx, mut push_rx) = mpsc::channel::<Arc<ServerFrame>>(PUSH_BUFFER);
     let mut conn = ConnState {
         conn_id: state.next_conn_id(),
         push_tx: Some(push_tx),
@@ -1115,7 +1155,7 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<HubState>) {
             biased;
             // A pushed delivery (only after `Subscribe`): forward it to the client out-of-band.
             Some(frame) = push_rx.recv() => {
-                if !send_frame(&mut socket, &frame).await {
+                if !send_frame(&mut socket, frame.as_ref()).await {
                     break;
                 }
             }
@@ -1346,11 +1386,15 @@ fn handle_hello(
     secret: Option<String>,
 ) -> ServerFrame {
     match sig {
-        // Step 1: issue a challenge to sign.
+        // Step 1: issue a domain-separated, hub-bound, expiring challenge to sign. `version` lets a
+        // newer client warn on a protocol mismatch; both fields are additive.
         None => {
-            let nonce = uuid::Uuid::new_v4().to_string();
+            let nonce = issue_challenge(&state.public_url, now_ms());
             conn.nonce = Some(nonce.clone());
-            ServerFrame::Challenge { nonce }
+            ServerFrame::Challenge {
+                nonce,
+                version: Some(parler_protocol::PROTOCOL_VERSION.to_string()),
+            }
         }
         // Step 2: verify the signature over the issued nonce.
         Some(sig) => {
@@ -1359,6 +1403,12 @@ fn handle_hello(
                     message: "no challenge issued — send `hello` without a signature first".into(),
                 };
             };
+            // Reject a stale/foreign challenge before spending a signature verification on it.
+            if !challenge_valid(&nonce, &state.public_url, now_ms()) {
+                return ServerFrame::Error {
+                    message: "challenge expired — reconnect and retry".into(),
+                };
+            }
             if !verify_sig(&id, &nonce, &sig) {
                 return ServerFrame::Error {
                     message: "signature verification failed".into(),
@@ -1534,6 +1584,7 @@ fn handle_authed(state: &HubState, me: &Authed, frame: ClientFrame) -> anyhow::R
             let now = now_ms();
             let (id, seq) =
                 store.append_message(&room, &from, &parts, mentions.as_deref(), reply_to.as_deref(), now)?;
+            state.metrics.messages_total.fetch_add(1, Ordering::Relaxed);
             // Best-effort live push to subscribed members (the durable cursor is still the source of
             // truth, so this only lowers latency — it never replaces `Pull`). Built from the same
             // fields just persisted, so a pushed message is byte-identical to the pulled one.
@@ -1650,6 +1701,40 @@ fn verify_sig(id: &str, nonce: &str, sig_b64: &str) -> bool {
     parler_auth::verify(id, nonce.as_bytes(), sig_b64)
 }
 
+/// A challenge is valid for 60s — plenty for a round-trip, short enough to bound replay.
+const CHALLENGE_TTL_MS: i64 = 60_000;
+
+/// A short, colon-free token identifying this hub (first 12 hex of `sha256(public_url)`), so a
+/// challenge minted by one hub can't validate at another.
+fn hub_token(public_url: &str) -> String {
+    parler_auth::content_id(public_url.as_bytes())[..12].to_string()
+}
+
+/// Build the challenge string the client signs verbatim: `parler-auth:v1:<hub>:<exp-ms>:<rand>`.
+/// Signing a structured, self-describing token (rather than a bare UUID) **domain-separates** the
+/// signature so it can't be repurposed, and the embedded expiry bounds replay. Zero client change —
+/// the client just signs whatever opaque nonce it is handed.
+fn issue_challenge(public_url: &str, now: i64) -> String {
+    format!(
+        "parler-auth:v1:{}:{}:{}",
+        hub_token(public_url),
+        now + CHALLENGE_TTL_MS,
+        uuid::Uuid::new_v4()
+    )
+}
+
+/// Validate a challenge we previously issued: correct shape/version, our hub token, not yet expired.
+fn challenge_valid(nonce: &str, public_url: &str, now: i64) -> bool {
+    let mut it = nonce.split(':');
+    if it.next() != Some("parler-auth") || it.next() != Some("v1") {
+        return false;
+    }
+    let (Some(hub), Some(exp)) = (it.next(), it.next().and_then(|s| s.parse::<i64>().ok())) else {
+        return false;
+    };
+    hub == hub_token(public_url) && now <= exp
+}
+
 /// Compare a presented join secret to the expected one without leaking *where* they differ via
 /// timing. (Length is allowed to differ fast — it isn't the secret.)
 fn secret_matches(expected: &str, got: Option<&str>) -> bool {
@@ -1712,6 +1797,17 @@ mod tests {
     }
 
     #[test]
+    fn retention_defaults_are_enabled() {
+        // A deployed hub must bound its growth out of the box; regressing any of these back to
+        // keep-everything is the ceiling we just closed. (Opt out per-knob via a 0/negative flag.)
+        let r = Retention::default();
+        assert!(r.message_max_age.is_some(), "messages must be age-bounded by default");
+        assert!(r.keep_unkeyed_facts.is_some(), "unkeyed facts must be bounded by default");
+        assert!(r.blob_max_idle.is_some(), "idle blobs must be GC'd by default");
+        assert!(r.keep_messages_per_room > 0, "a positive per-room floor protects recent history");
+    }
+
+    #[test]
     fn prune_rate_windows_drops_only_idle_agents() {
         let store = Store::open(None).unwrap();
         let state = HubState::new(store, "parler://x".into(), "T".into(), HubMode::Public);
@@ -1721,9 +1817,9 @@ mod tests {
         state.rate_allows("active", RateKind::Send, now);
         state.rate_allows("idle", RateKind::Send, now - 3_600_001);
 
-        assert_eq!(state.rate.lock().unwrap().len(), 2);
+        assert_eq!(state.rate.lock().len(), 2);
         prune_rate_windows(&state, now);
-        let map = state.rate.lock().unwrap();
+        let map = state.rate.lock();
         assert!(map.contains_key("active"), "a recently active agent's counter is kept");
         assert!(!map.contains_key("idle"), "an agent idle past the longest window is dropped");
     }
@@ -1797,7 +1893,7 @@ mod tests {
 
         // Step 1: challenge.
         let nonce = match handle_hello(&state, &mut conn, id.id.clone(), "a".into(), None, None, None) {
-            ServerFrame::Challenge { nonce } => nonce,
+            ServerFrame::Challenge { nonce, .. } => nonce,
             other => panic!("expected challenge, got {other:?}"),
         };
         let sig = parler_auth::sign(&id.seed, nonce.as_bytes()).unwrap();
@@ -1821,12 +1917,25 @@ mod tests {
         let id = parler_auth::new_identity().unwrap();
         let mut conn = ConnState::default();
         let nonce = match handle_hello(&state, &mut conn, id.id.clone(), "a".into(), None, None, None) {
-            ServerFrame::Challenge { nonce } => nonce,
+            ServerFrame::Challenge { nonce, .. } => nonce,
             other => panic!("expected challenge, got {other:?}"),
         };
         let sig = parler_auth::sign(&id.seed, nonce.as_bytes()).unwrap();
         let ok = handle_hello(&state, &mut conn, id.id, "a".into(), None, Some(sig), None);
         assert!(matches!(ok, ServerFrame::Welcome { .. }));
+    }
+
+    #[test]
+    fn challenge_nonce_is_domain_separated_hub_bound_and_expiring() {
+        let url = "parler://hub-a";
+        let n = issue_challenge(url, 1_000);
+        assert!(n.starts_with("parler-auth:v1:"), "carries a domain-separating prefix");
+        assert!(challenge_valid(&n, url, 1_000)); // fresh
+        assert!(challenge_valid(&n, url, 1_000 + CHALLENGE_TTL_MS)); // at expiry: still valid
+        assert!(!challenge_valid(&n, url, 1_001 + CHALLENGE_TTL_MS)); // past expiry
+        assert!(!challenge_valid(&n, "parler://hub-b", 1_000)); // minted for a different hub
+        assert!(!challenge_valid("garbage", url, 1_000)); // malformed
+        assert!(!challenge_valid("parler-auth:v2:x:9999999999999:r", url, 1_000)); // wrong version
     }
 
     fn sample_entry(

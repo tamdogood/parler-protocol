@@ -8,13 +8,26 @@ use crate::error::AuthError;
 use data_encoding::{BASE64, BASE64URL_NOPAD, HEXLOWER};
 use nkeys::KeyPair;
 use sha2::{Digest, Sha256};
+use std::io::Write;
+use std::path::{Path, PathBuf};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct Identity {
     /// User nkey public key (`U…`). The stable agent id.
     pub id: String,
     /// User nkey seed (`SU…`). Private — kept off the wire.
     pub seed: String,
+}
+
+// The seed is private key material: keep it out of any `{:?}` / log line. `Debug` shows the id (a
+// public key, safe to print) and redacts the seed. Same reason `Identity` is never `Serialize`.
+impl std::fmt::Debug for Identity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Identity")
+            .field("id", &self.id)
+            .field("seed", &"<redacted>")
+            .finish()
+    }
 }
 
 /// Generate a fresh user nkey identity locally.
@@ -56,6 +69,46 @@ pub fn verify(id: &str, msg: &[u8], sig_b64: &str) -> bool {
 /// The hashing is defined here so the uploader (connector) and the verifier (hub) agree byte-for-byte.
 pub fn content_id(bytes: &[u8]) -> String {
     HEXLOWER.encode(&Sha256::digest(bytes))
+}
+
+/// Atomically write `contents` to `path` as an **owner-only (`0600`)** file, creating parent dirs.
+///
+/// For on-disk secrets — an agent's nkey seed (`config.json`) and a hub's join secret. We write a
+/// freshly-created temp file (opened `0600` from the very first byte) in the same directory and then
+/// `rename` it over the destination. Because `rename` is atomic and the new inode is `0600`, the
+/// secret is **never** momentarily group/world-readable — unlike `write`-then-`set_permissions`,
+/// which leaves the file at the default umask (`~0644`) in the window between the two syscalls.
+pub fn write_private_file(path: &Path, contents: &[u8]) -> std::io::Result<()> {
+    let parent = path.parent().filter(|p| !p.as_os_str().is_empty());
+    if let Some(dir) = parent {
+        std::fs::create_dir_all(dir)?;
+    }
+    let dir = parent.map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from("."));
+    let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("secret");
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let tmp = dir.join(format!(".{file_name}.tmp.{}.{stamp}", std::process::id()));
+
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+
+    let write = (|| -> std::io::Result<()> {
+        let mut f = opts.open(&tmp)?;
+        f.write_all(contents)?;
+        f.sync_all()
+    })();
+    if let Err(e) = write.and_then(|()| std::fs::rename(&tmp, path)) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
+    Ok(())
 }
 
 /// The stable id carried by a creds file: the agent's nkey public key, derived from the seed block
@@ -120,5 +173,58 @@ mod tests {
         assert!(!verify(&id.id, b"tampered", &sig));
         assert!(!verify(&new_identity().unwrap().id, b"card-bytes", &sig));
         assert!(!verify(&id.id, b"card-bytes", "not-base64!!"));
+    }
+
+    fn uniq_dir(tag: &str) -> PathBuf {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("parler-auth-{tag}-{}-{stamp}", std::process::id()))
+    }
+
+    #[test]
+    fn write_private_file_is_0600_and_roundtrips() {
+        let dir = uniq_dir("wpf");
+        // Parent dirs are created on the way (the target sits two levels deep).
+        let path = dir.join("nested").join("config.json");
+        write_private_file(&path, b"top-secret-seed").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"top-secret-seed");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600, "a private file must be owner-only");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // The whole point of the atomic rename: overwriting an old, world-readable config must not
+    // inherit its loose permissions (the bug that `write`-then-chmod left a window for).
+    #[cfg(unix)]
+    #[test]
+    fn write_private_file_replaces_a_world_readable_file_with_0600() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = uniq_dir("wpf-overwrite");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.json");
+        std::fs::write(&path, b"old").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        write_private_file(&path, b"new-secret").unwrap();
+
+        assert_eq!(std::fs::read(&path).unwrap(), b"new-secret");
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600, "atomic rename must replace, never widen");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn debug_redacts_the_seed() {
+        let id = new_identity().unwrap();
+        let shown = format!("{id:?}");
+        assert!(shown.contains(&id.id), "the id (a public key) is safe to show");
+        assert!(!shown.contains(&id.seed), "the private seed must never appear in Debug");
+        assert!(shown.contains("<redacted>"));
     }
 }

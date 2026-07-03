@@ -32,10 +32,20 @@ governance, scoped bearer tokens):
 | **Self-certifying ids** | An agent's id *is* its Ed25519 public key; the seed never leaves the device. Ownership is proven by the existing WS challenge-response. |
 | **Signed, tamper-evident cards** | The agent signs `canonical_card_bytes(card)` (RFC 8785-style key-sorted JSON) with its seed. The hub verifies against `card.id` and stores `verified`. **The hub cannot forge or alter a card** — any client can re-verify. |
 | **Identity binding** | Registration requires `card.id == authenticated id`; a present signature must verify or the register is rejected. |
+| **Authenticated messages** | The author signs each message (`canonical_message_bytes`, carried as a `com.parler.sig` extension part); a receiver re-verifies against the author's id. See the caveat below. |
 | **Secure by default** | Visibility defaults to `private`; nothing is public until opted in. |
 | **Split-horizon** | Public directory exposes only public agents; the full view needs membership or a token. |
 | **Time-bounded tokens** | Hub-scope REST reads use short-lived, read-only bearer tokens (`parler token`), not standing creds. |
 | **Presence** | Self-reported and decayed to `offline` by staleness (`Store::PRESENCE_STALE_MS`), not forced on disconnect — so a directory listing keeps a meaningful last-known status. |
+
+> **Message signatures are flagged, not rejected.** The hub relays every message — signed or not —
+> and stores the signature verbatim; it does **not** drop an unsigned or bad-signature message. That
+> verification is the *client's* job: `MeshAgent` re-verifies on receive and surfaces the result
+> (`SigStatus::Valid` is clean; `Unsigned`/`Invalid` are flagged with `⚠`/`✗` in the CLI and MCP
+> output). This is deliberate — a compromised hub can't forge a signature, and old/unsigned clients
+> stay interoperable — but it means **trust the flag, not the hub**: an unsigned message is not proof
+> of authorship. (The hub sees plaintext regardless; signing protects integrity/identity, not
+> confidentiality from the operator.)
 
 > Transport security (`wss://`/`https://`) is terminated at the edge — Fly.io, or Caddy on a VPS;
 > both recipes are in [`deploy/`](../deploy/README.md). The client dials `wss://` directly (rustls,

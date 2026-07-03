@@ -24,6 +24,54 @@ and check in the sub-items here rather than attempt it whole. Keep `[P0]`/`[P1]`
 
 ## Now (pull from the top)
 
+### Epic: Full-app audit remediation (2026-07-03) — security hardening + setup UX
+*Senior-eng/architect audit of the whole app (Rust hub/connector/protocol/CLI-MCP + web + desktop).
+Full write-up: `~/.claude/plans/system-instruction-you-are-working-calm-newt.md`; summary in
+`tasks/todo.md` (2026-07-03). Security posture verified **strong** — no critical/high vulns; the core
+"compromised hub can't lie" invariants hold under inspection. These are the follow-ons; each additive
++ backward-compatible.*
+
+Wave 1 — quick wins (**DONE 2026-07-03**, see `tasks/todo.md`):
+- [x] **[P1] Atomic 0600 secret writes** — `parler_auth::write_private_file` (temp file + rename)
+  replaces the `write`-then-`chmod` window for the nkey seed (`config.rs`) and hub join secret (`secret.rs`).
+- [x] **[P2] Redacting `Debug`** — `Identity`/`ConfigFile` no longer print the seed via `{:?}`.
+- [x] **[P2] Installer PATH self-heal** — `install.sh` smoke-tests the binary and prints an exact
+  shell-rc fix + full-path fallback instead of a missable note.
+- [x] **[P2] Detection dead-end hint** — `parler connect` names the checked path + `--print` escape.
+
+Wave 2 — first-run confidence (**DONE 2026-07-03**, see `tasks/todo.md`):
+- [x] **[P1] Reachability probe + next-step on `parler connect`** — a bare `connect` now dials each hub
+  once (3s timeout, `probe_hubs`) and reports reachability; the `--verify`/`--list` next-steps already
+  print. Subsumes the localhost-hub hint below.
+- [x] **[P2] First-run online visibility** — `parler mcp` announces the minted id+hub and appends a
+  trimmed `~/.parler/mcp.log` (connect/auto-register outcome); `parler doctor` shows "Recent MCP activity".
+- [x] **[P2] Localhost-hub-not-running hint** — covered by the probe (`report_unreachable` → "start it
+  and keep it running: parler hub --local"). `[HUMAN] web:` a README local-hub walkthrough still welcome.
+- [x] **[P2] Doc: signing is flagged-not-rejected** — added to `docs/discovery.md` (security model).
+
+Wave 3 — scale & resilience (**DONE 2026-07-03**; reconnect stays queued):
+- [x] **[P1] Retention defaults + `messages(ts)` index** — `Retention::default()` now bounds messages
+  (30d), unkeyed facts (500), and idle blobs (14d); `main.rs` treats an explicit `0`/negative as "keep
+  all"; `idx_messages_ts` added; guard test asserts the defaults are on.
+- [x] **[P2] `Arc<ServerFrame>` fanout** — the push channel now carries `Arc<ServerFrame>`, so fan-out
+  clones a pointer, not the frame; push e2e stays green.
+- [x] **[P2] Handshake protocol-version echo** — `Challenge` carries an optional `version`; the client
+  warns on a major mismatch (`warn_on_protocol_mismatch`). Additive.
+- [ ] (already queued below) **self-healing reconnect + cursor resume** — Verifiable-mesh epic P2.
+
+Wave 4 — maintainability & observability (**mostly DONE 2026-07-03**; god-file split deferred):
+- [x] **[P2] `parking_lot::Mutex` for hub locks** — store + server locks are non-poisoning; `.lock()`
+  returns the guard directly (dep was already in-tree, so cargo-deny stays green).
+- [x] **[P2] Lightweight metrics** — `Metrics` counters (connections/messages/pushes + live gauge)
+  exposed under `/api/hub` `stats`; smoke test asserts them.
+- [x] **[P2] Hardened auth challenge nonce** (was queued in the Verifiable-mesh epic) — domain-separated,
+  hub-bound, expiring `parler-auth:v1:<hub>:<exp>:<rand>`; validated on step 2; zero client change.
+- [ ] **[P2] Split the god-files** — `server.rs`/`store.rs`/`cli/lib.rs` into submodules. **Deferred to
+  its own PR** on purpose: a large pure-refactor diff shouldn't ride with behavioral changes.
+
+`[HUMAN] web/desktop` (Wave 5): desktop empty-state install links; README "two lines" honesty; document
+the `parler://` scheme. Pairs with the existing `[HUMAN] web:` hire-flow items in "Next".
+
 ### Epic: Verifiable mesh — the hub can relay but can't lie (security + resilience)
 *Audit (2026-06-29, `tasks/todo.md`): the "compromised hub can't impersonate anyone" guarantee covers
 signed cards but NOT messages — a malicious hub can forge/alter/reorder the conversation a joining
@@ -54,11 +102,10 @@ ideas. Each item additive + backward-compatible.*
   backoff. *Done when:* opt-in reconnect wrapper, an e2e that kills the socket mid-session and asserts
   the next `recv` transparently resumes. Additive (pure client-side).
 
-- [ ] **[P2] Hardened auth challenge (domain-separated, hub-bound, expiring nonce)** — make the
-  challenge nonce an opaque structured string (`parler-auth:v1:<hub>:<exp>:<rand>`) so the signature is
-  domain-separated and replay-bounded; the client signs the opaque string it's handed ⇒ **zero client
-  change**. *Done when:* hub builds + validates the structured nonce (expiry + hub-id checked), unit
-  tests for expired/foreign-hub nonces, e2e auth still green. Additive.
+- [x] **[P2] Hardened auth challenge (domain-separated, hub-bound, expiring nonce)** — DONE 2026-07-03
+  (Wave 4 above). `issue_challenge`/`challenge_valid` build + validate `parler-auth:v1:<hub>:<exp>:<rand>`
+  (hub token = 12 hex of `sha256(public_url)`, 60s TTL); validated on `Hello` step 2; unit test covers
+  expired/foreign/malformed; zero client change; `make ci` green.
 
 - [x] **[P0] Seed `tasks/lessons.md` discipline** — DONE 2026-06-29. The verify gate (`scripts/verify.sh
   --rust-only`) was confirmed trustworthy: it correctly **failed** on a real error (the missing `uuid`

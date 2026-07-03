@@ -390,8 +390,14 @@ pub enum ClientFrame {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ServerFrame {
-    /// Step 1 of the handshake: sign this `nonce` and re-send `Hello`.
-    Challenge { nonce: String },
+    /// Step 1 of the handshake: sign this `nonce` and re-send `Hello`. `version` is the hub's protocol
+    /// version — additive and optional, so an older hub that omits it (and an older client that ignores
+    /// it) both keep working; a newer client uses it to warn on a major-version mismatch.
+    Challenge {
+        nonce: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        version: Option<String>,
+    },
     /// Handshake complete — the connection is authenticated as `id`.
     Welcome { id: String, name: String },
     Invited {

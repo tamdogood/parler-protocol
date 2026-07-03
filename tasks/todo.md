@@ -1,3 +1,76 @@
+# Task: Full-app audit (arch · security · setup UX) + Wave 1 remediation — 2026-07-03
+
+**User:** "act as a senior engineer and architect, audit my entire app and draft a plan so that I can
+use other agents to work on improving it ... full audit ... vulnerabilities ... improve UX, making the
+set up so easy and straightforward to use."
+
+**What I did:** three parallel Explore audits (architecture/code-quality, security, setup UX), then
+**verified every load-bearing claim against the source** before trusting it. Discarded one false
+"critical" — the architecture audit's "panics on network input" (`hub.rs:862/868…`) is `#[test]`
+code, not network-reachable. Full plan:
+`~/.claude/plans/system-instruction-you-are-working-calm-newt.md`; workstreams filed in
+`tasks/backlog.md` (Waves 1–4, "Full-app audit remediation" epic).
+
+**Verdict:** security posture verified **strong** — no critical/high vulns. Confirmed solid:
+constant-time join-secret compare, hub/watch token scope wall, fully parameterized SQL, server-side
+blob-hash + path safety, seed-never-on-wire, the `Invite` self-join fix, sandboxed Electron
+(`contextIsolation`/`execFile`), checksum'd installer. Real work is (1) two narrow hardening fixes,
+(2) known scaling ceilings that ship off-by-default, (3) first-run UX confidence ("did it work?").
+
+## Review — Wave 1 DONE & VERIFIED (2026-07-03) ✅
+- **[SEC-1] Atomic 0600 secret writes** — new `parler_auth::write_private_file` (temp file created
+  `0600` + atomic `rename`) replaces the `write`-then-`set_permissions` window for the nkey seed
+  (`config.rs::save`) and the hub join secret (`secret.rs`). No instant where the seed sits at the
+  default umask; overwriting an old world-readable config now *replaces* (not widens) it.
+- **[SEC-2] Redacting `Debug`** — `Identity` + `ConfigFile` hand-write `Debug` printing
+  `seed: "<redacted>"` (the id, a public key, is still shown). `{:?}`/logs can't leak the seed.
+- **[UX-1] Installer PATH self-heal** — `install.sh` smoke-tests `parler --version` (catches a
+  wrong-arch/truncated download) and, on a PATH miss, prints an exact `>> ~/.zshrc` line for the
+  detected shell + a full-path `parler connect` fallback — no more silent "command not found".
+- **[UX-5] Detection dead-end** — `parler connect` prints the path it checked ("looked in ~/.codex")
+  + `parler connect <id> --print` for non-standard install locations.
+- **Tests:** +3 `parler-auth` unit tests (0600-on-create, replace-world-readable-with-0600, `Debug`
+  redaction). **Gate:** `CI_SKIP_WEB=1 make ci` → "all gates passed"; `shellcheck scripts/install.sh`
+  clean. **Not committed** — left in the working tree for review.
+
+## Review — Waves 2–4 DONE & VERIFIED (2026-07-03) ✅
+Continued straight into the rest of the plan (user: "continue implement other waves").
+
+**Wave 2 — first-run confidence:**
+- **[UX-2] Reachability probe** — a bare `parler connect` now dials each wired hub once (`probe_hubs`,
+  3s timeout) and prints `✓ hub reachable` / `⚠ hub not reachable yet …` (localhost → "start it:
+  parler hub --local"); `--verify` still does the deeper wait. Failures surface at wire time, not after.
+- **[UX-4] Online visibility** — `parler mcp` announces the freshly minted identity and appends a
+  trimmed `~/.parler/mcp.log` (connected / connect-FAILED / auto-register outcome); `parler doctor`
+  shows a "Recent MCP activity" tail (`recent_log`). +1 test (`breadcrumb_log_roundtrips_and_trims`).
+- **[docs] Signing is flagged-not-rejected** — new note in `docs/discovery.md` security model.
+
+**Wave 3 — scale & resilience:**
+- **[ARCH-2] Retention on by default** — `Retention::default()` bounds messages (30d), unkeyed facts
+  (500/author-room), idle blobs (14d); `main.rs` maps an explicit `0`/negative to keep-all; new
+  `idx_messages_ts` for the age scan; guard test `retention_defaults_are_enabled`.
+- **[ARCH-1] Arc fanout** — push channel + `Subscriber` now carry `Arc<ServerFrame>`, so a fan-out to N
+  members shares one frame; the `retain` also counts pushes and keeps a `Full` subscriber (cursor
+  recovers it). Push e2e green.
+- **[ARCH-4] Version echo** — `Challenge` gained an optional `version`; the client warns on a major
+  mismatch (`warn_on_protocol_mismatch`). Additive/optional — old hubs and clients unaffected.
+
+**Wave 4 — hardening & observability:**
+- **[ARCH-3] parking_lot** — hub/store mutexes are non-poisoning; `.lock()` returns the guard (13 sites).
+  Dep was already in-tree, so cargo-deny stays green (recorded the lock edge with one non-`--locked` build).
+- **[ARCH-6] Metrics** — `Metrics` counters (connections/messages/pushes-total + live-connection gauge)
+  under `/api/hub` `"stats"`; smoke test asserts them.
+- **[SEC-3/backlog] Hardened challenge nonce** — `parler-auth:v1:<hub>:<exp>:<rand>` (domain-separated,
+  hub-bound via 12-hex `sha256(public_url)`, 60s TTL), validated on `Hello` step 2; zero client change;
+  unit test covers expired/foreign/malformed.
+- **Deferred on purpose:** W4c god-file split + W3d self-healing reconnect — each wants its own PR (a
+  big pure-refactor / a new resilience feature shouldn't ride with this batch).
+
+**Gate:** `CI_SKIP_WEB=1 make ci` → "all gates passed" (build · clippy -D warnings · test --locked ·
+cargo-deny). New/updated tests all green. **Not committed** — working tree, ready for review/PR.
+
+---
+
 # Task: Desktop app = same simplicity as the CLI (single source of truth) — 2026-07-01
 
 **User:** "make sure the macOS app has the same simplicity as the CLI and the whole thesis of the

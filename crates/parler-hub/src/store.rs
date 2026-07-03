@@ -15,8 +15,9 @@ use rusqlite::{named_params, params, Connection, OpenFlags, OptionalExtension};
 use std::collections::HashMap;
 use std::ops::Deref;
 use std::path::Path;
+use parking_lot::{Mutex, MutexGuard};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, Once};
+use std::sync::{Arc, Once};
 use uuid::Uuid;
 
 /// Default embedding dimension for the vec_facts table (pinned at creation time).
@@ -88,6 +89,9 @@ CREATE TABLE IF NOT EXISTS messages (
   ts          INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_messages_room_seq ON messages(room, seq);
+-- Retention's age scan (`prune_messages`) filters `WHERE ts < cutoff`; without this it's a full table
+-- scan every janitor pass on a large log.
+CREATE INDEX IF NOT EXISTS idx_messages_ts ON messages(ts);
 -- Membership keyed by agent: `members` PK is (room, agent), so "every room an agent is in" (rooms_of,
 -- and the recall room-scope subquery) can't use the PK prefix without this index.
 CREATE INDEX IF NOT EXISTS idx_members_agent ON members(agent);
@@ -287,7 +291,7 @@ impl Store {
     /// The writer connection — for every statement that mutates the database (including read-then-write
     /// ops like `pull`'s cursor advance). Writes are single-writer by design.
     fn w(&self) -> ConnRef<'_> {
-        ConnRef(self.inner.writer.lock().unwrap())
+        ConnRef(self.inner.writer.lock())
     }
 
     /// A pooled **read-only** connection (round-robin), or the writer when there is no pool (in-memory).
@@ -295,10 +299,10 @@ impl Store {
     /// loudly against a file-backed DB rather than silently bypassing the single-writer invariant.
     fn r(&self) -> ConnRef<'_> {
         if self.inner.readers.is_empty() {
-            ConnRef(self.inner.writer.lock().unwrap())
+            ConnRef(self.inner.writer.lock())
         } else {
             let i = self.inner.next.fetch_add(1, Ordering::Relaxed) % self.inner.readers.len();
-            ConnRef(self.inner.readers[i].lock().unwrap())
+            ConnRef(self.inner.readers[i].lock())
         }
     }
 
@@ -1708,9 +1712,9 @@ mod tests {
                 assert!(v < 0, "expected a KiB-denominated (negative) cache_size, got {v}");
                 -v
             };
-            let mut total = read_kib(&s.inner.writer.lock().unwrap());
+            let mut total = read_kib(&s.inner.writer.lock());
             for rc in &s.inner.readers {
-                let per = read_kib(&rc.lock().unwrap());
+                let per = read_kib(&rc.lock());
                 assert!(per >= MIN_CACHE_KIB_PER_CONN, "each connection keeps a usable working set");
                 total += per;
             }

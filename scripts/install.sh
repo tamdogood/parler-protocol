@@ -85,12 +85,36 @@ install -m 0755 "$tmp/parler" "$INSTALL_DIR/parler" 2>/dev/null || {
   cp "$tmp/parler" "$INSTALL_DIR/parler" && chmod 0755 "$INSTALL_DIR/parler"
 }
 
+# --- verify it actually runs (catches a wrong-arch or truncated download now, not later) -------
+if ! "$INSTALL_DIR/parler" --version >/dev/null 2>&1; then
+  err "installed to $INSTALL_DIR/parler but it won't run — the download may be corrupt or built for a different architecture"
+fi
+
 echo
 echo "✓ installed parler → $INSTALL_DIR/parler"
+
+# --- make sure the very next step ('parler connect') can be found -----------------------------
 case ":$PATH:" in
-  *":$INSTALL_DIR:"*) : ;;
-  *) echo "  (add it to your PATH: export PATH=\"$INSTALL_DIR:\$PATH\")" ;;
+  *":$INSTALL_DIR:"*)
+    echo
+    echo "Next: wire every agent on this machine —"
+    echo "  parler connect"
+    ;;
+  *)
+    # Not on PATH: hand the user an exact fix for their shell plus a full-path fallback, so they
+    # never hit a bare "command not found" right after a successful install.
+    rc="$HOME/.profile"
+    case "${SHELL:-}" in
+      *zsh) rc="$HOME/.zshrc" ;;
+      *bash)
+        if [ "$os" = Darwin ]; then rc="$HOME/.bash_profile"; else rc="$HOME/.bashrc"; fi ;;
+    esac
+    echo
+    echo "⚠  $INSTALL_DIR isn't on your PATH yet, so 'parler' won't be found."
+    echo "   Add it (then open a new terminal):"
+    echo "     echo 'export PATH=\"$INSTALL_DIR:\$PATH\"' >> \"$rc\""
+    echo
+    echo "   …or run it now by full path:"
+    echo "     $INSTALL_DIR/parler connect"
+    ;;
 esac
-echo
-echo "Next: wire every agent on this machine —"
-echo "  parler connect"

@@ -17,6 +17,7 @@ rusqlite = { workspace = true }
 sqlite-vec = { workspace = true }
 rand = { workspace = true }
 uuid = { workspace = true }
+parking_lot = { workspace = true }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }

@@ -11,5 +11,7 @@ pub mod jwt;
 pub mod provision;
 
 pub use error::AuthError;
-pub use identity::{content_id, id_from_creds, new_identity, sign, verify, Identity};
+pub use identity::{
+    content_id, id_from_creds, new_identity, sign, verify, write_private_file, Identity,
+};
 pub use provision::*;

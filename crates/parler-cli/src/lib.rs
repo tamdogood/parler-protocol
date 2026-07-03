@@ -573,10 +573,59 @@ async fn cmd_connect(a: ConnectArgs) -> Result<()> {
         json: a.json,
         hub_pinned,
     })?;
-    if a.verify && !a.json && !wired.is_empty() {
+    if a.json || wired.is_empty() {
+        return Ok(());
+    }
+    if a.verify {
         verify_dial_in(wired, Duration::from_secs(a.verify_timeout_secs)).await?;
+    } else {
+        // A bare `connect` still confirms the hub is actually reachable *now*, so a wrong URL / a
+        // hub that isn't running / an unwritable identity dir surfaces here instead of as silent
+        // failure after the user restarts their agents. It does not wait for the agents to dial in —
+        // that's what `--verify` is for.
+        probe_hubs(&wired).await;
     }
     Ok(())
+}
+
+/// The tail of a bare `parler connect`: dial each hub the agents were wired to **once** (short
+/// timeout) to prove reachability, then return. Not a substitute for `--verify` (which waits for the
+/// agents themselves to come online) — just a fast "is this hub actually up?" so failures aren't silent.
+async fn probe_hubs(wired: &[connect::WiredAgent]) {
+    use std::collections::BTreeSet;
+    let hubs: BTreeSet<(String, Option<String>)> =
+        wired.iter().map(|w| (w.hub.clone(), w.secret.clone())).collect();
+    for (hub, secret) in hubs {
+        // A gated hub needs the same join secret the agents were handed.
+        match &secret {
+            Some(s) => std::env::set_var("PARLER_JOIN_SECRET", s),
+            None => std::env::remove_var("PARLER_JOIN_SECRET"),
+        }
+        let cfg = match mcp::load_or_bootstrap_config() {
+            Ok(mut c) => {
+                c.hub_url = hub.clone();
+                c
+            }
+            Err(e) => {
+                println!("  ⚠ couldn't prepare a local identity to test {hub}: {e}");
+                continue;
+            }
+        };
+        match tokio::time::timeout(Duration::from_secs(3), MeshAgent::connect(&cfg)).await {
+            Ok(Ok(_)) => println!("  ✓ hub reachable — {hub}"),
+            Ok(Err(e)) => report_unreachable(&hub, &e.to_string()),
+            Err(_) => report_unreachable(&hub, "timed out after 3s"),
+        }
+    }
+}
+
+fn report_unreachable(hub: &str, err: &str) {
+    println!("  ⚠ hub not reachable yet — {hub}: {err}");
+    if hub.contains("127.0.0.1") || hub.contains("localhost") {
+        println!("     start it and keep it running:  parler hub --local");
+    } else {
+        println!("     the wiring is saved — your agents will connect once the hub is reachable.");
+    }
 }
 
 /// The `--verify` tail of `parler connect`: dial each hub the agents were wired to and report every
@@ -1393,6 +1442,19 @@ async fn cmd_doctor() -> Result<()> {
             println!("❌ NOT FOUND ({e})");
             clean = false;
         }
+    }
+
+    // 5. Recent MCP activity — the breadcrumb `parler mcp` leaves each launch, so a user can see
+    // whether an editor-launched agent actually connected (its stderr is invisible in a GUI host).
+    print!("  • Recent MCP activity... ");
+    match mcp::recent_log(5) {
+        Some(entries) if !entries.is_empty() => {
+            println!("✅");
+            for (ago, msg) in entries {
+                println!("     {ago:>4} ago  {msg}");
+            }
+        }
+        _ => println!("— none yet (start an MCP-wired agent, then re-run `parler doctor`)"),
     }
 
     println!();

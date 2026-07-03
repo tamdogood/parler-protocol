@@ -56,6 +56,9 @@ thiserror = "1"
 anyhow = "1"
 uuid = { version = "1", features = ["v7", "v4"] }
 tempfile = "3"
+# Non-poisoning mutex for the hub's in-memory maps + SQLite pool: a panic elsewhere can't wedge the
+# lock, and `.lock()` returns the guard directly (no `.unwrap()`). Already in the tree transitively.
+parking_lot = "0.12"
 
 # Logging
 tracing = "0.1"

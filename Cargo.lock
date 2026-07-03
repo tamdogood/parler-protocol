@@ -1121,6 +1121,7 @@ dependencies = [
  "axum",
  "clap",
  "futures",
+ "parking_lot",
  "parler-auth",
  "parler-protocol",
  "rand 0.8.6",

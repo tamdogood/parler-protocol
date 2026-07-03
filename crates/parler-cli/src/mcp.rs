@@ -32,7 +32,16 @@ struct McpState {
 /// Connect to the hub, then serve the MCP JSON-RPC loop on stdin/stdout until EOF.
 pub async fn serve_stdio() -> Result<()> {
     let cfg = load_or_bootstrap_config()?;
-    let mut agent = MeshAgent::connect(&cfg).await?;
+    let mut agent = match MeshAgent::connect(&cfg).await {
+        Ok(a) => a,
+        Err(e) => {
+            // Leave a breadcrumb before we exit: a GUI host swallows stderr, so `parler doctor`
+            // reading this log is often the only way a user learns *why* the agent went dark.
+            log_event(&format!("connect FAILED → {}: {e}", cfg.hub_url));
+            return Err(e);
+        }
+    };
+    log_event(&format!("connected as {} ({}) → {}", cfg.name, cfg.identity.id, cfg.hub_url));
     // Opt into sub-second push so `parler_recv` can long-poll for replies (best-effort; against an
     // older hub this is a no-op and we stay purely pull-based).
     let push = agent.subscribe().await.unwrap_or(false);
@@ -121,7 +130,77 @@ pub(crate) fn load_or_bootstrap_config() -> Result<Config> {
     let role = std::env::var("PARLER_ROLE").ok().filter(|s| !s.is_empty());
     let cfg = Config::create(hub, name, role)?;
     cfg.save()?;
+    // First-run visibility: announce the freshly minted identity so a user (or `parler doctor`) can
+    // confirm setup took, instead of an identity materializing silently.
+    eprintln!("parler: initialized new agent {} ({}) → {}", cfg.name, cfg.identity.id, cfg.hub_url);
+    log_event(&format!("bootstrapped identity {} → {}", cfg.identity.id, cfg.hub_url));
     Ok(cfg)
+}
+
+/// Where the MCP connection breadcrumb log lives (`~/.parler/mcp.log`).
+fn mcp_log_path() -> std::path::PathBuf {
+    parler_connector::home_dir().join("mcp.log")
+}
+
+const LOG_KEEP: usize = 200;
+
+/// Append a timestamped line to the breadcrumb log (best-effort — diagnostics, never load-bearing),
+/// trimmed to the most recent [`LOG_KEEP`] lines so it can't grow without bound.
+fn log_event(msg: &str) {
+    log_event_at(&mcp_log_path(), unix_secs(), msg);
+}
+
+fn log_event_at(path: &std::path::Path, ts_secs: u64, msg: &str) {
+    let mut lines: Vec<String> = std::fs::read_to_string(path)
+        .map(|s| s.lines().map(String::from).collect())
+        .unwrap_or_default();
+    lines.push(format!("{ts_secs}\t{}", msg.replace('\n', " ")));
+    let start = lines.len().saturating_sub(LOG_KEEP);
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let _ = std::fs::write(path, lines[start..].join("\n") + "\n");
+}
+
+/// The most recent `n` breadcrumb entries as `(relative-age, message)`, oldest-first. `None` if no
+/// log exists yet. Read back by `parler doctor` so "did my MCP agent actually connect?" is answerable.
+pub(crate) fn recent_log(n: usize) -> Option<Vec<(String, String)>> {
+    recent_log_at(&mcp_log_path(), unix_secs(), n)
+}
+
+fn recent_log_at(path: &std::path::Path, now_secs: u64, n: usize) -> Option<Vec<(String, String)>> {
+    let content = std::fs::read_to_string(path).ok()?;
+    let mut out: Vec<(String, String)> = content
+        .lines()
+        .rev()
+        .take(n)
+        .filter_map(|l| {
+            let (ts, msg) = l.split_once('\t')?;
+            let secs = ts.parse::<u64>().ok()?;
+            Some((fmt_ago(now_secs.saturating_sub(secs)), msg.to_string()))
+        })
+        .collect();
+    out.reverse();
+    Some(out)
+}
+
+fn unix_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+fn fmt_ago(secs: u64) -> String {
+    if secs < 60 {
+        format!("{secs}s")
+    } else if secs < 3600 {
+        format!("{}m", secs / 60)
+    } else if secs < 86_400 {
+        format!("{}h", secs / 3600)
+    } else {
+        format!("{}d", secs / 86_400)
+    }
 }
 
 /// Publish a directory card for this agent on startup so it's discoverable the instant it connects.
@@ -143,8 +222,12 @@ async fn auto_register(agent: &mut MeshAgent) {
         .map(|s| AgentSkill { id: s.clone(), name: s, description: None })
         .collect();
     let describe = std::env::var("PARLER_DESCRIBE").ok().filter(|s| !s.trim().is_empty());
-    if let Err(e) = agent.register(visibility, tags, skills, describe).await {
-        eprintln!("parler: auto-register failed (agent still connected): {e}");
+    match agent.register(visibility, tags, skills, describe).await {
+        Ok(_) => log_event("auto-registered card (discoverable)"),
+        Err(e) => {
+            eprintln!("parler: auto-register failed (agent still connected): {e}");
+            log_event(&format!("auto-register failed: {e}"));
+        }
     }
 }
 
@@ -1447,5 +1530,37 @@ mod tests {
         // the open_session call ran and returned a key, and set the active session.
         assert!(out.contains("KEY: "));
         assert!(alice.active_session.is_some());
+    }
+
+    #[test]
+    fn breadcrumb_log_roundtrips_and_trims() {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("parler-mcplog-{}-{nonce}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("mcp.log");
+
+        // Write more than the cap; only the newest LOG_KEEP survive.
+        for i in 0..(LOG_KEEP + 5) {
+            log_event_at(&path, 1_000 + i as u64, &format!("event {i}"));
+        }
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(content.lines().count(), LOG_KEEP, "log is trimmed to the cap");
+
+        // `recent_log_at` returns the newest few, oldest-first, with a relative age vs. "now".
+        let last_ts = 1_000 + (LOG_KEEP + 4) as u64; // ts of the final event written
+        let now = last_ts + 7;
+        let recent = recent_log_at(&path, now, 3).unwrap();
+        assert_eq!(recent.len(), 3);
+        assert_eq!(recent.last().unwrap().1, format!("event {}", LOG_KEEP + 4));
+        assert_eq!(recent.last().unwrap().0, "7s"); // newest entry is 7s old
+        // Newlines in a message can't corrupt the line-oriented format.
+        log_event_at(&path, now, "line1\nline2");
+        let last = recent_log_at(&path, now, 1).unwrap();
+        assert_eq!(last[0].1, "line1 line2");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

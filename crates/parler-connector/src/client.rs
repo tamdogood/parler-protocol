@@ -48,6 +48,22 @@ fn disconnected() -> anyhow::Error {
     anyhow::Error::new(Disconnected)
 }
 
+/// Warn (to stderr) when the hub advertises a different *major* protocol version than this client —
+/// a heads-up that some frames may be misunderstood and the user should update. Purely advisory: the
+/// wire format is additive within a major version, and an older hub that omits the field is treated
+/// as compatible, so we never block the connection on this.
+fn warn_on_protocol_mismatch(hub_version: Option<&str>) {
+    let Some(hub) = hub_version else { return };
+    let ours = parler_protocol::PROTOCOL_VERSION;
+    let major = |v: &str| v.split('.').next().unwrap_or_default().to_string();
+    if major(hub) != major(ours) {
+        eprintln!(
+            "parler: warning — hub speaks protocol {hub} but this client is {ours}; \
+             some features may not work. Update parler."
+        );
+    }
+}
+
 /// An authenticated WebSocket connection to a hub.
 pub struct HubClient {
     ws: WebSocketStream<MaybeTlsStream<TcpStream>>,
@@ -88,11 +104,12 @@ impl HubClient {
             secret: None,
         })
         .await?;
-        let nonce = match self.recv().await? {
-            ServerFrame::Challenge { nonce } => nonce,
+        let (nonce, hub_version) = match self.recv().await? {
+            ServerFrame::Challenge { nonce, version } => (nonce, version),
             ServerFrame::Error { message } => bail!("hub rejected hello: {message}"),
             other => bail!("expected a challenge, got {other:?}"),
         };
+        warn_on_protocol_mismatch(hub_version.as_deref());
 
         // Step 2: sign the nonce with the nkey seed and re-send hello.
         let kp = nkeys::KeyPair::from_seed(&identity.seed).map_err(|e| anyhow!("bad seed: {e}"))?;

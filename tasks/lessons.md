@@ -124,3 +124,35 @@ Format: `- **<short trigger>:** <the rule>. <why, in a clause>`
   but stores `reply_to`/`parts` verbatim. A signature must cover the verbatim fields and **exclude the
   normalized ones**, or it fails verification on the receive side for messages the hub legitimately
   touched. (Why `canonical_message_bytes` covers parts/target/replyTo/ts/uid but not mentions.)
+
+- **Verify an audit agent's "critical" against the source before acting on it:** a full-app audit's
+  headline CRITICAL ("panics on network input", `parler-protocol/src/hub.rs:862/868…`) was **test
+  code** — `panic!("expected register")` inside `#[test] fn visibility_defaults_to_private()`,
+  unreachable from the network. Explore/subagent audits routinely inflate severity and mistake
+  `#[cfg(test)]` panics for production paths; read the cited line yourself. One false headline
+  discredits an otherwise-solid report. (2026-07-03 audit.)
+
+- **On-disk secrets: temp-file + rename, never `write`-then-`chmod`:** `fs::write` creates at the
+  default umask (~`0644`) and a later `set_permissions(0o600)` leaves a window where the nkey seed /
+  join secret is world-readable — and on an *overwrite* the new bytes sit under the old file's loose
+  perms the whole write. Use `parler_auth::write_private_file` (creates a `0600` temp with
+  `create_new`, then atomic `rename`). Same helper for both `config.rs` (seed) and `secret.rs` (join
+  secret). Test the property (mode is `0600` immediately; overwriting a `0644` file yields `0600`), not
+  just the happy path. (2026-07-03 SEC-1.)
+
+- **Check a dep is already in-tree before adding it (cargo-deny is strict on licenses):**
+  `grep '^name = "<dep>"' Cargo.lock` first. `parking_lot` was already transitive, so declaring it a
+  direct workspace dep kept the `audit` gate green and only needed **one plain (non-`--locked`)
+  `cargo build`** to record the new dependency edge before `make ci` (which builds `--locked`) passes.
+  (2026-07-03 W4a.)
+
+- **Flip a CLI default: `match Option`, not `.filter()`, so "absent" ≠ "explicitly off".** When
+  turning retention on by default, `args.retention_days.filter(|d| *d > 0)` can't tell "flag omitted"
+  (→ want the default) from "operator passed `0`" (→ want disabled). Use `match args.x { None =>
+  default, Some(0) => None, Some(n) => Some(n) }`. (2026-07-03 W3a — the deployed hub now prunes by
+  default; an operator opts out with an explicit `0`/negative.)
+
+- **Re-Read the exact region right before an Edit across a turn/context boundary.** An earlier Read
+  (especially an offset/partial read) may no longer authorize a later Edit — the tool errors "File has
+  not been read yet." Re-Read the few lines you're about to change immediately before editing rather
+  than relying on a Read from a prior turn. (Hit twice wiring Wave 2 in `mcp.rs`/`lib.rs`.)

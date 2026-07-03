@@ -831,7 +831,13 @@ fn emit_human(opts: &Options, hub_url: &str, secret: Option<&str>, reports: &[Re
     if opts.hosts.is_empty() && !opts.print {
         for def in registry() {
             if !installed_ids.contains(&def.id) {
-                println!("  · {:<15} not detected — skipped   (run: parler connect {})", def.name, def.id);
+                // Name the path we checked so a user whose agent lives elsewhere knows *why* it was
+                // missed, and point at `--print` as the manual escape hatch for that case.
+                let looked = def.hints.first().map(|p| display_path(p)).unwrap_or_default();
+                println!(
+                    "  · {:<15} not detected (looked in {}) — installed elsewhere? parler connect {} --print",
+                    def.name, looked, def.id
+                );
             }
         }
     }

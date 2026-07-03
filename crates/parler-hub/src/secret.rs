@@ -48,18 +48,11 @@ pub fn resolve_join_secret(explicit: Option<String>, file: Option<&Path>) -> Res
         }
     }
 
-    // First boot (or an empty file): mint one and persist it for next time.
+    // First boot (or an empty file): mint one and persist it (owner-only, written atomically so the
+    // secret is never momentarily world-readable) for next time.
     let secret = random_secret();
-    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
-        std::fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
-    }
-    std::fs::write(path, format!("{secret}\n"))
+    parler_auth::write_private_file(path, format!("{secret}\n").as_bytes())
         .with_context(|| format!("writing join secret to {}", path.display()))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
-    }
     Ok(Some(secret))
 }
 
