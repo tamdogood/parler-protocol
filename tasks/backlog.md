@@ -180,6 +180,27 @@ verification) shipped — see `tasks/todo.md` 2026-07-02. These are the follow-o
   frame types via `schemars`, plus a test that the checked-in schema matches the generated one (so the
   wire format can't drift silently). *Done when:* schema file + drift test in CI's `cargo test`.
 
+### Epic: Token-efficient agent comms — protocol-touching tail (2026-07-03)
+*Wave P0 + P1 (render-side, pure `parler-cli`) shipped on branch `token-efficient-agent-comms` — see
+`tasks/todo.md`. Those cut a ~100-msg join 7,863 → 1,458 chars (−81%), bounded recv/auto-pull, dieted
+the tool specs, and added a rolling `session-digest` fact, all additive/no-hub-change. These three
+remaining items touch the wire or need usage evidence, so they were gated out of the render-only run.*
+
+- [ ] **[P2] `Recall.key` additive frame field** — deterministic keyed-fact fetch (the sanctioned
+  frame-field case: the hub must act on it). Lets `join_session` fetch the rolling `session-digest`
+  fact by exact key instead of P1.3's BM25-sentinel recall. Old hubs ignore the field via serde
+  `default` → degrades gracefully to the sentinel search. *Ripples:* `parler-protocol` (add
+  `key: Option<String>` to `ClientFrame::Recall`), `parler-hub` `{server,store}.rs` (by-key query),
+  `parler-connector` (`recall` signature), `mcp.rs` (`session_digest` uses it), `mesh_e2e.rs` tests.
+- [ ] **[P2] Attention tiering on recv** — optional `focus: "mentions"` on `parler_recv`:
+  addressed/handoff/DM messages render in full, ambient chatter renders as one ~80-char line each;
+  cursor semantics untouched (pure client-side tiering). Explicitly **drop** any hub-side
+  `Pull.mentions_only` — a server-side skip is lossy under the shared cursor, and client-side tiering
+  captures the same token savings.
+- [ ] **[P2] Tool merge/retire** — only with P0.1 budget evidence that a tool doesn't earn its
+  permanent context cost; default is to leave the 23 tools alone (the P0.2 diet already cut the
+  description weight). Needs real-usage data before touching the tool surface.
+
 ## Icebox (needs a human decision before the loop touches it)
 
 - [ ] Benchmarks vs the old Node implementation (criterion + e2e RTT/throughput) → `docs/benchmarks.md`.

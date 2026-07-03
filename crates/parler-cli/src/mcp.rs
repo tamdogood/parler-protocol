@@ -57,7 +57,7 @@ pub async fn serve_stdio() -> Result<()> {
     // host makes a single tool call. Failures are non-fatal — log to stderr (stdout is the
     // protocol channel) and carry on.
     if let Some(key) = std::env::var("PARLER_SESSION_KEY").ok().filter(|s| !s.is_empty()) {
-        match join_session(&mut state, &key).await {
+        match join_session(&mut state, &key, Backlog::Recent).await {
             Ok(msg) => eprintln!("parler: {msg}"),
             Err(e) => eprintln!("parler: PARLER_SESSION_KEY join failed: {e}"),
         }
@@ -290,7 +290,7 @@ async fn handle(state: &mut McpState, method: &str, params: Value) -> Result<Val
                 {
                     "uri": "parler://active-session/backlog",
                     "name": "Active Session Backlog",
-                    "description": "Chronological history of the active session's conversation (all messages in the room).",
+                    "description": "Full chronological history of the active session — the explicit full-replay escape hatch when the join/recv digests aren't enough. The hub returns up to 200 messages per page (page older ranges with parler_recv since=<seq>).",
                     "mimeType": "text/plain"
                 },
                 {
@@ -349,23 +349,27 @@ async fn handle(state: &mut McpState, method: &str, params: Value) -> Result<Val
             match name {
                 "parler_session_handoff" => {
                     let room = state.active_session.clone().unwrap_or_else(|| "none".to_string());
+                    // Digest the backlog (seed + recent tail + an omission line), not a full replay —
+                    // the same token-efficient render a late join gets. `since=Some(0)` reads history
+                    // without touching the cursor.
                     let mut backlog = String::new();
-                    let mut roster_str = String::new();
+                    let mut roster_count = 0usize;
                     if let Some(ref r) = state.active_session {
                         if let Ok((msgs, _)) = state.agent.pull(r, Some(0), None).await {
-                            backlog = msgs.iter().map(crate::render_message).collect::<Vec<_>>().join("\n");
+                            backlog = digest_backlog(&msgs, Backlog::Recent);
                         }
                         if let Ok(entries) = state.agent.roster(r).await {
-                            roster_str = entries.iter().map(|e| format!("- {} {} [{}]", e.name, e.id, e.status)).collect::<Vec<_>>().join("\n");
+                            roster_count = entries.len();
                         }
                     }
                     let text = format!(
                         "You are joining a Parler collaborative session.\n\
-                         Active Room: {room}\n\n\
-                         Roster:\n{roster_str}\n\n\
-                         Here is the chronological backlog of the conversation:\n\
+                         Active Room: {room} — {roster_count} agent(s) in the room.\n\n\
+                         Context so far (digest — seed + recent messages):\n\
                          {backlog}\n\n\
-                         Please review the backlog to catch up on the task, key decisions, relevant file paths, and current status. Then, continue coordinating with other agents or address the task at hand."
+                         For anything older, parler_recv since=<seq> re-reads a range in full and \
+                         parler_recall surfaces saved decisions. Review this, then continue \
+                         coordinating with the other agents or address the task at hand."
                     );
                     Ok(json!({
                         "description": "Handoff instructions for the active session",
@@ -380,17 +384,22 @@ async fn handle(state: &mut McpState, method: &str, params: Value) -> Result<Val
                 }
                 "parler_consolidate_session" => {
                     let room = state.active_session.clone().unwrap_or_else(|| "none".to_string());
+                    // Analyze at most the last 100 messages — enough to consolidate recent work
+                    // without pulling an unbounded backlog into context.
                     let mut backlog = String::new();
                     if let Some(ref r) = state.active_session {
                         if let Ok((msgs, _)) = state.agent.pull(r, Some(0), None).await {
-                            backlog = msgs.iter().map(crate::render_message).collect::<Vec<_>>().join("\n");
+                            let tail = &msgs[msgs.len().saturating_sub(100)..];
+                            backlog = tail.iter().map(crate::render_message).collect::<Vec<_>>().join("\n");
                         }
                     }
                     let text = format!(
-                        "Analyze the following conversation backlog from a collaborative session (Room: {room}).\n\
-                         Extract 1 to 5 key decisions, architectural choices, modified file paths, or lessons learned.\n\
-                         Write them down as room-scoped facts using the `parler_remember` tool with the room name '{room}'.\n\n\
-                         Backlog:\n{backlog}"
+                        "Analyze this recent conversation from a collaborative session (Room: {room}).\n\
+                         Extract 1 to 5 key decisions, architectural choices, modified file paths, or lessons learned, \
+                         then write a concise rolling recap with:\n\
+                         parler_remember key=\"session-digest\" room=\"{room}\" text=\"SESSION DIGEST: …\"\n\
+                         Re-saving that key overwrites it, so late joiners always get the current summary cheaply.\n\n\
+                         Recent messages:\n{backlog}"
                     );
                     Ok(json!({
                         "description": "Consolidate the session backlog into facts",
@@ -432,12 +441,11 @@ async fn call_tool(agent: &mut MeshAgent, name: &str, args: &Value) -> Result<St
                 .invite(kind, s("name"), args.get("ttl_secs").and_then(Value::as_u64), u32opt("max_uses"))
                 .await?;
             Ok(format!(
-                "invite ready — {} room '{}'.\ncode: {}\nlink: {}\nHave the other agent call parler_join with code {}",
+                "invite ready — {} room '{}'.\ncode: {}\nlink: {}\nThe other agent calls parler_join with the code.",
                 inv.kind.as_str(),
                 inv.room,
                 inv.code,
                 inv.url,
-                inv.code
             ))
         }
         "parler_join" => {
@@ -460,6 +468,7 @@ async fn call_tool(agent: &mut MeshAgent, name: &str, args: &Value) -> Result<St
             } else {
                 bail!("provide exactly one of room / to / service");
             };
+            let target = crate::resolve_target(agent, target).await?;
             let gitref = s("gitref").unwrap_or_else(|| "HEAD".into());
             let (bytes, tip, summary) =
                 crate::build_git_bundle(s("repo").as_deref(), &gitref, s("base").as_deref(), s("summary"))?;
@@ -472,13 +481,12 @@ async fn call_tool(agent: &mut MeshAgent, name: &str, args: &Value) -> Result<St
             };
             let r = agent.push(target, &bytes, meta, s("note")).await?;
             Ok(format!(
-                "pushed git bundle to '{}' (seq {}, {} bytes).\ntip: {} {summary}\nblob: {}\nThe peer can run: parler apply {}",
+                "pushed git bundle to '{}' (seq {}, {} bytes). tip: {} {summary}\nThe peer runs: parler apply {}",
                 r.room,
                 r.seq,
                 bytes.len(),
                 tip,
                 r.blob_id,
-                r.blob_id
             ))
         }
         "parler_fetch" => {
@@ -523,10 +531,18 @@ async fn call_tool(agent: &mut MeshAgent, name: &str, args: &Value) -> Result<St
         }
         "parler_roster" => {
             let room = s("room").ok_or_else(|| anyhow!("missing 'room'"))?;
+            let detail = args.get("detail").and_then(Value::as_bool).unwrap_or(false);
             let entries = agent.roster(&room).await?;
             Ok(entries
                 .iter()
-                .map(|e| format!("{} {} [{}]", e.name, e.id, e.status))
+                .map(|e| {
+                    let role = e.role.as_deref().map(|r| format!(" ({r})")).unwrap_or_default();
+                    if detail {
+                        format!("{}{role} {} [{}]", e.name, e.id, e.status)
+                    } else {
+                        format!("{}{role} [{}]", e.name, e.status)
+                    }
+                })
                 .collect::<Vec<_>>()
                 .join("\n"))
         }
@@ -558,32 +574,53 @@ async fn call_tool(agent: &mut MeshAgent, name: &str, args: &Value) -> Result<St
             } else {
                 DiscoverScope::Hub
             };
+            let detail = args.get("detail").and_then(Value::as_bool).unwrap_or(false);
+            // Client default cap: a full directory listing renders one long id line each, which is
+            // costly context. Cap unless the caller asks for more (or full detail). Compact lines
+            // drop the 56-char id; `detail:true` restores it (needed to DM/card an agent by id).
+            let applied = u32opt("limit").unwrap_or(DISCOVER_DEFAULT_LIMIT);
             let agents = agent
-                .discover(scope, s("query"), s("tag"), s("skill"), s("status"), u32opt("limit"))
+                .discover(scope, s("query"), s("tag"), s("skill"), s("status"), Some(applied))
                 .await?;
             if agents.is_empty() {
                 return Ok("(no agents found)".into());
             }
-            Ok(agents
+            let mut out = agents
                 .iter()
                 .map(|e| {
                     let role = e.card.role.as_deref().map(|r| format!(" ({r})")).unwrap_or_default();
                     let tags = e.card.tags.as_deref().map(|t| t.join(",")).unwrap_or_default();
-                    format!(
-                        "{}{role} [{}{}] {} — {} — {}",
-                        e.card.name,
-                        e.visibility.as_str(),
-                        if e.verified { " ✓" } else { "" },
-                        e.card.id,
-                        e.status,
-                        tags
-                    )
+                    let flag = if e.verified { " ✓" } else { "" };
+                    if detail {
+                        format!(
+                            "{}{role} [{}{flag}] {} — {} — {}",
+                            e.card.name, e.visibility.as_str(), e.card.id, e.status, tags
+                        )
+                    } else {
+                        // Compact: name (role) [vis✓] status — tags. No id (use detail:true, or the
+                        // name works directly with parler_send to / parler_card).
+                        format!(
+                            "{}{role} [{}{flag}] {} — {}",
+                            e.card.name, e.visibility.as_str(), e.status, tags
+                        )
+                    }
                 })
                 .collect::<Vec<_>>()
-                .join("\n"))
+                .join("\n");
+            // A full batch likely means there are more — nudge toward narrowing instead of a bigger dump.
+            if agents.len() as u32 >= applied {
+                out.push_str("\n— more agents may match; narrow with query/tag/skill or raise limit —");
+            }
+            Ok(out)
         }
         "parler_card" => {
             let id = s("id").ok_or_else(|| anyhow!("missing 'id'"))?;
+            // Accept a directory name as well as a full id (same unique-match-or-error resolver as
+            // `to`): a name is resolved to its id before the lookup, an id passes straight through.
+            let id = match crate::resolve_target(agent, Target::Dm { agent: id.clone() }).await? {
+                Target::Dm { agent } => agent,
+                _ => id,
+            };
             match agent.lookup(&id).await? {
                 Some(e) => Ok(serde_json::to_string_pretty(&e).unwrap_or_default()),
                 None => Ok(format!("(no directory card for '{id}')")),
@@ -616,7 +653,7 @@ async fn call_session_tool(state: &mut McpState, name: &str, args: &Value) -> Re
         }
         "parler_join_session" => {
             let key = s("key").ok_or_else(|| anyhow!("missing 'key'"))?;
-            join_session(state, &key).await
+            join_session(state, &key, Backlog::from_arg(s("backlog").as_deref())).await
         }
         "parler_close_session" => close_session(state).await,
         "parler_join_requests" => {
@@ -660,10 +697,9 @@ async fn call_session_tool(state: &mut McpState, name: &str, args: &Value) -> Re
             let (token, _expires_at) = state.agent.mint_watch_token(&room, ttl).await?;
             Ok(format!(
                 "read-only WATCH code for session '{room}':\n{token}\n\
-                 Give it to the user to paste into the Parler website's session viewer (the /session \
-                 page) — they'll see the conversation and how many agents are in the room, without \
-                 joining. It's read-only and expiring, but anyone with the code can read the session, \
-                 so treat it like a password."
+                 Give it to the user to paste into the website's /session viewer (they'll see the \
+                 conversation + agent count, without joining). Anyone with the code can read the \
+                 session, so treat it like a password."
             ))
         }
         "parler_send" => {
@@ -680,22 +716,34 @@ async fn call_session_tool(state: &mut McpState, name: &str, args: &Value) -> Re
             } else {
                 bail!("provide one of room / to / service, or open/join a session first");
             };
+            // Let `to` be a directory name, not just a 56-char id (unique-match-or-error; never guess).
+            let target = crate::resolve_target(&mut state.agent, target).await?;
             let (_id, seq, room) = state.agent.send_text(target, &text).await?;
             // Auto-pull right after sending so an already-waiting reply shows up without a separate
             // parler_recv (read-after-write); for a reply that hasn't landed yet, use parler_recv with
             // wait_secs to long-poll. Our own just-sent message is filtered out; the pull advances our
-            // cursor so these aren't re-delivered later.
+            // cursor so these aren't re-delivered later. The pull is capped (AUTOPULL_LIMIT) so a
+            // reply flood can't balloon the send result — the remainder stays unread for the next
+            // parler_recv (a limited pull only advances the cursor through what it returned).
             let mut out = format!("sent to '{room}' (seq {seq})");
-            if let Ok((msgs, _cursor)) = state.agent.pull(&room, None, None).await {
+            let auto_limit = if verbose_render() { None } else { Some(AUTOPULL_LIMIT) };
+            if let Ok((msgs, _cursor)) = state.agent.pull(&room, None, auto_limit).await {
+                let batch_full = auto_limit.is_some_and(|l| msgs.len() as u32 >= l);
                 let me = state.agent.id.clone();
                 let incoming: Vec<_> = msgs.iter().filter(|m| m.from.id != me).collect();
                 if !incoming.is_empty() {
                     if let Some(banner) = handoff_banner(state, &incoming) {
                         out.push_str(&format!("\n\n{banner}"));
                     }
-                    let body =
-                        incoming.into_iter().map(crate::render_message).collect::<Vec<_>>().join("\n");
+                    let body = incoming
+                        .into_iter()
+                        .map(render_message_budgeted)
+                        .collect::<Vec<_>>()
+                        .join("\n");
                     out.push_str(&format!("\n— new messages —\n{body}"));
+                    if batch_full {
+                        out.push_str("\n— more waiting: call parler_recv again —");
+                    }
                 }
             }
             // Surface any pending join requests so the host (this owner) is shown the accept/reject
@@ -718,6 +766,7 @@ async fn call_session_tool(state: &mut McpState, name: &str, args: &Value) -> Re
             } else {
                 bail!("provide one of room / to / service, or open/join a session first");
             };
+            let target = crate::resolve_target(&mut state.agent, target).await?;
             let handoff = HandoffRef { next, summary: s("summary"), to: s("for"), bundle: s("bundle") };
             let mentions = handoff.to.clone().map(|w| vec![w]);
             let (_id, seq, room) =
@@ -733,8 +782,13 @@ async fn call_session_tool(state: &mut McpState, name: &str, args: &Value) -> Re
                 .or_else(|| state.active_session.clone())
                 .ok_or_else(|| anyhow!("missing 'room' (open/join a session, or pass room)"))?;
             let since = args.get("since").and_then(Value::as_i64);
-            let limit = u32opt("limit");
-            let (mut msgs, mut cursor) = state.agent.pull(&room, since, limit).await?;
+            let explicit_limit = u32opt("limit");
+            // Cursor mode with no explicit limit → apply the default cap (lossless: a limited pull
+            // advances the cursor only through the batch, so the rest waits for the next call). An
+            // explicit `since` is a full-detail history re-read: never cap it, never budget its bodies.
+            let re_read = since.is_some();
+            let effective_limit = recv_limit(explicit_limit, re_read, verbose_render());
+            let (mut msgs, mut cursor) = state.agent.pull(&room, since, effective_limit).await?;
             // Long-poll: if nothing new yet and the caller asked to wait (and the hub is pushing),
             // block up to `wait_secs` for a peer message, then re-pull to read + advance the cursor.
             // Only in cursor mode (`since` absent) — an explicit `since` is a history re-read.
@@ -742,20 +796,27 @@ async fn call_session_tool(state: &mut McpState, name: &str, args: &Value) -> Re
                 if let Some(secs) = args.get("wait_secs").and_then(Value::as_u64).filter(|w| *w > 0) {
                     let secs = secs.min(60);
                     if state.agent.next_delivery(Duration::from_secs(secs)).await?.is_some() {
-                        let (m, c) = state.agent.pull(&room, None, limit).await?;
+                        let (m, c) = state.agent.pull(&room, None, effective_limit).await?;
                         msgs = m;
                         cursor = c;
                     }
                 }
             }
+            let batch_full = effective_limit.is_some_and(|l| msgs.len() as u32 >= l);
             let mut out = if msgs.is_empty() {
                 format!("(no new messages in '{room}')")
             } else {
                 let refs: Vec<&_> = msgs.iter().collect();
-                let body = msgs.iter().map(crate::render_message).collect::<Vec<_>>().join("\n");
+                // Re-reads (explicit `since`) render in full; cursor-mode reads budget long bodies.
+                let body = msgs
+                    .iter()
+                    .map(|m| if re_read { crate::render_message(m) } else { render_message_budgeted(m) })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                let more = if batch_full { "\n— more waiting: call parler_recv again —" } else { "" };
                 match handoff_banner(state, &refs) {
-                    Some(banner) => format!("{banner}\n\n{body}\n— cursor at {cursor} —"),
-                    None => format!("{body}\n— cursor at {cursor} —"),
+                    Some(banner) => format!("{banner}\n\n{body}\n— cursor at {cursor} —{more}"),
+                    None => format!("{body}\n— cursor at {cursor} —{more}"),
                 }
             };
             // Surface any pending join requests so a host sees the accept/reject choice inline, even
@@ -797,9 +858,8 @@ async fn open_session(
     let _ = crate::save_active_session(&room);
     let _ = state.agent.presence("working", topic.or_else(|| Some("shared session".into()))).await;
     let gate = if require_approval {
-        "When another agent redeems this key it will ask to join, and YOU must approve it before it \
-         can see the conversation — you'll be shown a prompt to accept or reject (or call \
-         parler_join_requests). This keeps a leaked key from quietly reading your context."
+        "Joiners ask to join; YOU approve each (a prompt appears, or parler_join_requests) before they \
+         can read it — a leaked key can't quietly pull your context."
     } else {
         "Anyone with this key joins immediately (approval disabled)."
     };
@@ -818,28 +878,154 @@ async fn open_session(
         format!("claude mcp add parler {env} -- parler mcp")
     };
     Ok(format!(
-        "session open — room '{room}', now your active session (parler_send / parler_recv default to it).\n\
+        "session open — room '{room}', now your active session.\n\
          KEY: {code}\n\
-         \n\
-         Share with a teammate (or your own agent in another repo) — send them either:\n\
-         • the KEY above (they call parler_join_session with it), or\n\
-         • this one-liner, which adds Parler already joined to this session:\n    \
+         Give a teammate the KEY (they call parler_join_session) or this ready-to-run one-liner:\n    \
          {oneliner}\n\
-         Either way they land in the SAME conversation with the full context — no copy-paste.\n\
+         Either lands them in this same conversation, caught up — no copy-paste.\n\
          {gate}\n\
-         To let the user watch this session in their browser, call parler_watch_session for a read-only \
-         web viewer code.\n\
+         Keep late joiners cheap: parler_remember key=\"session-digest\" room=\"{room}\" text=\"SESSION DIGEST: …\" (re-save to update).\n\
+         parler_watch_session gives the user a read-only web viewer code.\n\
          link: {url}",
         code = inv.code,
         url = inv.url,
     ))
 }
 
+/// The marker the seed context message starts with (posted by `open_session`). A late joiner always
+/// gets the seed rendered in full — it's the recap the host wrote — while the middle of the backlog is
+/// summarized to an "N omitted" line. Kept in one place so the write path and the digest agree.
+const SEED_MARKER: &str = "📋 session context";
+
+/// How many trailing messages a "recent" join/handoff digest renders in full. Enough to see the live
+/// thread of the conversation; the rest is one omission line pointing at `parler_recv since=<seq>`.
+const JOIN_TAIL: usize = 15;
+
+/// The reserved key for the host's rolling session recap. Re-saving it overwrites (idempotent upsert),
+/// so it's always the *current* summary. A late join recalls and surfaces it above the tail.
+const SESSION_DIGEST_KEY: &str = "session-digest";
+/// The sentinel the digest text starts with — both the query we recall by and the check that a hit is
+/// genuinely the digest (guards against a BM25 false positive matching only the query words).
+const SESSION_DIGEST_SENTINEL: &str = "SESSION DIGEST";
+
+/// Default cap on how many messages a cursor-mode `parler_recv` renders per call. Lossless: a limited
+/// `Pull` advances the cursor only through the returned batch, so the remainder stays unread for the
+/// next call (see store.rs). An explicit `limit`/`since` overrides this.
+const RECV_DEFAULT_LIMIT: u32 = 30;
+
+/// Default cap on the auto-pull appended to a `parler_send` result. Same losslessness as
+/// [`RECV_DEFAULT_LIMIT`]; a peer flood past this resurfaces on the next `parler_recv`.
+const AUTOPULL_LIMIT: u32 = 10;
+
+/// Per-message body cap (chars) for the budgeted render. A longer body is truncated with a pointer to
+/// re-read that one message in full. Big enough that ordinary chat is never touched.
+const MSG_MAX_CHARS: usize = 1200;
+
+/// Client-side default cap on `parler_discover` results — a full directory renders one id-bearing line
+/// each, costly context. The caller raises it (or narrows with query/tag/skill) when they need more.
+const DISCOVER_DEFAULT_LIMIT: u32 = 25;
+
+/// Render a message, truncating an over-long body to [`MSG_MAX_CHARS`] with a hint to re-read it in
+/// full via an explicit `since` (which is never truncated). UTF-8 safe (truncates on a char boundary).
+/// Used only on the *cursor-mode* render paths (recv default, auto-pull); explicit-`since` re-reads,
+/// the seed, and banners always render in full through [`crate::render_message`].
+fn render_message_budgeted(m: &StoredMessage) -> String {
+    let full = crate::render_message(m);
+    if full.chars().count() <= MSG_MAX_CHARS {
+        return full;
+    }
+    let kept: String = full.chars().take(MSG_MAX_CHARS).collect();
+    let dropped = full.chars().count() - MSG_MAX_CHARS;
+    // since = seq-1 so `parler_recv since=<seq-1> limit=1` returns exactly this message, in full.
+    format!("{kept}…[+{dropped} chars — parler_recv since={} limit=1 for full]", m.seq - 1)
+}
+
+/// True when the caller wants uncapped output — the global escape hatch (`PARLER_MCP_VERBOSE=1`).
+fn verbose_render() -> bool {
+    env_flag("PARLER_MCP_VERBOSE")
+}
+
+/// The message limit a `parler_recv` should pull with. Pure so it's unit-testable without touching the
+/// process env: an explicit `limit` always wins; a history re-read (`since`) or verbose mode is
+/// uncapped (`None`); otherwise the default cap applies.
+fn recv_limit(explicit: Option<u32>, re_read: bool, verbose: bool) -> Option<u32> {
+    match (explicit, re_read, verbose) {
+        (Some(l), _, _) => Some(l),
+        (None, false, false) => Some(RECV_DEFAULT_LIMIT),
+        _ => None,
+    }
+}
+
+/// Whether a join renders the whole backlog or a digest. `Recent` (default) is the token-efficient
+/// path: seed + tail + an omission line. `Full` is the escape hatch — replay everything.
+#[derive(Clone, Copy, PartialEq)]
+enum Backlog {
+    Recent,
+    Full,
+}
+
+impl Backlog {
+    fn from_arg(v: Option<&str>) -> Self {
+        match v {
+            Some("full") => Backlog::Full,
+            _ => Backlog::Recent,
+        }
+    }
+}
+
+/// Render a room backlog for a late joiner (and, via P1.1, the handoff prompt). In `Full` mode, or
+/// when the backlog is already short (≤ [`JOIN_TAIL`]), render every message. Otherwise digest:
+/// the context seed (always, in full) → an "N earlier messages omitted" line naming the
+/// `parler_recv since=<seq>` re-read → the last [`JOIN_TAIL`] messages in full. This is the ~85% cut
+/// for a late joiner: a full replay is paid by the LLM verbatim, but the middle is rarely needed and
+/// stays one `since`/`recall` call away.
+fn digest_backlog(msgs: &[StoredMessage], mode: Backlog) -> String {
+    if msgs.is_empty() {
+        return "(no prior context yet)".to_string();
+    }
+    let render_all = || msgs.iter().map(crate::render_message).collect::<Vec<_>>().join("\n");
+    if mode == Backlog::Full || msgs.len() <= JOIN_TAIL {
+        return render_all();
+    }
+    // The seed is the earliest message whose rendered body opens with the marker (open_session posts
+    // it first). Rendered in full regardless of where the tail window starts, so the recap is never lost.
+    let seed_idx = msgs
+        .iter()
+        .position(|m| crate::render_parts(&m.parts).trim_start().starts_with(SEED_MARKER));
+    let tail_start = msgs.len() - JOIN_TAIL;
+    let mut out = Vec::new();
+    // Seed (if it exists and isn't already inside the tail window).
+    if let Some(i) = seed_idx {
+        if i < tail_start {
+            out.push(crate::render_message(&msgs[i]));
+        }
+    }
+    // The omitted middle: everything between the seed (exclusive) / start and the tail window. The
+    // re-read seq is one before the first omitted message so `parler_recv since=<seq>` returns it.
+    let omitted_start = match seed_idx {
+        Some(i) if i < tail_start => i + 1,
+        _ => 0,
+    };
+    if omitted_start < tail_start {
+        let n = tail_start - omitted_start;
+        let resume = msgs[omitted_start].seq - 1;
+        out.push(format!(
+            "— {n} earlier message(s) omitted; parler_recv since={resume} to re-read, parler_recall for decisions —"
+        ));
+    }
+    // The live tail, in full.
+    for m in &msgs[tail_start..] {
+        out.push(crate::render_message(m));
+    }
+    out.join("\n")
+}
+
 /// Join a shared session by key. For an approval-gated session the redeem only *requests* entry —
 /// the host must admit us first; we poll briefly for a fast approval, then return a clear "pending"
-/// message the agent can retry on. Once admitted, pull the full backlog (so the caller is caught up
-/// in one call), adopt it as the active session, and announce arrival.
-async fn join_session(state: &mut McpState, key: &str) -> Result<String> {
+/// message the agent can retry on. Once admitted, pull the backlog to catch up (and advance the
+/// cursor to the live edge), adopt it as the active session, and announce arrival. The backlog is
+/// rendered as a digest by default (`Backlog::Recent`) — `Backlog::Full` replays everything.
+async fn join_session(state: &mut McpState, key: &str, backlog: Backlog) -> Result<String> {
     let room = match state.agent.redeem(key).await? {
         JoinOutcome::Joined { room, .. } => room,
         JoinOutcome::Pending { room } => {
@@ -868,8 +1054,9 @@ async fn join_session(state: &mut McpState, key: &str) -> Result<String> {
             }
         }
     };
-    // since=None advances our fresh cursor to the live edge, so a later parler_recv only returns
-    // genuinely new messages rather than re-delivering this backlog.
+    // since=None advances our fresh cursor to the live edge (this full pull is load-bearing), so a
+    // later parler_recv only returns genuinely new messages rather than re-delivering this backlog.
+    // We render a *digest* of what we pulled — the cursor still advanced past all of it.
     let (msgs, _cursor) = state.agent.pull(&room, None, None).await?;
     state.active_session = Some(room.clone());
     let _ = crate::save_active_session(&room);
@@ -877,15 +1064,39 @@ async fn join_session(state: &mut McpState, key: &str) -> Result<String> {
         .agent
         .send_text(Target::Room { room: room.clone() }, &format!("{} joined the session", state.agent.name))
         .await;
-    let body = if msgs.is_empty() {
-        "(no prior context yet)".to_string()
-    } else {
-        msgs.iter().map(crate::render_message).collect::<Vec<_>>().join("\n")
+    let body = digest_backlog(&msgs, backlog);
+    // If the host maintains a rolling `session-digest` fact (P1.3 convention), surface it above the
+    // tail — it's a human-written recap that beats re-reading the raw backlog. Silent when absent.
+    let digest_line = session_digest(&mut state.agent, &room)
+        .await
+        .map(|d| format!("--- session digest ---\n{d}\n"))
+        .unwrap_or_default();
+    // Roster as a count, not a full listing — the join stays cheap; parler_roster gives the details.
+    let roster_line = match state.agent.roster(&room).await {
+        Ok(entries) => format!("\n— {} agent(s) in the room —", entries.len()),
+        Err(_) => String::new(),
     };
     Ok(format!(
         "joined session — room '{room}', now your active session.\n\
-         --- context so far ---\n{body}\n--- end context ---"
+         {digest_line}--- context so far ---\n{body}\n--- end context ---{roster_line}"
     ))
+}
+
+/// The rolling session digest, if the host maintains one. Convention (P1.3): the host upserts a
+/// room-scoped fact `remember(key="session-digest", room, text="SESSION DIGEST: …")`, so a late joiner
+/// gets a human-written recap for free. We recall the top hit and accept it only when it's actually
+/// that keyed fact (key match) **and** carries the sentinel — belt-and-suspenders against a BM25 false
+/// positive matching the query words. `None` (silent) when there's no digest or the recall fails.
+/// A deterministic fetch-by-key (no BM25) is the P2.1 upgrade.
+async fn session_digest(agent: &mut MeshAgent, room: &str) -> Option<String> {
+    let hits = agent
+        .recall(SESSION_DIGEST_SENTINEL, Some(room.to_string()), Some(1), None)
+        .await
+        .ok()?;
+    let hit = hits.into_iter().next()?;
+    let is_the_key = hit.key.as_deref() == Some(SESSION_DIGEST_KEY);
+    let has_sentinel = hit.text.trim_start().starts_with(SESSION_DIGEST_SENTINEL);
+    (is_the_key && has_sentinel).then_some(hit.text)
 }
 
 /// How long `join_session` waits for a host approval before returning a "pending" message: a short
@@ -991,7 +1202,7 @@ fn tool_specs() -> Vec<Value> {
     vec![
         tool(
             "parler_open_session",
-            "Open a shared live session and get a KEY to hand to other agents — the fastest way to bring another agent (Claude/Codex/Hermes/…) into your current conversation. Pass `context`: a thorough recap of the conversation so far (the task, key decisions, relevant files/paths, current state); it is posted as the session's first message so whoever joins is immediately caught up. Returns a key — give it to the other agent (it calls parler_join_session, or launch it with env PARLER_SESSION_KEY=<key>). Many agents can join one key. By default joiners must be APPROVED by you before they can read the conversation: when one redeems the key you'll be shown an accept/reject prompt (and can list/approve via parler_join_requests / parler_approve_join). This becomes your active session, so parler_send/parler_recv then need no room argument.",
+            "Open a shared live session; returns a KEY to hand another agent so it joins your conversation already caught up. `context` is posted as the first message — recap the task, decisions, files, state. Joiners need YOUR approval by default (you're shown an accept/reject prompt; confirm with the user). Becomes your active session (parler_send/parler_recv then need no room). Keep a durable recap current with parler_remember key=\"session-digest\" so late joiners get it cheaply.",
             json!({
                 "context": { "type": "string", "description": "summary of the conversation/state used to catch up whoever joins" },
                 "topic": { "type": "string", "description": "optional short name for the session" },
@@ -1003,25 +1214,28 @@ fn tool_specs() -> Vec<Value> {
         ),
         tool(
             "parler_join_session",
-            "Join a shared session using a KEY another agent gave you. If the session requires approval you'll be held as a pending request until the host admits you (this call reports that — retry it to check); once admitted you immediately receive the conversation context so far (the backlog is returned in the same call). This becomes your active session, so parler_send/parler_recv then need no room argument.",
-            json!({ "key": { "type": "string", "description": "the session key or link you were handed" } }),
+            "Join a session with a KEY. If approval is required you're held pending until the host admits you (retry to check). Once in, you get a digest of the context (seed + recent tail); backlog:\"full\" replays everything, or parler_recv since=<seq> re-reads a range in full. Becomes your active session (parler_send/parler_recv need no room).",
+            json!({
+                "key": { "type": "string", "description": "the session key or link you were handed" },
+                "backlog": { "type": "string", "enum": ["recent", "full"], "description": "recent (default): seed + recent tail; full: replay the entire backlog" }
+            }),
             &["key"],
         ),
         tool(
             "parler_close_session",
-            "Leave your active session — announces your departure and goes idle. The session stays alive for the other participants.",
+            "Leave your active session (announces departure, goes idle). The session stays alive for the others.",
             json!({}),
             &[],
         ),
         tool(
             "parler_join_requests",
-            "List the agents waiting for your approval to join a session you opened (defaults to your active session). Each line includes the joiner's id to pass to parler_approve_join / parler_deny_join.",
+            "List agents waiting for your approval to join a session you opened (defaults to active session). Each line carries the joiner's id for parler_approve_join / parler_deny_join.",
             json!({ "room": { "type": "string", "description": "the session room (defaults to your active session)" } }),
             &[],
         ),
         tool(
             "parler_approve_join",
-            "Approve a pending joiner into a session you opened — after this they can read the conversation and participate. Pass the joiner's agent id (from parler_join_requests or the prompt shown on send/recv). Defaults to your active session. Confirm with the user before approving.",
+            "Approve a pending joiner (from parler_join_requests or the send/recv prompt) — they can then read and participate. Defaults to active session. Confirm with the user before approving.",
             json!({
                 "agent": { "type": "string", "description": "the id of the joiner to admit" },
                 "room": { "type": "string", "description": "the session room (defaults to your active session)" }
@@ -1030,7 +1244,7 @@ fn tool_specs() -> Vec<Value> {
         ),
         tool(
             "parler_deny_join",
-            "Reject a pending joiner's request to join a session you opened — they are turned away and cannot re-request. Pass the joiner's agent id. Defaults to your active session.",
+            "Reject a pending joiner — turned away, can't re-request. Pass the joiner's id. Defaults to active session.",
             json!({
                 "agent": { "type": "string", "description": "the id of the joiner to reject" },
                 "room": { "type": "string", "description": "the session room (defaults to your active session)" }
@@ -1039,7 +1253,7 @@ fn tool_specs() -> Vec<Value> {
         ),
         tool(
             "parler_watch_session",
-            "Mint a read-only WATCH code for a session you opened, so the user can watch it from the Parler website (paste the code into the /session page → see the whole conversation and how many agents are in the room, live). Owner-only and separate from the join key: the join key can't read the backlog, so this is the safe way to let a human view the session. Defaults to your active session. Hand the returned code to the user.",
+            "Mint a read-only WATCH code so the user can watch this session live from the Parler website (/session page). Owner-only and separate from the join key (which can't read the backlog), so it's the safe way to let a human view it. Defaults to active session; hand the code to the user.",
             json!({
                 "room": { "type": "string", "description": "the session room (defaults to your active session)" },
                 "ttl_secs": { "type": "integer", "description": "how long the watch code stays valid (default 1h)" }
@@ -1048,7 +1262,7 @@ fn tool_specs() -> Vec<Value> {
         ),
         tool(
             "parler_invite",
-            "Mint an invite code/link to connect another agent. kind: dm (1:1, default), group (1:many channel), or service (many:1 queue). Hand the code/link to the other agent.",
+            "Mint an invite code/link for another agent. kind: dm (1:1, default), group (1:many channel), service (many:1 queue). Hand the code to the other agent.",
             json!({
                 "kind": { "type": "string", "enum": ["dm", "group", "service"] },
                 "name": { "type": "string", "description": "room/service name (group/service only)" },
@@ -1071,10 +1285,10 @@ fn tool_specs() -> Vec<Value> {
         ),
         tool(
             "parler_send",
-            "Send a message, and get back any replies already waiting in the same room (read-after-write; for a reply that hasn't arrived yet, use parler_recv with wait_secs). Defaults to your active session if you've opened/joined one; otherwise provide exactly one of: room (1:many channel), to (a peer agent id, 1:1 DM), or service (many:1 queue).",
+            "Send a message and get back replies already waiting in the room (read-after-write). Defaults to your active session; else give exactly one of room (channel), to (peer agent id or name, DM), service (queue). For a reply not landed yet, don't poll — parler_recv wait_secs long-polls for it.",
             json!({
                 "room": { "type": "string" },
-                "to": { "type": "string" },
+                "to": { "type": "string", "description": "a peer agent id or a directory name (resolved to a unique id)" },
                 "service": { "type": "string" },
                 "text": { "type": "string" }
             }),
@@ -1082,18 +1296,18 @@ fn tool_specs() -> Vec<Value> {
         ),
         tool(
             "parler_recv",
-            "Pull new messages since your cursor (which it advances). Defaults to your active session; pass room to read a different one. Use since/limit to re-read history. Set wait_secs to block (long-poll) up to that many seconds for a real-time push if nothing is waiting — returns as soon as a peer message arrives, or empty on timeout.",
+            "Pull new messages since your cursor (advances it). Defaults to active session; pass room for another. wait_secs long-polls that many seconds for a pushed reply instead of returning empty (cheaper than repeated calls). Long bodies are truncated with a refetch hint; since+limit re-reads that range in FULL (never truncated). Default batch is bounded — a 'more waiting' line means call again.",
             json!({
                 "room": { "type": "string" },
-                "since": { "type": "integer" },
-                "limit": { "type": "integer" },
+                "since": { "type": "integer", "description": "re-read from this seq in full (no cursor advance, no truncation)" },
+                "limit": { "type": "integer", "description": "max messages this call (default bounded; raise to read more at once)" },
                 "wait_secs": { "type": "integer", "description": "block up to this many seconds for a pushed message when nothing is waiting (sub-second wake; max 60)" }
             }),
             &[],
         ),
         tool(
             "parler_handoff",
-            "Hand the turn to another agent: post a structured 'you're up next' that the recipient sees as a 'HANDOFF TO YOU' banner on their next parler_recv (or instantly if they're long-polling with wait_secs), prompting them to continue without a human re-prompting. Use this when you've finished your part and want a specific teammate to take over. Defaults to your active session; or target room/to/service. Address it with `for` (an agent name or role); omit to hand off to anyone in the room. Attach handed-off code with `bundle` (a blob id from parler_push).",
+            "Hand the turn to another agent: posts a 'HANDOFF TO YOU' banner they see on their next parler_recv (instant if long-polling with wait_secs), so they continue without a human re-prompting. Use it when you finish your part. Defaults to active session; or target room/to/service. `for`: address by agent name or role (omit = anyone). `bundle`: attach a code blob id from parler_push.",
             json!({
                 "next": { "type": "string", "description": "what the next agent should do — the instruction to act on" },
                 "summary": { "type": "string", "description": "recap of what you just finished / current state, for the next agent's context" },
@@ -1107,7 +1321,7 @@ fn tool_specs() -> Vec<Value> {
         ),
         tool(
             "parler_remember",
-            "Save a fact to shared memory. With a key, re-saving the same key overwrites (idempotent). Optionally scope to a room. Pass an embedding vector for semantic recall (hybrid BM25 + vector search).",
+            "Save a durable fact to shared memory instead of re-reading history. With a key, re-saving overwrites (idempotent) — e.g. key=\"session-digest\" room=<room> keeps a rolling recap late joiners get cheaply. Optionally scope to a room; pass an embedding for hybrid semantic recall.",
             json!({
                 "text": { "type": "string" },
                 "key": { "type": "string" },
@@ -1119,7 +1333,7 @@ fn tool_specs() -> Vec<Value> {
         ),
         tool(
             "parler_recall",
-            "Recall from memory. Text-only runs BM25 full-text; with an embedding, runs hybrid BM25 + vector KNN (Reciprocal Rank Fusion). Either or both may be provided.",
+            "Recall saved facts (BM25 full-text; hybrid BM25 + vector KNN when an embedding is given). Cheaper than re-reading history for durable state you saved with parler_remember.",
             json!({
                 "query": { "type": "string" },
                 "room": { "type": "string" },
@@ -1130,7 +1344,7 @@ fn tool_specs() -> Vec<Value> {
         ),
         tool(
             "parler_push",
-            "Hand off code: build a git bundle from the current repo and push it to a room/peer/service. Provide exactly one of room / to / service. With base, bundle only base..gitref (a thin patch series). The peer applies it with `parler apply <blob>`.",
+            "Hand off code: build a git bundle from the repo and push it to a room/peer/service (exactly one). With base, bundle only base..gitref (a thin patch series). The peer applies it with `parler apply <blob>`.",
             json!({
                 "room": { "type": "string" },
                 "to": { "type": "string" },
@@ -1145,7 +1359,7 @@ fn tool_specs() -> Vec<Value> {
         ),
         tool(
             "parler_fetch",
-            "Download a pushed bundle's bytes by its blob id (from a com.parler.bundle message) and write them to a file. Does NOT apply — verify and fetch with git yourself.",
+            "Download a pushed bundle's bytes by blob id (from a com.parler.bundle message) to a file. Does NOT apply — verify/fetch with git yourself.",
             json!({
                 "id": { "type": "string" },
                 "out": { "type": "string", "description": "output file (default: <blob>.bundle)" }
@@ -1155,8 +1369,11 @@ fn tool_specs() -> Vec<Value> {
         tool("parler_rooms", "List the rooms you belong to, with unread counts.", json!({}), &[]),
         tool(
             "parler_roster",
-            "List who is in a room.",
-            json!({ "room": { "type": "string" } }),
+            "List who is in a room (name (role) [status]). detail:true also shows each agent id.",
+            json!({
+                "room": { "type": "string" },
+                "detail": { "type": "boolean", "description": "include agent ids (default false)" }
+            }),
             &["room"],
         ),
         tool(
@@ -1167,7 +1384,7 @@ fn tool_specs() -> Vec<Value> {
         ),
         tool(
             "parler_register",
-            "Publish your discovery card to the hub directory. visibility: private (default, same-hub only) or public (discoverable by anyone). The card is signed with your key so it is tamper-evident.",
+            "Publish your discovery card. visibility: private (default, same-hub) or public (anyone). Signed with your key, so it's tamper-evident.",
             json!({
                 "visibility": { "type": "string", "enum": ["public", "private"] },
                 "tags": { "type": "array", "items": { "type": "string" }, "description": "capability tags" },
@@ -1178,21 +1395,22 @@ fn tool_specs() -> Vec<Value> {
         ),
         tool(
             "parler_discover",
-            "Discover agents. scope: hub (default — every agent in this hub) or public (only public agents). Optionally filter by query/tag/skill/status.",
+            "Discover agents. scope: hub (default) or public. Filter by query/tag/skill/status. Results are compact (no ids) and capped by default — you can parler_send to=<name> / parler_card <name> directly; pass detail:true for ids or raise limit for more.",
             json!({
                 "scope": { "type": "string", "enum": ["hub", "public"] },
                 "query": { "type": "string" },
                 "tag": { "type": "string" },
                 "skill": { "type": "string" },
                 "status": { "type": "string" },
-                "limit": { "type": "integer" }
+                "limit": { "type": "integer" },
+                "detail": { "type": "boolean", "description": "include agent ids (default false)" }
             }),
             &[],
         ),
         tool(
             "parler_card",
-            "Fetch a single agent's directory card by id (JSON, including signature verification).",
-            json!({ "id": { "type": "string" } }),
+            "Fetch a single agent's directory card (JSON with signature verification). id can be a full agent id or a directory name (resolved to a unique id).",
+            json!({ "id": { "type": "string", "description": "a full agent id or a directory name" } }),
             &["id"],
         ),
     ]
@@ -1242,6 +1460,337 @@ mod tests {
             .to_string()
     }
 
+    // ---- Token-budget harness (P0.1) -------------------------------------------------------------
+    //
+    // Every MCP tool result / spec lands verbatim in each participating agent's LLM context, so the
+    // *rendered char count* is the thing we're optimizing. These budgets are ceilings the render code
+    // must stay under; each is tightened by the item that produces its saving (P0.2 → specs, P0.3 →
+    // join, P0.4 → send). Tests print the measured number so a run's output is the savings receipt.
+    // Fixed-size synthetic messages keep the counts deterministic; consts carry ~20% headroom.
+
+    /// Serialized `tools/list` payload size — permanent context cost, paid by every agent every
+    /// session. Pre-diet baseline 11,598 B; post-diet (P0.2) 11,030 B. Ceiling with ~5% headroom.
+    const TOOL_SPECS_BUDGET: usize = 11_600;
+    /// Just the human-readable descriptions (the part the diet targets; schema scaffolding is
+    /// load-bearing). Pre-diet 5,261 B → post-diet (P0.2) 4,304 B; P1.2 adds ~230 B of cheap-path
+    /// steering (name-based `to`/`card`, compact discover/roster, `detail`) that earns its bytes.
+    /// Still ~730 B under the pre-diet baseline. Ceiling with headroom.
+    const TOOL_DESC_BUDGET: usize = 4_700;
+    /// Rendered `join_session` output with a ~100-message backlog. Full-replay baseline was 7,863
+    /// chars; P0.3's digest render (seed + tail + omission line) brings it to ~1,458. Ceiling leaves
+    /// headroom for a larger tail / longer messages.
+    const JOIN_RENDER_BUDGET: usize = 3_000;
+    /// Rendered `parler_send` output when ~20 replies are already waiting (auto-pull). Uncapped
+    /// baseline was 1,657 chars; P0.4's AUTOPULL_LIMIT=10 cap brings it to ~740. Ceiling leaves
+    /// headroom for longer bodies (each capped at MSG_MAX_CHARS).
+    const SEND_RENDER_BUDGET: usize = 2_000;
+    /// `open_session` result string (P1.4 trim). Measured 615 chars on the public hub; a private-hub
+    /// one-liner adds a PARLER_HUB/PARLER_JOIN_SECRET env, so leave headroom. Keeps the prose from
+    /// bloating back up.
+    const OPEN_RESULT_BUDGET: usize = 800;
+
+    /// A body of exactly `len` ASCII chars (deterministic sizing for budget assertions).
+    fn body_of(len: usize) -> String {
+        "x".repeat(len)
+    }
+
+    /// Post `n` fixed-size messages (~60 chars each) into `room` from `poster` (which must already be
+    /// a member), so budget assertions don't depend on message content. Returns after all are sent.
+    async fn seed_room(poster: &mut McpState, room: &str, n: usize) {
+        for i in 0..n {
+            poster
+                .agent
+                .send_text(Target::Room { room: room.to_string() }, &format!("m{i} {}", body_of(60)))
+                .await
+                .unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn tool_specs_stay_lean() {
+        let specs = tool_specs();
+        let serialized = serde_json::to_string(&json!({ "tools": specs })).unwrap();
+        let bytes = serialized.len();
+        let desc_bytes: usize = specs
+            .iter()
+            .filter_map(|t| t.get("description").and_then(Value::as_str))
+            .map(str::len)
+            .sum();
+        println!(
+            "[budget] tool_specs: {} tools, {bytes} B serialized ({desc_bytes} B of descriptions)",
+            specs.len()
+        );
+        assert!(
+            bytes <= TOOL_SPECS_BUDGET,
+            "tool specs {bytes} B exceed budget {TOOL_SPECS_BUDGET} B — trim descriptions"
+        );
+        assert!(
+            desc_bytes <= TOOL_DESC_BUDGET,
+            "tool descriptions {desc_bytes} B exceed budget {TOOL_DESC_BUDGET} B — keep them tight"
+        );
+    }
+
+    #[tokio::test]
+    async fn join_with_backlog_renders_under_budget() {
+        let hub = start_hub().await;
+        let mut alice = state(&hub, "alice").await;
+        // Open with a real context seed, then seed ~100 more messages into the room.
+        let opened = open_session(&mut alice, Some("catch-up context for the budget test"), Some("budget".into()), None, None, false)
+            .await
+            .unwrap();
+        let room = alice.active_session.clone().unwrap();
+        let key = key_of(&opened);
+        seed_room(&mut alice, &room, 100).await;
+
+        let mut bob = state(&hub, "bob").await;
+        let joined = join_session(&mut bob, &key, Backlog::Recent).await.unwrap();
+        let chars = joined.chars().count();
+        println!("[budget] join_session with ~100-msg backlog: {chars} chars rendered");
+        assert!(
+            joined.len() <= JOIN_RENDER_BUDGET,
+            "join render {} B exceeds budget {JOIN_RENDER_BUDGET} B",
+            joined.len()
+        );
+    }
+
+    #[tokio::test]
+    async fn join_digests_long_backlog() {
+        // A late joiner gets a *digest*: the seed in full, an omission line naming the re-read seq,
+        // and the last JOIN_TAIL messages — not the whole replay.
+        let hub = start_hub().await;
+        let mut alice = state(&hub, "alice").await;
+        let opened = open_session(&mut alice, Some("the plan: ship auth by friday"), Some("plan".into()), None, None, false)
+            .await
+            .unwrap();
+        let room = alice.active_session.clone().unwrap();
+        let key = key_of(&opened);
+        // Seed enough that the middle is omitted (well over JOIN_TAIL). Give the last one a marker we
+        // can assert appears (it's inside the tail window).
+        seed_room(&mut alice, &room, 40).await;
+        alice.agent.send_text(Target::Room { room: room.clone() }, "LAST_TAIL_MESSAGE").await.unwrap();
+
+        let mut bob = state(&hub, "bob").await;
+        let joined = join_session(&mut bob, &key, Backlog::Recent).await.unwrap();
+
+        // Seed is always rendered in full (the host's recap).
+        assert!(joined.contains("the plan: ship auth by friday"), "seed present in digest:\n{joined}");
+        // The middle is summarized with a re-read pointer, not replayed.
+        assert!(joined.contains("earlier message(s) omitted"), "omission line present:\n{joined}");
+        assert!(joined.contains("parler_recv since="), "omission line names the re-read seq:\n{joined}");
+        // The live tail is present in full.
+        assert!(joined.contains("LAST_TAIL_MESSAGE"), "recent tail present:\n{joined}");
+        // A middle message (m5) is NOT replayed (it's in the omitted range).
+        assert!(!joined.contains("m5 "), "an omitted middle message must not be replayed:\n{joined}");
+        // Roster is a count, not a full listing.
+        assert!(joined.contains("agent(s) in the room"), "roster rendered as a count:\n{joined}");
+    }
+
+    #[tokio::test]
+    async fn join_full_mode_renders_entire_backlog() {
+        // The escape hatch: backlog:"full" replays every message (no digest, no omission line).
+        let hub = start_hub().await;
+        let mut alice = state(&hub, "alice").await;
+        let opened = open_session(&mut alice, Some("seed"), Some("plan".into()), None, None, false).await.unwrap();
+        let room = alice.active_session.clone().unwrap();
+        let key = key_of(&opened);
+        seed_room(&mut alice, &room, 40).await;
+
+        let mut bob = state(&hub, "bob").await;
+        let joined = join_session(&mut bob, &key, Backlog::Full).await.unwrap();
+
+        // Full mode replays even a mid-backlog message and never emits the omission line.
+        assert!(joined.contains("m5 "), "full mode replays the middle:\n{joined}");
+        assert!(joined.contains("m30 "), "full mode replays late-middle messages too");
+        assert!(!joined.contains("earlier message(s) omitted"), "full mode has no omission line");
+    }
+
+    #[tokio::test]
+    async fn join_surfaces_session_digest_fact() {
+        // When the host maintains the rolling session-digest fact, a late joiner sees it above the tail.
+        let hub = start_hub().await;
+        let mut alice = state(&hub, "alice").await;
+        let opened = open_session(&mut alice, Some("seed"), Some("plan".into()), None, None, false).await.unwrap();
+        let room = alice.active_session.clone().unwrap();
+        let key = key_of(&opened);
+        // Host writes the keyed recap.
+        alice
+            .agent
+            .remember("SESSION DIGEST: auth done, next is billing", Some(SESSION_DIGEST_KEY.into()), Some(room.clone()), None, None)
+            .await
+            .unwrap();
+
+        let mut bob = state(&hub, "bob").await;
+        let joined = join_session(&mut bob, &key, Backlog::Recent).await.unwrap();
+        assert!(joined.contains("session digest"), "the digest header is shown:\n{joined}");
+        assert!(joined.contains("auth done, next is billing"), "the recap text is surfaced:\n{joined}");
+    }
+
+    #[tokio::test]
+    async fn join_without_digest_fact_is_silent() {
+        // No digest fact → no header, no error (silent skip).
+        let hub = start_hub().await;
+        let mut alice = state(&hub, "alice").await;
+        let opened = open_session(&mut alice, Some("seed"), Some("plan".into()), None, None, false).await.unwrap();
+        let key = key_of(&opened);
+        let mut bob = state(&hub, "bob").await;
+        let joined = join_session(&mut bob, &key, Backlog::Recent).await.unwrap();
+        assert!(!joined.contains("session digest"), "no digest header when the fact is absent:\n{joined}");
+    }
+
+    #[tokio::test]
+    async fn send_with_waiting_replies_renders_under_budget() {
+        let hub = start_hub().await;
+        let mut alice = state(&hub, "alice").await;
+        let opened = open_session(&mut alice, Some("seed"), Some("budget".into()), None, None, false).await.unwrap();
+        let room = alice.active_session.clone().unwrap();
+        let key = key_of(&opened);
+
+        // Bob joins and posts ~20 fixed-size replies that are waiting when alice next sends.
+        let mut bob = state(&hub, "bob").await;
+        join_session(&mut bob, &key, Backlog::Recent).await.unwrap();
+        for i in 0..20 {
+            bob.agent
+                .send_text(Target::Room { room: room.clone() }, &format!("reply {i} {}", body_of(60)))
+                .await
+                .unwrap();
+        }
+
+        let sent = call_session_tool(&mut alice, "parler_send", &json!({ "text": "status?" })).await.unwrap();
+        let chars = sent.chars().count();
+        println!("[budget] parler_send with ~20 waiting replies: {chars} chars rendered");
+        assert!(
+            sent.len() <= SEND_RENDER_BUDGET,
+            "send render {} B exceeds budget {SEND_RENDER_BUDGET} B",
+            sent.len()
+        );
+    }
+
+    #[tokio::test]
+    async fn recv_caps_batch_but_drains_losslessly() {
+        // A default recv is bounded (RECV_DEFAULT_LIMIT) and hints "more waiting"; a second recv
+        // returns the remainder — no message is lost, because a limited pull advances the cursor
+        // only through what it returned.
+        let hub = start_hub().await;
+        let mut alice = state(&hub, "alice").await;
+        let opened = open_session(&mut alice, Some("seed"), None, None, None, false).await.unwrap();
+        let room = alice.active_session.clone().unwrap();
+        let key = key_of(&opened);
+        let mut bob = state(&hub, "bob").await;
+        join_session(&mut bob, &key, Backlog::Recent).await.unwrap();
+        // Drain bob's own "joined" announce so his inbox starts empty relative to what alice posts.
+        call_session_tool(&mut bob, "parler_recv", &json!({})).await.unwrap();
+
+        // Alice posts 40 uniquely-tagged messages while bob isn't looking.
+        for i in 0..40 {
+            alice.agent.send_text(Target::Room { room: room.clone() }, &format!("u{i}_msg")).await.unwrap();
+        }
+
+        let first = call_session_tool(&mut bob, "parler_recv", &json!({})).await.unwrap();
+        assert!(first.contains("more waiting"), "a full batch hints there's more:\n{first}");
+        let second = call_session_tool(&mut bob, "parler_recv", &json!({})).await.unwrap();
+
+        // Every one of the 40 messages appears across the two calls (lossless drain).
+        for i in 0..40 {
+            let tag = format!("u{i}_msg");
+            assert!(
+                first.contains(&tag) || second.contains(&tag),
+                "message {tag} lost across the capped drain"
+            );
+        }
+        // The second call cleared the backlog — a third recv is empty.
+        let third = call_session_tool(&mut bob, "parler_recv", &json!({})).await.unwrap();
+        assert!(third.contains("no new messages"), "backlog fully drained:\n{third}");
+    }
+
+    #[tokio::test]
+    async fn autopull_hints_more_when_replies_overflow_the_cap() {
+        let hub = start_hub().await;
+        let mut alice = state(&hub, "alice").await;
+        let opened = open_session(&mut alice, Some("seed"), None, None, None, false).await.unwrap();
+        let room = alice.active_session.clone().unwrap();
+        let key = key_of(&opened);
+        let mut bob = state(&hub, "bob").await;
+        join_session(&mut bob, &key, Backlog::Recent).await.unwrap();
+
+        // Bob leaves more than AUTOPULL_LIMIT replies waiting before alice sends.
+        for i in 0..15 {
+            bob.agent.send_text(Target::Room { room: room.clone() }, &format!("r{i}")).await.unwrap();
+        }
+        let sent = call_session_tool(&mut alice, "parler_send", &json!({ "text": "?" })).await.unwrap();
+        assert!(sent.contains("more waiting"), "auto-pull hints there's more past the cap:\n{sent}");
+    }
+
+    #[tokio::test]
+    async fn long_body_is_truncated_then_refetchable_in_full() {
+        let hub = start_hub().await;
+        let mut alice = state(&hub, "alice").await;
+        let opened = open_session(&mut alice, Some("seed"), None, None, None, false).await.unwrap();
+        let room = alice.active_session.clone().unwrap();
+        let key = key_of(&opened);
+        let mut bob = state(&hub, "bob").await;
+        join_session(&mut bob, &key, Backlog::Recent).await.unwrap();
+        call_session_tool(&mut bob, "parler_recv", &json!({})).await.unwrap(); // drain own announce
+
+        // Alice posts a body well over MSG_MAX_CHARS.
+        let long = "A".repeat(MSG_MAX_CHARS + 500);
+        alice.agent.send_text(Target::Room { room: room.clone() }, &long).await.unwrap();
+
+        // Bob's cursor-mode recv truncates it with a refetch pointer.
+        let recv = call_session_tool(&mut bob, "parler_recv", &json!({})).await.unwrap();
+        assert!(recv.contains("chars — parler_recv since="), "long body truncated with a hint:\n{}", &recv[..recv.len().min(200)]);
+        assert!(recv.len() < long.len(), "truncated render is shorter than the full body");
+
+        // Extract the seq the hint points at and re-read that one message: it comes back in full.
+        let seq: i64 = recv
+            .split("since=")
+            .nth(1)
+            .and_then(|r| r.split_whitespace().next())
+            .and_then(|n| n.parse().ok())
+            .expect("a since=<seq> in the truncation hint");
+        let full = call_session_tool(&mut bob, "parler_recv", &json!({ "since": seq, "limit": 1 })).await.unwrap();
+        assert!(full.contains(&long), "explicit since re-read returns the full body");
+        assert!(!full.contains("chars — parler_recv since="), "re-reads are never truncated");
+    }
+
+    #[test]
+    fn recv_limit_decides_the_cap() {
+        // Explicit limit always wins (even in re-read / verbose).
+        assert_eq!(recv_limit(Some(5), false, false), Some(5));
+        assert_eq!(recv_limit(Some(5), true, true), Some(5));
+        // Plain cursor read → the default cap.
+        assert_eq!(recv_limit(None, false, false), Some(RECV_DEFAULT_LIMIT));
+        // A history re-read (`since`) is uncapped (full detail).
+        assert_eq!(recv_limit(None, true, false), None);
+        // Verbose is the global escape hatch → uncapped.
+        assert_eq!(recv_limit(None, false, true), None);
+    }
+
+    #[test]
+    fn budgeted_render_truncates_only_over_the_cap() {
+        // A short message renders identically to the plain render (no hint appended).
+        let short = StoredMessage {
+            seq: 7,
+            id: "i".into(),
+            room: "r".into(),
+            from: parler_protocol::EndpointRef { id: "a".into(), name: "alice".into(), role: None },
+            parts: vec![parler_protocol::Part::text("hi")],
+            mentions: None,
+            reply_to: None,
+            ts: 0,
+        };
+        assert_eq!(render_message_budgeted(&short), crate::render_message(&short));
+        assert!(!render_message_budgeted(&short).contains("parler_recv since="));
+
+        // A long message is truncated with a pointer to re-read it in full at seq-1.
+        let long = StoredMessage {
+            parts: vec![parler_protocol::Part::text("z".repeat(MSG_MAX_CHARS + 100))],
+            ..short.clone()
+        };
+        let out = render_message_budgeted(&long);
+        assert!(out.chars().count() < MSG_MAX_CHARS + 200, "truncated to ~the cap");
+        assert!(out.contains("parler_recv since=6 limit=1 for full"), "hint points at seq-1:\n{out}");
+    }
+
     #[tokio::test]
     async fn open_then_join_shares_context_and_sets_active_session() {
         let hub = start_hub().await;
@@ -1255,10 +1804,18 @@ mod tests {
         // The output carries a ready-to-paste teammate one-liner with the session key preset.
         assert!(opened.contains("claude mcp add parler"), "shareable one-liner present:\n{opened}");
         assert!(opened.contains("PARLER_SESSION_KEY="), "one-liner presets the session key");
+        // Every actionable artifact survives the P1.4 trim.
+        assert!(opened.contains("link:"), "share link present");
+        assert!(opened.contains("session-digest"), "digest guidance present");
+        assert!(opened.contains("parler_watch_session"), "watch-viewer pointer present");
         assert!(alice.active_session.is_some());
+        // P1.4: the result is trimmed. The one-liner + a variable-length key/link dominate; assert a
+        // ceiling so the prose can't bloat back up.
+        println!("[budget] open_session result: {} chars", opened.chars().count());
+        assert!(opened.len() <= OPEN_RESULT_BUDGET, "open_session result {} B over budget {OPEN_RESULT_BUDGET} B", opened.len());
 
         let key = key_of(&opened);
-        let joined = join_session(&mut bob, &key).await.unwrap();
+        let joined = join_session(&mut bob, &key, Backlog::Recent).await.unwrap();
         assert!(joined.contains("designing the auth flow"), "joiner should receive the seeded context");
         assert_eq!(bob.active_session, alice.active_session, "both share the same session room");
     }
@@ -1272,7 +1829,7 @@ mod tests {
         let opened = open_session(&mut alice, None, Some("empty".into()), None, None, false).await.unwrap();
         let key = key_of(&opened);
         // Bob joins; the only backlog should be his own "joined" announce — no seed context line.
-        let joined = join_session(&mut bob, &key).await.unwrap();
+        let joined = join_session(&mut bob, &key, Backlog::Recent).await.unwrap();
         assert!(!joined.contains("session context"), "no seed message when context is omitted");
     }
 
@@ -1284,7 +1841,7 @@ mod tests {
 
         let opened = open_session(&mut alice, Some("seed"), Some("design".into()), None, None, false).await.unwrap();
         let key = key_of(&opened);
-        join_session(&mut bob, &key).await.unwrap();
+        join_session(&mut bob, &key, Backlog::Recent).await.unwrap();
 
         // Bob sends with no explicit target → goes to the active session.
         let bob_send = call_session_tool(&mut bob, "parler_send", &json!({ "text": "from bob" })).await.unwrap();
@@ -1305,7 +1862,7 @@ mod tests {
 
         let opened = open_session(&mut alice, Some("seed"), None, None, None, false).await.unwrap();
         let key = key_of(&opened);
-        join_session(&mut bob, &key).await.unwrap(); // advances bob's cursor to the live edge
+        join_session(&mut bob, &key, Backlog::Recent).await.unwrap(); // advances bob's cursor to the live edge
 
         // Alice posts after bob is caught up; bob's recv (no room) picks it up from the active session.
         call_session_tool(&mut alice, "parler_send", &json!({ "text": "ping bob" })).await.unwrap();
@@ -1322,8 +1879,8 @@ mod tests {
 
         let opened = open_session(&mut alice, Some("seed"), None, None, None, false).await.unwrap();
         let key = key_of(&opened);
-        join_session(&mut bob, &key).await.unwrap();
-        join_session(&mut carol, &key).await.unwrap();
+        join_session(&mut bob, &key, Backlog::Recent).await.unwrap();
+        join_session(&mut carol, &key, Backlog::Recent).await.unwrap();
         // Drain each joiner's own "joined" announce so their cursors start clean.
         call_session_tool(&mut bob, "parler_recv", &json!({})).await.unwrap();
         call_session_tool(&mut carol, "parler_recv", &json!({})).await.unwrap();
@@ -1358,7 +1915,7 @@ mod tests {
 
         let opened = open_session(&mut alice, Some("seed"), None, None, None, false).await.unwrap();
         let key = key_of(&opened);
-        join_session(&mut bob, &key).await.unwrap();
+        join_session(&mut bob, &key, Backlog::Recent).await.unwrap();
         call_session_tool(&mut bob, "parler_recv", &json!({})).await.unwrap();
 
         call_session_tool(&mut alice, "parler_handoff", &json!({ "next": "take it from here" }))
@@ -1379,7 +1936,7 @@ mod tests {
 
         let opened = open_session(&mut alice, Some("seed"), None, None, None, false).await.unwrap();
         let key = key_of(&opened);
-        join_session(&mut bob, &key).await.unwrap(); // bob caught up to the live edge
+        join_session(&mut bob, &key, Backlog::Recent).await.unwrap(); // bob caught up to the live edge
         // join_session posts bob's own "joined" announce *after* its catch-up pull, so it now sits
         // past bob's cursor — drain it so the long-poll below starts from a genuinely empty inbox
         // (otherwise the initial pull returns non-empty and short-circuits the wait).
@@ -1434,7 +1991,7 @@ mod tests {
         let key = key_of(&opened);
 
         // Bob redeems → held pending; he is NOT caught up and must not see the context.
-        let pending = join_session(&mut bob, &key).await.unwrap();
+        let pending = join_session(&mut bob, &key, Backlog::Recent).await.unwrap();
         assert!(pending.contains("waiting for the host"), "joiner is gated: {pending}");
         assert!(!pending.contains("secret plan"), "a pending joiner must not receive the context");
         assert!(bob.active_session.is_none(), "a pending joiner has no active session yet");
@@ -1454,7 +2011,7 @@ mod tests {
         assert!(approved.contains("approved"));
 
         // Now bob's join succeeds and he receives the context in the same call.
-        let joined = join_session(&mut bob, &key).await.unwrap();
+        let joined = join_session(&mut bob, &key, Backlog::Recent).await.unwrap();
         assert!(joined.contains("secret plan: ship friday"), "an approved joiner gets the context: {joined}");
         assert_eq!(bob.active_session, alice.active_session, "both now share the session room");
     }
@@ -1467,7 +2024,7 @@ mod tests {
 
         let opened = open_session(&mut alice, Some("seed"), None, None, None, true).await.unwrap();
         let key = key_of(&opened);
-        join_session(&mut eve, &key).await.unwrap(); // pending
+        join_session(&mut eve, &key, Backlog::Recent).await.unwrap(); // pending
 
         let denied = call_session_tool(&mut alice, "parler_deny_join", &json!({ "agent": eve.agent.id }))
             .await
@@ -1475,7 +2032,7 @@ mod tests {
         assert!(denied.contains("denied"));
 
         // The denial is terminal — eve's retry errors instead of letting her in.
-        assert!(join_session(&mut eve, &key).await.is_err());
+        assert!(join_session(&mut eve, &key, Backlog::Recent).await.is_err());
     }
 
     #[tokio::test]
@@ -1489,6 +2046,58 @@ mod tests {
         let mut peer = state(&hub, "peer").await;
         let found = call_tool(&mut peer.agent, "parler_discover", &json!({})).await.unwrap();
         assert!(found.contains("worker"), "auto-registered agent should be discoverable: {found}");
+    }
+
+    #[tokio::test]
+    async fn discover_is_compact_by_default_and_detailed_on_request() {
+        let hub = start_hub().await;
+        let mut worker = state(&hub, "worker").await;
+        auto_register(&mut worker.agent).await;
+        let mut peer = state(&hub, "peer").await;
+
+        // Default: compact line, name present, id absent.
+        let compact = call_tool(&mut peer.agent, "parler_discover", &json!({})).await.unwrap();
+        assert!(compact.contains("worker"), "name present in compact line:\n{compact}");
+        assert!(!compact.contains(&worker.agent.id), "id omitted by default:\n{compact}");
+        // detail:true restores the id.
+        let detailed = call_tool(&mut peer.agent, "parler_discover", &json!({ "detail": true })).await.unwrap();
+        assert!(detailed.contains(&worker.agent.id), "detail:true shows the id:\n{detailed}");
+    }
+
+    #[tokio::test]
+    async fn roster_hides_ids_by_default() {
+        let hub = start_hub().await;
+        let mut alice = state(&hub, "alice").await;
+        let opened = open_session(&mut alice, Some("seed"), None, None, None, false).await.unwrap();
+        let room = alice.active_session.clone().unwrap();
+        let key = key_of(&opened);
+        let mut bob = state(&hub, "bob").await;
+        join_session(&mut bob, &key, Backlog::Recent).await.unwrap();
+
+        let plain = call_tool(&mut alice.agent, "parler_roster", &json!({ "room": room.clone() })).await.unwrap();
+        assert!(plain.contains("alice"), "names present:\n{plain}");
+        assert!(!plain.contains(&alice.agent.id), "ids hidden by default:\n{plain}");
+        let detailed = call_tool(&mut alice.agent, "parler_roster", &json!({ "room": room, "detail": true })).await.unwrap();
+        assert!(detailed.contains(&alice.agent.id), "detail:true shows ids:\n{detailed}");
+    }
+
+    #[tokio::test]
+    async fn mcp_send_resolves_name_to_id() {
+        // parler_send to=<directory name> resolves to the unique agent id (reusing resolve_target),
+        // so a caller never needs the 56-char id. An unknown name errors instead of guessing.
+        let hub = start_hub().await;
+        let mut worker = state(&hub, "worker").await;
+        auto_register(&mut worker.agent).await; // gives worker a discoverable card
+        let mut peer = state(&hub, "peer").await;
+
+        let sent = call_session_tool(&mut peer, "parler_send", &json!({ "to": "worker", "text": "hi worker" }))
+            .await
+            .unwrap();
+        assert!(sent.contains("sent to"), "name resolved and message sent:\n{sent}");
+
+        // An unknown name is an error, not a wrong-agent guess.
+        let err = call_session_tool(&mut peer, "parler_send", &json!({ "to": "nobody-here", "text": "x" })).await;
+        assert!(err.is_err(), "an unresolvable name must error, never guess");
     }
 
     #[test]
@@ -1530,6 +2139,31 @@ mod tests {
         // the open_session call ran and returned a key, and set the active session.
         assert!(out.contains("KEY: "));
         assert!(alice.active_session.is_some());
+    }
+
+    #[tokio::test]
+    async fn session_handoff_prompt_digests_not_replays() {
+        // The parler_session_handoff prompt returns a digest (seed + tail + omission line + a roster
+        // count + a since/recall pointer), not the whole backlog replayed.
+        let hub = start_hub().await;
+        let mut alice = state(&hub, "alice").await;
+        open_session(&mut alice, Some("the handoff plan: finish auth"), Some("plan".into()), None, None, false)
+            .await
+            .unwrap();
+        let room = alice.active_session.clone().unwrap();
+        seed_room(&mut alice, &room, 40).await;
+
+        let input = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"prompts/get\",\"params\":{\"name\":\"parler_session_handoff\"}}\n";
+        let mut output: Vec<u8> = Vec::new();
+        run(&mut alice, BufReader::new(input.as_bytes()), &mut output).await.unwrap();
+        let out = String::from_utf8(output).unwrap();
+
+        assert!(out.contains("the handoff plan: finish auth"), "seed present in the prompt digest:\n{out}");
+        assert!(out.contains("earlier message(s) omitted"), "middle summarized, not replayed:\n{out}");
+        assert!(out.contains("agent(s) in the room"), "roster rendered as a count");
+        assert!(out.contains("parler_recv since="), "prompt points at the full-detail re-read");
+        // A mid-backlog message is NOT replayed in the prompt (JSON-escaped, so match the tag).
+        assert!(!out.contains("m5 "), "an omitted middle message must not be in the prompt");
     }
 
     #[test]

@@ -926,7 +926,7 @@ fn looks_like_agent_id(s: &str) -> bool {
 /// Let `--to` take a directory *name* as well as a full id: a non-id value is resolved against the
 /// hub directory and must match exactly one agent (case-insensitive on the card name). Kills the
 /// "copy a 56-char key between terminals" step for the common case.
-async fn resolve_target(ag: &mut MeshAgent, target: Target) -> Result<Target> {
+pub(crate) async fn resolve_target(ag: &mut MeshAgent, target: Target) -> Result<Target> {
     let Target::Dm { agent } = &target else { return Ok(target) };
     if looks_like_agent_id(agent) {
         return Ok(target);

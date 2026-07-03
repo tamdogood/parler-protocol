@@ -940,3 +940,130 @@ test · doc · deny). Desktop `npm run typecheck` + `npm run build` green.
 **Deferred to backlog (medium/big):** `parler work` daemon (rental keystone), card `offers`, `parler
 task --wait`, desktop approvals inbox, desktop team mode, signed task receipts, `[HUMAN] web:` hire
 flow / A2A inbound. See `tasks/backlog.md` → "From 'connect agents' → 'operate a hub' → 'rent out'".
+
+---
+
+## Token-efficient agent comms — Wave P0 + P1 (2026-07-03, branch `token-efficient-agent-comms`)
+
+Render-side token efficiency for the Parler MCP server: every tool result/spec lands verbatim in each
+agent's LLM context, so the goal is to shrink the *rendered* char count with zero hub/protocol change
+(additive, works against the deployed hub). Spec: `~/.claude/plans/system-instruction-you-are-working-goofy-crane.md`.
+Sub-plan: `~/.claude/plans/system-instruction-you-are-working-goofy-crane-agent-ac4df53d7d8a849fc.md`.
+
+### P0.1 — Measurement harness (DONE)
+Budget tests in `mcp.rs mod tests` that print the rendered-char count so each later item's saving is
+provable and gated: `tool_specs_stay_lean`, `join_with_backlog_renders_under_budget`,
+`send_with_waiting_replies_renders_under_budget`; helpers `body_of(len)` (fixed-size) + `seed_room`
+(post N fixed messages from a member). Consts `TOOL_SPECS_BUDGET`/`JOIN_RENDER_BUDGET`/`SEND_RENDER_BUDGET`
+start loose (~20% headroom) and get tightened by the item that produces each saving.
+
+**Baselines measured (before any diet):**
+- tool_specs: 23 tools, **11,598 B** serialized (5,261 B of descriptions).
+- join_session with ~100-msg backlog (full replay): **7,863 chars**.
+- parler_send with ~20 waiting replies: **1,657 chars**.
+
+Gate: `scripts/verify.sh --rust-only` green.
+
+### P0.2 — Tool-spec diet + cheap-path steering (DONE)
+Rewrote the 23 tool descriptions tight while teaching the cheap path in the prose: prefer `wait_secs`
+long-poll over polling; keyed facts (`parler_remember key="session-digest"`) for durable state instead
+of re-reading history; `since`+`limit` re-reads render in full (never truncated). Kept the security
+guidance ("confirm with the user before approving", the join-key-can't-read warning) and kept specs
+fully static (prompt-cache friendly). Added the `backlog: recent|full` param to `parler_join_session`
+(wired in P0.3) and `to`-takes-a-name / `since`/`limit` param hints (wired in P1.2/P0.4).
+
+**Descriptions 5,261 B → 4,304 B (−957 B).** Full `tools/list` payload 11,598 B → 11,030 B (net −568 B;
+the description cut is partly offset by the new cheap-path param hints, which are themselves the steering
+payoff). Tightened `TOOL_SPECS_BUDGET` to 11,600 and added a `TOOL_DESC_BUDGET` (4,500) so the diet
+can't silently regress. Gate green.
+
+### P0.3 — Digest-not-replay session joins (DONE)
+`join_session` now renders a *digest* of the backlog instead of a full replay. The load-bearing
+`pull(&room, None, None)` is unchanged (cursor still advances to the live edge past the whole backlog);
+only the render changed. New `digest_backlog(msgs, mode)` helper (shared with P1.1): in `Recent` mode
+(default) it renders the context **seed in full** (earliest message starting with the `📋 session
+context` marker) → `— N earlier message(s) omitted; parler_recv since=<seq> to re-read, parler_recall
+for decisions —` → the last `JOIN_TAIL=15` messages in full; roster is rendered as a **count** line, not
+a full listing. New `backlog: "recent"|"full"` param on `parler_join_session` (default recent; `full`
+is the escape hatch that replays everything). `PARLER_SESSION_KEY` env-join uses `Recent`.
+
+**join_session with ~100-msg backlog: 7,863 → 1,458 chars (−81%).** `JOIN_RENDER_BUDGET` tightened to
+3,000. Tests: `join_digests_long_backlog` (seed + omission line + tail present, a middle message not
+replayed, roster is a count) and `join_full_mode_renders_entire_backlog` (full replay, no omission
+line). Existing small-backlog join tests unaffected (≤ JOIN_TAIL → render everything). Gate green.
+
+### P0.4 — Render budgets on recv + auto-pull (DONE)
+Bounded the two unbounded per-call render paths, losslessly (a limited pull advances the cursor only
+through the batch, so the remainder waits for the next call):
+- `parler_recv` default `limit` → `RECV_DEFAULT_LIMIT=30` in **cursor mode only** (no explicit `limit`,
+  no `since`, not verbose); `— more waiting: call parler_recv again —` when the batch fills.
+- auto-pull-on-send caps at `AUTOPULL_LIMIT=10` with the same hint; the handoff banner scans the capped
+  batch (a handoff past the cap resurfaces on the next recv — it stays unread).
+- New `render_message_budgeted`: per-message body cap `MSG_MAX_CHARS=1200`, UTF-8-safe truncation with
+  `…[+N chars — parler_recv since=<seq-1> limit=1 for full]`. **Never** applied to explicit-`since`
+  re-reads (rendered full via `render_message`), the seed, or banners.
+- Opt-outs: an explicit `limit` per call overrides the cap; `PARLER_MCP_VERBOSE=1` disables caps
+  globally. Limit decision extracted to a pure `recv_limit(explicit, re_read, verbose)` so it's unit-
+  testable without racing on process env.
+
+**parler_send with ~20 waiting replies: 1,657 → 740 chars (−55%).** `SEND_RENDER_BUDGET` tightened to
+2,000. Tests: `recv_caps_batch_but_drains_losslessly` (30 + "more waiting", second recv drains the
+rest, union == all 40, third recv empty), `autopull_hints_more_when_replies_overflow_the_cap`,
+`long_body_is_truncated_then_refetchable_in_full` (truncated body → `since=<seq-1> limit=1` returns it
+in full, re-reads never truncated), `recv_limit_decides_the_cap` + `budgeted_render_truncates_only_
+over_the_cap` (pure). Gate green.
+
+### P1.1 — Digest the MCP prompts (DONE)
+- `parler_session_handoff` prompt: now renders the shared `digest_backlog(Backlog::Recent)` (seed +
+  recent tail + omission line) instead of the full replay, with a roster **count** and a "parler_recv
+  since=<seq> / parler_recall for more" pointer.
+- `parler_consolidate_session` prompt: analyzes at most the **last 100** messages and instructs writing
+  the recap via `parler_remember key="session-digest" room="<room>"` (idempotent rolling digest — sets
+  up P1.3), keeping "extract 1–5 decisions".
+- Backlog **resource** doc string: relabeled as the explicit full-replay escape hatch and notes the hub's
+  200/page cap (`since` pages). The resource read itself stays a full pull — it IS the escape hatch.
+
+Test: `session_handoff_prompt_digests_not_replays` (drives `prompts/get` through the `run` loop; asserts
+seed + omission line + roster count + `parler_recv since=` pointer, and that a mid-backlog message is not
+replayed). Gate green.
+
+### P1.2 — discover/roster compaction + name-based DM (DONE)
+- **Name-based targets:** made `resolve_target` (lib.rs) `pub(crate)` and routed all four MCP DM paths
+  through it — `parler_send to=<name>`, `parler_card <name>`, `parler_push to=<name>`, `parler_handoff`
+  — so a directory **name** works without the 56-char id (unique-match-or-error; never guesses). All
+  four were trivial one-liners on the `Target::Dm` they already build, so `parler_push`/`parler_handoff`
+  were included too (no `[HUMAN]` follow-up needed).
+- **discover:** client default `limit` → `DISCOVER_DEFAULT_LIMIT=25`; compact line drops the id
+  (`name (role) [vis✓] status — tags`); `detail:true` restores the id; a full batch appends a "narrow
+  or raise limit" nudge. The name in the compact line is enough to `parler_send to=` / `parler_card`.
+- **roster:** `name (role) [status]`; ids only with `detail:true`.
+
+Tests: `discover_is_compact_by_default_and_detailed_on_request`, `roster_hides_ids_by_default`,
+`mcp_send_resolves_name_to_id` (name → unique id; unknown name errors, never guesses). Bumped
+`TOOL_DESC_BUDGET` 4,500 → 4,700 for the ~230 B of cheap-path steering P1.2 adds (still ~730 B under the
+pre-diet baseline; total specs 11,466 B, under budget). Gate green.
+
+### P1.3 — Rolling session digest as a keyed fact (DONE)
+Zero-hub-change convention: the host keeps a rolling recap via `parler_remember key="session-digest"
+room=<room> text="SESSION DIGEST: …"` (idempotent upsert). A late `join_session` now recalls it
+(`recall("SESSION DIGEST", room, limit=1)`) and renders it in a `--- session digest ---` block **above**
+the backlog tail — a human-written recap beats re-reading raw history. Belt-and-suspenders acceptance:
+the top hit is used only when its `key == "session-digest"` **and** its text starts with the
+`SESSION DIGEST` sentinel (guards against a BM25 false positive). Silent skip when absent or on error.
+`open_session` output + the open/remember tool specs teach the host to maintain it. Deterministic
+fetch-by-key (no BM25) is the queued P2.1 upgrade.
+
+Tests: `join_surfaces_session_digest_fact` (host remembers it → joiner sees the header + recap),
+`join_without_digest_fact_is_silent` (absent → no header, no error). Gate green.
+
+### P1.4 — Trim chatty tool results (DONE)
+Shortened the wordy result strings, keeping every actionable artifact + test-pinned marker:
+- `open_session`: ~850 → **615 chars**. Kept `KEY: `, the `claude mcp add parler … PARLER_SESSION_KEY=`
+  one-liner, the approval `gate` sentence, the `session-digest` guidance, the watch-viewer pointer, and
+  `link:`; cut the narration. Tightened the approval-gate prose too. `OPEN_RESULT_BUDGET=800` pins it.
+- `parler_watch_session`: kept the code + "treat it like a password" warning; cut filler.
+- `parler_invite`: dropped the duplicated trailing code echo.
+- `parler_push`: folded the `blob:` line into the `parler apply <blob>` line (one blob id, not two).
+
+Test: `open_then_join_shares_context_and_sets_active_session` now also asserts `link:`, `session-digest`,
+`parler_watch_session` survive and that the result is under `OPEN_RESULT_BUDGET`. Gate green.

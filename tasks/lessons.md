@@ -156,3 +156,27 @@ Format: `- **<short trigger>:** <the rule>. <why, in a clause>`
   (especially an offset/partial read) may no longer authorize a later Edit — the tool errors "File has
   not been read yet." Re-Read the few lines you're about to change immediately before editing rather
   than relying on a Read from a prior turn. (Hit twice wiring Wave 2 in `mcp.rs`/`lib.rs`.)
+
+- **A process-`env` opt-out can't be asserted from a *parallel* test — extract the decision as a pure
+  fn.** Testing `PARLER_MCP_VERBOSE=1` by `set_var` then driving the hub flow races with every other
+  test in the binary (cargo runs them in threads, one process): a concurrent test reading the same
+  global env could see verbose=on and lose its "more waiting" assertion. Fix: pull the branch into a
+  pure `recv_limit(explicit, re_read, verbose) -> Option<u32>` and unit-test *that* (deterministic,
+  no env), keeping the env read as a thin one-liner at the call site. Only mutate global env in a test
+  when the key is uniquely named and never read by a parallel test. (2026-07-03 P0.4.)
+
+- **Clippy `-D warnings` flags single-arg `concat!` and `&"…".repeat(n)`:** a one-argument `concat!(...)`
+  trips `clippy::useless_concat` (use a plain string literal), and `Part::text(&"z".repeat(n))` trips
+  `needless_borrows_for_generic_args` because `text` takes `impl Into<String>` (drop the `&`). Both
+  only surface under the gate's `-D warnings`, not a plain `cargo test` of a single test. Run the full
+  `scripts/verify.sh --rust-only` (which runs clippy on `--all-targets`) after adding *test* code, not
+  just the one test — new test helpers get linted too. (2026-07-03 P0.4/P1.1.)
+
+- **A capped MCP render is lossless *because* a limited `Pull` advances the cursor only through its
+  returned batch** (`store.rs`: `new_cursor = raws.last().seq`, updated only when `since.is_none()`).
+  So `parler_recv` default-limit 30 / auto-pull 10 lose nothing — the remainder stays unread for the
+  next call. The invariants that keep this true: never budget/cap an explicit-`since` re-read (it's the
+  documented full-detail path and must not advance the cursor), and the "more waiting" hint keys off the
+  *raw* pull length (`msgs.len() >= limit`), not the post-filter count. Digest joins rely on the same
+  thing: `join_session` keeps `pull(None, None)` (advances past the whole backlog) and only changes the
+  *render* to a seed+tail digest — cursor and render are decoupled. (2026-07-03 P0.3/P0.4.)
