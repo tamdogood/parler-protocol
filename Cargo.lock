@@ -1124,7 +1124,7 @@ dependencies = [
  "parking_lot",
  "parler-auth",
  "parler-protocol",
- "rand 0.8.6",
+ "rand 0.10.1",
  "rusqlite",
  "serde",
  "serde_json",

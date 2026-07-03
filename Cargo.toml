@@ -46,7 +46,7 @@ rustls = { version = "0.23", default-features = false, features = ["ring"] }
 rusqlite = { version = "0.31", features = ["bundled"] }
 sqlite-vec = "0.1"
 clap = { version = "4", features = ["derive", "env"] }
-rand = "0.8"
+rand = "0.10"
 # Format-preserving TOML editing — `parler connect` merges its server into an MCP host's config
 # (e.g. Codex's `~/.codex/config.toml`) without clobbering the user's other servers or comments.
 toml_edit = "0.22"
