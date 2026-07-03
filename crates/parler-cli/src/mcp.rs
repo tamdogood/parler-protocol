@@ -1242,6 +1242,112 @@ mod tests {
             .to_string()
     }
 
+    // ---- Token-budget harness (P0.1) -------------------------------------------------------------
+    //
+    // Every MCP tool result / spec lands verbatim in each participating agent's LLM context, so the
+    // *rendered char count* is the thing we're optimizing. These budgets are ceilings the render code
+    // must stay under; each is tightened by the item that produces its saving (P0.2 → specs, P0.3 →
+    // join, P0.4 → send). Tests print the measured number so a run's output is the savings receipt.
+    // Fixed-size synthetic messages keep the counts deterministic; consts carry ~20% headroom.
+
+    /// Serialized `tools/list` payload size — permanent context cost, paid by every agent every
+    /// session. Baseline (pre-diet) ~13,532 B; tightened in P0.2.
+    const TOOL_SPECS_BUDGET: usize = 16_000;
+    /// Rendered `join_session` output with a ~100-message backlog. Full-replay baseline is large;
+    /// P0.3's digest render brings it well under this.
+    const JOIN_RENDER_BUDGET: usize = 30_000;
+    /// Rendered `parler_send` output when ~20 replies are already waiting (auto-pull). P0.4's caps
+    /// bound this.
+    const SEND_RENDER_BUDGET: usize = 12_000;
+
+    /// A body of exactly `len` ASCII chars (deterministic sizing for budget assertions).
+    fn body_of(len: usize) -> String {
+        "x".repeat(len)
+    }
+
+    /// Post `n` fixed-size messages (~60 chars each) into `room` from `poster` (which must already be
+    /// a member), so budget assertions don't depend on message content. Returns after all are sent.
+    async fn seed_room(poster: &mut McpState, room: &str, n: usize) {
+        for i in 0..n {
+            poster
+                .agent
+                .send_text(Target::Room { room: room.to_string() }, &format!("m{i} {}", body_of(60)))
+                .await
+                .unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn tool_specs_stay_lean() {
+        let specs = tool_specs();
+        let serialized = serde_json::to_string(&json!({ "tools": specs })).unwrap();
+        let bytes = serialized.len();
+        let desc_bytes: usize = specs
+            .iter()
+            .filter_map(|t| t.get("description").and_then(Value::as_str))
+            .map(str::len)
+            .sum();
+        println!(
+            "[budget] tool_specs: {} tools, {bytes} B serialized ({desc_bytes} B of descriptions)",
+            specs.len()
+        );
+        assert!(
+            bytes <= TOOL_SPECS_BUDGET,
+            "tool specs {bytes} B exceed budget {TOOL_SPECS_BUDGET} B — trim descriptions"
+        );
+    }
+
+    #[tokio::test]
+    async fn join_with_backlog_renders_under_budget() {
+        let hub = start_hub().await;
+        let mut alice = state(&hub, "alice").await;
+        // Open with a real context seed, then seed ~100 more messages into the room.
+        let opened = open_session(&mut alice, Some("catch-up context for the budget test"), Some("budget".into()), None, None, false)
+            .await
+            .unwrap();
+        let room = alice.active_session.clone().unwrap();
+        let key = key_of(&opened);
+        seed_room(&mut alice, &room, 100).await;
+
+        let mut bob = state(&hub, "bob").await;
+        let joined = join_session(&mut bob, &key).await.unwrap();
+        let chars = joined.chars().count();
+        println!("[budget] join_session with ~100-msg backlog: {chars} chars rendered");
+        assert!(
+            joined.len() <= JOIN_RENDER_BUDGET,
+            "join render {} B exceeds budget {JOIN_RENDER_BUDGET} B",
+            joined.len()
+        );
+    }
+
+    #[tokio::test]
+    async fn send_with_waiting_replies_renders_under_budget() {
+        let hub = start_hub().await;
+        let mut alice = state(&hub, "alice").await;
+        let opened = open_session(&mut alice, Some("seed"), Some("budget".into()), None, None, false).await.unwrap();
+        let room = alice.active_session.clone().unwrap();
+        let key = key_of(&opened);
+
+        // Bob joins and posts ~20 fixed-size replies that are waiting when alice next sends.
+        let mut bob = state(&hub, "bob").await;
+        join_session(&mut bob, &key).await.unwrap();
+        for i in 0..20 {
+            bob.agent
+                .send_text(Target::Room { room: room.clone() }, &format!("reply {i} {}", body_of(60)))
+                .await
+                .unwrap();
+        }
+
+        let sent = call_session_tool(&mut alice, "parler_send", &json!({ "text": "status?" })).await.unwrap();
+        let chars = sent.chars().count();
+        println!("[budget] parler_send with ~20 waiting replies: {chars} chars rendered");
+        assert!(
+            sent.len() <= SEND_RENDER_BUDGET,
+            "send render {} B exceeds budget {SEND_RENDER_BUDGET} B",
+            sent.len()
+        );
+    }
+
     #[tokio::test]
     async fn open_then_join_shares_context_and_sets_active_session() {
         let hub = start_hub().await;

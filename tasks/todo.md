@@ -873,3 +873,26 @@ test · doc · deny). Desktop `npm run typecheck` + `npm run build` green.
 **Deferred to backlog (medium/big):** `parler work` daemon (rental keystone), card `offers`, `parler
 task --wait`, desktop approvals inbox, desktop team mode, signed task receipts, `[HUMAN] web:` hire
 flow / A2A inbound. See `tasks/backlog.md` → "From 'connect agents' → 'operate a hub' → 'rent out'".
+
+---
+
+## Token-efficient agent comms — Wave P0 + P1 (2026-07-03, branch `token-efficient-agent-comms`)
+
+Render-side token efficiency for the Parler MCP server: every tool result/spec lands verbatim in each
+agent's LLM context, so the goal is to shrink the *rendered* char count with zero hub/protocol change
+(additive, works against the deployed hub). Spec: `~/.claude/plans/system-instruction-you-are-working-goofy-crane.md`.
+Sub-plan: `~/.claude/plans/system-instruction-you-are-working-goofy-crane-agent-ac4df53d7d8a849fc.md`.
+
+### P0.1 — Measurement harness (DONE)
+Budget tests in `mcp.rs mod tests` that print the rendered-char count so each later item's saving is
+provable and gated: `tool_specs_stay_lean`, `join_with_backlog_renders_under_budget`,
+`send_with_waiting_replies_renders_under_budget`; helpers `body_of(len)` (fixed-size) + `seed_room`
+(post N fixed messages from a member). Consts `TOOL_SPECS_BUDGET`/`JOIN_RENDER_BUDGET`/`SEND_RENDER_BUDGET`
+start loose (~20% headroom) and get tightened by the item that produces each saving.
+
+**Baselines measured (before any diet):**
+- tool_specs: 23 tools, **11,598 B** serialized (5,261 B of descriptions).
+- join_session with ~100-msg backlog (full replay): **7,863 chars**.
+- parler_send with ~20 waiting replies: **1,657 chars**.
+
+Gate: `scripts/verify.sh --rust-only` green.
