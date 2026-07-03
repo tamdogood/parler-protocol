@@ -959,3 +959,19 @@ over_the_cap` (pure). Gate green.
 Test: `session_handoff_prompt_digests_not_replays` (drives `prompts/get` through the `run` loop; asserts
 seed + omission line + roster count + `parler_recv since=` pointer, and that a mid-backlog message is not
 replayed). Gate green.
+
+### P1.2 — discover/roster compaction + name-based DM (DONE)
+- **Name-based targets:** made `resolve_target` (lib.rs) `pub(crate)` and routed all four MCP DM paths
+  through it — `parler_send to=<name>`, `parler_card <name>`, `parler_push to=<name>`, `parler_handoff`
+  — so a directory **name** works without the 56-char id (unique-match-or-error; never guesses). All
+  four were trivial one-liners on the `Target::Dm` they already build, so `parler_push`/`parler_handoff`
+  were included too (no `[HUMAN]` follow-up needed).
+- **discover:** client default `limit` → `DISCOVER_DEFAULT_LIMIT=25`; compact line drops the id
+  (`name (role) [vis✓] status — tags`); `detail:true` restores the id; a full batch appends a "narrow
+  or raise limit" nudge. The name in the compact line is enough to `parler_send to=` / `parler_card`.
+- **roster:** `name (role) [status]`; ids only with `detail:true`.
+
+Tests: `discover_is_compact_by_default_and_detailed_on_request`, `roster_hides_ids_by_default`,
+`mcp_send_resolves_name_to_id` (name → unique id; unknown name errors, never guesses). Bumped
+`TOOL_DESC_BUDGET` 4,500 → 4,700 for the ~230 B of cheap-path steering P1.2 adds (still ~730 B under the
+pre-diet baseline; total specs 11,466 B, under budget). Gate green.

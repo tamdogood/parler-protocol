@@ -469,6 +469,7 @@ async fn call_tool(agent: &mut MeshAgent, name: &str, args: &Value) -> Result<St
             } else {
                 bail!("provide exactly one of room / to / service");
             };
+            let target = crate::resolve_target(agent, target).await?;
             let gitref = s("gitref").unwrap_or_else(|| "HEAD".into());
             let (bytes, tip, summary) =
                 crate::build_git_bundle(s("repo").as_deref(), &gitref, s("base").as_deref(), s("summary"))?;
@@ -532,10 +533,18 @@ async fn call_tool(agent: &mut MeshAgent, name: &str, args: &Value) -> Result<St
         }
         "parler_roster" => {
             let room = s("room").ok_or_else(|| anyhow!("missing 'room'"))?;
+            let detail = args.get("detail").and_then(Value::as_bool).unwrap_or(false);
             let entries = agent.roster(&room).await?;
             Ok(entries
                 .iter()
-                .map(|e| format!("{} {} [{}]", e.name, e.id, e.status))
+                .map(|e| {
+                    let role = e.role.as_deref().map(|r| format!(" ({r})")).unwrap_or_default();
+                    if detail {
+                        format!("{}{role} {} [{}]", e.name, e.id, e.status)
+                    } else {
+                        format!("{}{role} [{}]", e.name, e.status)
+                    }
+                })
                 .collect::<Vec<_>>()
                 .join("\n"))
         }
@@ -567,32 +576,53 @@ async fn call_tool(agent: &mut MeshAgent, name: &str, args: &Value) -> Result<St
             } else {
                 DiscoverScope::Hub
             };
+            let detail = args.get("detail").and_then(Value::as_bool).unwrap_or(false);
+            // Client default cap: a full directory listing renders one long id line each, which is
+            // costly context. Cap unless the caller asks for more (or full detail). Compact lines
+            // drop the 56-char id; `detail:true` restores it (needed to DM/card an agent by id).
+            let applied = u32opt("limit").unwrap_or(DISCOVER_DEFAULT_LIMIT);
             let agents = agent
-                .discover(scope, s("query"), s("tag"), s("skill"), s("status"), u32opt("limit"))
+                .discover(scope, s("query"), s("tag"), s("skill"), s("status"), Some(applied))
                 .await?;
             if agents.is_empty() {
                 return Ok("(no agents found)".into());
             }
-            Ok(agents
+            let mut out = agents
                 .iter()
                 .map(|e| {
                     let role = e.card.role.as_deref().map(|r| format!(" ({r})")).unwrap_or_default();
                     let tags = e.card.tags.as_deref().map(|t| t.join(",")).unwrap_or_default();
-                    format!(
-                        "{}{role} [{}{}] {} — {} — {}",
-                        e.card.name,
-                        e.visibility.as_str(),
-                        if e.verified { " ✓" } else { "" },
-                        e.card.id,
-                        e.status,
-                        tags
-                    )
+                    let flag = if e.verified { " ✓" } else { "" };
+                    if detail {
+                        format!(
+                            "{}{role} [{}{flag}] {} — {} — {}",
+                            e.card.name, e.visibility.as_str(), e.card.id, e.status, tags
+                        )
+                    } else {
+                        // Compact: name (role) [vis✓] status — tags. No id (use detail:true, or the
+                        // name works directly with parler_send to / parler_card).
+                        format!(
+                            "{}{role} [{}{flag}] {} — {}",
+                            e.card.name, e.visibility.as_str(), e.status, tags
+                        )
+                    }
                 })
                 .collect::<Vec<_>>()
-                .join("\n"))
+                .join("\n");
+            // A full batch likely means there are more — nudge toward narrowing instead of a bigger dump.
+            if agents.len() as u32 >= applied {
+                out.push_str("\n— more agents may match; narrow with query/tag/skill or raise limit —");
+            }
+            Ok(out)
         }
         "parler_card" => {
             let id = s("id").ok_or_else(|| anyhow!("missing 'id'"))?;
+            // Accept a directory name as well as a full id (same unique-match-or-error resolver as
+            // `to`): a name is resolved to its id before the lookup, an id passes straight through.
+            let id = match crate::resolve_target(agent, Target::Dm { agent: id.clone() }).await? {
+                Target::Dm { agent } => agent,
+                _ => id,
+            };
             match agent.lookup(&id).await? {
                 Some(e) => Ok(serde_json::to_string_pretty(&e).unwrap_or_default()),
                 None => Ok(format!("(no directory card for '{id}')")),
@@ -689,6 +719,8 @@ async fn call_session_tool(state: &mut McpState, name: &str, args: &Value) -> Re
             } else {
                 bail!("provide one of room / to / service, or open/join a session first");
             };
+            // Let `to` be a directory name, not just a 56-char id (unique-match-or-error; never guess).
+            let target = crate::resolve_target(&mut state.agent, target).await?;
             let (_id, seq, room) = state.agent.send_text(target, &text).await?;
             // Auto-pull right after sending so an already-waiting reply shows up without a separate
             // parler_recv (read-after-write); for a reply that hasn't landed yet, use parler_recv with
@@ -737,6 +769,7 @@ async fn call_session_tool(state: &mut McpState, name: &str, args: &Value) -> Re
             } else {
                 bail!("provide one of room / to / service, or open/join a session first");
             };
+            let target = crate::resolve_target(&mut state.agent, target).await?;
             let handoff = HandoffRef { next, summary: s("summary"), to: s("for"), bundle: s("bundle") };
             let mentions = handoff.to.clone().map(|w| vec![w]);
             let (_id, seq, room) =
@@ -887,6 +920,10 @@ const AUTOPULL_LIMIT: u32 = 10;
 /// Per-message body cap (chars) for the budgeted render. A longer body is truncated with a pointer to
 /// re-read that one message in full. Big enough that ordinary chat is never touched.
 const MSG_MAX_CHARS: usize = 1200;
+
+/// Client-side default cap on `parler_discover` results — a full directory renders one id-bearing line
+/// each, costly context. The caller raises it (or narrows with query/tag/skill) when they need more.
+const DISCOVER_DEFAULT_LIMIT: u32 = 25;
 
 /// Render a message, truncating an over-long body to [`MSG_MAX_CHARS`] with a hint to re-read it in
 /// full via an explicit `since` (which is never truncated). UTF-8 safe (truncates on a char boundary).
@@ -1309,8 +1346,11 @@ fn tool_specs() -> Vec<Value> {
         tool("parler_rooms", "List the rooms you belong to, with unread counts.", json!({}), &[]),
         tool(
             "parler_roster",
-            "List who is in a room.",
-            json!({ "room": { "type": "string" } }),
+            "List who is in a room (name (role) [status]). detail:true also shows each agent id.",
+            json!({
+                "room": { "type": "string" },
+                "detail": { "type": "boolean", "description": "include agent ids (default false)" }
+            }),
             &["room"],
         ),
         tool(
@@ -1332,21 +1372,22 @@ fn tool_specs() -> Vec<Value> {
         ),
         tool(
             "parler_discover",
-            "Discover agents. scope: hub (default — every agent in this hub) or public (only public agents). Optionally filter by query/tag/skill/status.",
+            "Discover agents. scope: hub (default) or public. Filter by query/tag/skill/status. Results are compact (no ids) and capped by default — you can parler_send to=<name> / parler_card <name> directly; pass detail:true for ids or raise limit for more.",
             json!({
                 "scope": { "type": "string", "enum": ["hub", "public"] },
                 "query": { "type": "string" },
                 "tag": { "type": "string" },
                 "skill": { "type": "string" },
                 "status": { "type": "string" },
-                "limit": { "type": "integer" }
+                "limit": { "type": "integer" },
+                "detail": { "type": "boolean", "description": "include agent ids (default false)" }
             }),
             &[],
         ),
         tool(
             "parler_card",
-            "Fetch a single agent's directory card by id (JSON, including signature verification).",
-            json!({ "id": { "type": "string" } }),
+            "Fetch a single agent's directory card (JSON with signature verification). id can be a full agent id or a directory name (resolved to a unique id).",
+            json!({ "id": { "type": "string", "description": "a full agent id or a directory name" } }),
             &["id"],
         ),
     ]
@@ -1408,8 +1449,10 @@ mod tests {
     /// session. Pre-diet baseline 11,598 B; post-diet (P0.2) 11,030 B. Ceiling with ~5% headroom.
     const TOOL_SPECS_BUDGET: usize = 11_600;
     /// Just the human-readable descriptions (the part the diet targets; schema scaffolding is
-    /// load-bearing). Pre-diet 5,261 B → post-diet 4,304 B. Ceiling with ~5% headroom.
-    const TOOL_DESC_BUDGET: usize = 4_500;
+    /// load-bearing). Pre-diet 5,261 B → post-diet (P0.2) 4,304 B; P1.2 adds ~230 B of cheap-path
+    /// steering (name-based `to`/`card`, compact discover/roster, `detail`) that earns its bytes.
+    /// Still ~730 B under the pre-diet baseline. Ceiling with headroom.
+    const TOOL_DESC_BUDGET: usize = 4_700;
     /// Rendered `join_session` output with a ~100-message backlog. Full-replay baseline was 7,863
     /// chars; P0.3's digest render (seed + tail + omission line) brings it to ~1,458. Ceiling leaves
     /// headroom for a larger tail / longer messages.
@@ -1935,6 +1978,58 @@ mod tests {
         let mut peer = state(&hub, "peer").await;
         let found = call_tool(&mut peer.agent, "parler_discover", &json!({})).await.unwrap();
         assert!(found.contains("worker"), "auto-registered agent should be discoverable: {found}");
+    }
+
+    #[tokio::test]
+    async fn discover_is_compact_by_default_and_detailed_on_request() {
+        let hub = start_hub().await;
+        let mut worker = state(&hub, "worker").await;
+        auto_register(&mut worker.agent).await;
+        let mut peer = state(&hub, "peer").await;
+
+        // Default: compact line, name present, id absent.
+        let compact = call_tool(&mut peer.agent, "parler_discover", &json!({})).await.unwrap();
+        assert!(compact.contains("worker"), "name present in compact line:\n{compact}");
+        assert!(!compact.contains(&worker.agent.id), "id omitted by default:\n{compact}");
+        // detail:true restores the id.
+        let detailed = call_tool(&mut peer.agent, "parler_discover", &json!({ "detail": true })).await.unwrap();
+        assert!(detailed.contains(&worker.agent.id), "detail:true shows the id:\n{detailed}");
+    }
+
+    #[tokio::test]
+    async fn roster_hides_ids_by_default() {
+        let hub = start_hub().await;
+        let mut alice = state(&hub, "alice").await;
+        let opened = open_session(&mut alice, Some("seed"), None, None, None, false).await.unwrap();
+        let room = alice.active_session.clone().unwrap();
+        let key = key_of(&opened);
+        let mut bob = state(&hub, "bob").await;
+        join_session(&mut bob, &key, Backlog::Recent).await.unwrap();
+
+        let plain = call_tool(&mut alice.agent, "parler_roster", &json!({ "room": room.clone() })).await.unwrap();
+        assert!(plain.contains("alice"), "names present:\n{plain}");
+        assert!(!plain.contains(&alice.agent.id), "ids hidden by default:\n{plain}");
+        let detailed = call_tool(&mut alice.agent, "parler_roster", &json!({ "room": room, "detail": true })).await.unwrap();
+        assert!(detailed.contains(&alice.agent.id), "detail:true shows ids:\n{detailed}");
+    }
+
+    #[tokio::test]
+    async fn mcp_send_resolves_name_to_id() {
+        // parler_send to=<directory name> resolves to the unique agent id (reusing resolve_target),
+        // so a caller never needs the 56-char id. An unknown name errors instead of guessing.
+        let hub = start_hub().await;
+        let mut worker = state(&hub, "worker").await;
+        auto_register(&mut worker.agent).await; // gives worker a discoverable card
+        let mut peer = state(&hub, "peer").await;
+
+        let sent = call_session_tool(&mut peer, "parler_send", &json!({ "to": "worker", "text": "hi worker" }))
+            .await
+            .unwrap();
+        assert!(sent.contains("sent to"), "name resolved and message sent:\n{sent}");
+
+        // An unknown name is an error, not a wrong-agent guess.
+        let err = call_session_tool(&mut peer, "parler_send", &json!({ "to": "nobody-here", "text": "x" })).await;
+        assert!(err.is_err(), "an unresolvable name must error, never guess");
     }
 
     #[test]
