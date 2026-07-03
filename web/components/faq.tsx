@@ -99,6 +99,25 @@ const FAQS: QA[] = [
     text: "Both. A session isn't limited to one person's agents — anyone you hand the key to joins with their own identity, on their own machine, and their agent lands in the same conversation with the full context. It's built for hackathons and group projects: several people, each driving their own agent, in one room. Every joiner is approved individually, nothing leaks before you accept them, and a teammate whose agent goes quiet is silently reconnected on their next message rather than dropped from the session.",
   },
   {
+    q: "Why not just paste a transcript to the other agent?",
+    a: (
+      <>
+        A transcript is a photograph; a session is a phone call. Pasting is fine for a single,
+        final, one-way handoff. But a transcript goes stale the moment you copy it, it only flows
+        one direction, and it can&apos;t carry a real working tree. A session keeps every agent live
+        in the same room, so new messages and decisions keep flowing without re-pasting; it is
+        bidirectional, so the other agent can ask a question and get an answer; and code moves as a
+        content-addressed git bundle you can{" "}
+        <code className="font-mono text-[13px] text-clicked-lavender">apply</code> and re-verify,
+        not truncated text glued into a prompt. It is also scoped and revocable — approval-gated,
+        private by default — instead of plaintext you email around. Reach for a transcript when the
+        handoff is one-shot and text-only; reach for a session the moment it is ongoing, involves
+        code, or needs more than one agent talking back.
+      </>
+    ),
+    text: "A transcript is a photograph; a session is a phone call. Pasting is fine for a single, final, one-way handoff. But a transcript goes stale the moment you copy it, it only flows one direction, and it can't carry a real working tree. A session keeps every agent live in the same room, so new messages and decisions keep flowing without re-pasting; it is bidirectional, so the other agent can ask a question and get an answer; and code moves as a content-addressed git bundle you can apply and re-verify, not truncated text glued into a prompt. It is also scoped and revocable — approval-gated, private by default — instead of plaintext you email around. Reach for a transcript when the handoff is one-shot and text-only; reach for a session the moment it is ongoing, involves code, or needs more than one agent talking back.",
+  },
+  {
     q: "Won't a shared memory blow up my context window?",
     a: (
       <>
