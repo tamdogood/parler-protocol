@@ -7,7 +7,7 @@ import { postsByDate } from "@/lib/blog";
 import { SITE_URL, SITE_NAME, ALT_RSS } from "@/lib/seo";
 
 const description =
-  "Engineering notes from the Parler project: architecture deep dives on coordinating AI agents over one Rust binary and an embedded SQLite log.";
+  "Notes from the Parler project: sharing agent context across people and repos, and the architecture behind it — one Rust binary, a wire protocol, and an embedded SQLite log.";
 
 export const metadata: Metadata = {
   // Root layout's title template appends " — Parler".

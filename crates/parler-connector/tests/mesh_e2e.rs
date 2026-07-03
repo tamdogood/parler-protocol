@@ -1,8 +1,10 @@
 //! End-to-end: a real in-process hub + real WebSocket clients exercising the whole feature —
 //! the three delivery patterns, paste-a-code pairing, memory scoping, durable resume, and authz.
 
-use parler_connector::{verify_message, BundleMeta, Config, JoinOutcome, MeshAgent, SigStatus};
-use parler_protocol::{BundleRef, EndpointRef, Part, RoomKind, StoredMessage, Target};
+use parler_connector::{
+    verify_message, BundleMeta, Config, HubClient, JoinOutcome, MeshAgent, MeshTransport, SigStatus,
+};
+use parler_protocol::{BundleRef, ClientFrame, EndpointRef, Part, RoomKind, StoredMessage, Target};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -613,33 +615,38 @@ async fn only_the_session_owner_can_mint_a_watch_code() {
     assert!(alice.mint_watch_token(&inv.room, None).await.is_ok());
 }
 
-// ---- idle auto-disconnect ----
+// ---- idle auto-disconnect + transparent reconnect ----
 
 #[tokio::test]
-async fn idle_authenticated_connection_is_disconnected() {
-    // A connection silent past the idle timeout is dropped by the hub.
+async fn idle_authenticated_connection_is_dropped_by_the_hub() {
+    // The hub frees an authenticated connection that stays silent past the idle bound. We check on a
+    // raw transport — below MeshAgent's transparent reconnect — to observe the drop itself.
     let hub = start_hub_with_idle(Some(Duration::from_millis(200))).await;
-    let mut alice = agent(&hub, "alice", None).await;
+    let id = cfg(&hub, "alice", None);
+    let mut client = HubClient::connect(&id.hub_url, &id.identity, &id.name, None).await.unwrap();
+    client.request(ClientFrame::Rooms).await.expect("connected");
 
-    // Stay silent well past the timeout, then any request should fail (the hub closed the socket).
+    // Stay silent well past the timeout; the next raw request finds the socket gone.
     tokio::time::sleep(Duration::from_millis(600)).await;
-    assert!(alice.rooms().await.is_err());
+    assert!(client.request(ClientFrame::Rooms).await.is_err());
 }
 
 #[tokio::test]
 async fn idle_timeout_resets_on_activity() {
-    // The idle deadline is measured from the last received frame, so an agent that keeps acting
-    // (gaps shorter than the timeout) stays connected — then is dropped once it goes quiet.
+    // The idle deadline is measured from the last received frame, so a client that keeps acting
+    // (gaps shorter than the timeout) stays connected — then is dropped once it goes quiet. Checked
+    // on a raw connection so MeshAgent's reconnect doesn't mask the eventual drop.
     let hub = start_hub_with_idle(Some(Duration::from_millis(400))).await;
-    let mut alice = agent(&hub, "alice", None).await;
+    let id = cfg(&hub, "alice", None);
+    let mut client = HubClient::connect(&id.hub_url, &id.identity, &id.name, None).await.unwrap();
 
     for _ in 0..4 {
         tokio::time::sleep(Duration::from_millis(150)).await; // < 400ms: resets the deadline
-        alice.rooms().await.expect("still connected while active");
+        client.request(ClientFrame::Rooms).await.expect("still connected while active");
     }
 
     tokio::time::sleep(Duration::from_millis(700)).await; // now go silent past the timeout
-    assert!(alice.rooms().await.is_err());
+    assert!(client.request(ClientFrame::Rooms).await.is_err());
 }
 
 #[tokio::test]
@@ -650,6 +657,36 @@ async fn idle_timeout_none_keeps_connection_open() {
 
     tokio::time::sleep(Duration::from_millis(500)).await;
     assert!(alice.rooms().await.is_ok());
+}
+
+#[tokio::test]
+async fn idle_drop_is_transparently_reconnected_and_resumes() {
+    // A quiet teammate whose connection the hub reaps for idleness is silently re-dialed on their
+    // next action — no error surfaced, still in the room, resuming from the durable cursor with no
+    // re-approval. This is what keeps a team's shared session alive across lulls.
+    let hub = start_hub_with_idle(Some(Duration::from_millis(200))).await;
+    let mut alice = agent(&hub, "alice", None).await;
+    let mut bob = MeshAgent::connect(&cfg(&hub, "bob", None)).await.unwrap();
+    bob.subscribe().await.ok(); // like the MCP server: subscribed for push
+
+    let inv = alice.invite(RoomKind::Channel, Some("team".into()), None, None).await.unwrap();
+    let room = inv.room.clone();
+    bob.join(&inv.code).await.unwrap();
+    bob.pull(&room, None, None).await.unwrap(); // catch up, cursor at the live edge
+
+    // Both go quiet long enough for the hub to reap their sockets.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // Alice posts (reconnecting transparently herself), then bob's next pull transparently
+    // reconnects and returns the message he'd otherwise have missed — he never left the room.
+    alice.send_text(Target::Room { room: room.clone() }, "while you were away").await.unwrap();
+    let (m, _) = bob.pull(&room, None, None).await.expect("bob transparently reconnects");
+    assert_eq!(texts(&m), vec!["while you were away"]);
+
+    // And he can still send into the same session after the reconnect.
+    bob.send_text(Target::Room { room: room.clone() }, "back now").await.unwrap();
+    let (m2, _) = alice.pull(&room, None, None).await.unwrap();
+    assert!(texts(&m2).contains(&"back now".to_string()));
 }
 
 // ---- authenticated messages (the hub relays, but can't forge or alter what an agent said) ----

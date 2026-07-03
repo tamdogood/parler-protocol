@@ -60,8 +60,11 @@ pub struct MeshAgent {
     pub role: Option<String>,
     pub hub_url: String,
     /// The local identity (nkey seed) — present when connected from a [`Config`]; required to sign a
-    /// discovery card in [`MeshAgent::register`].
+    /// discovery card in [`MeshAgent::register`], and to re-authenticate on a transparent reconnect.
     identity: Option<Identity>,
+    /// Whether the current transport holds a live push subscription, so [`MeshAgent::reconnect`] can
+    /// restore it after a dropped connection.
+    subscribed: bool,
 }
 
 impl MeshAgent {
@@ -76,6 +79,7 @@ impl MeshAgent {
             role: cfg.role.clone(),
             hub_url: cfg.hub_url.clone(),
             identity: Some(cfg.identity.clone()),
+            subscribed: false,
         })
     }
 
@@ -88,7 +92,49 @@ impl MeshAgent {
         role: Option<String>,
         hub_url: String,
     ) -> MeshAgent {
-        MeshAgent { transport, id, name, role, hub_url, identity: None }
+        MeshAgent { transport, id, name, role, hub_url, identity: None, subscribed: false }
+    }
+
+    /// Run one request/reply, transparently reconnecting and retrying **once** if the connection was
+    /// lost (an idle-timeout drop, a network blip). Room membership and read cursors are durable on
+    /// the hub, so the resumed connection is already in the same rooms — no re-join, no re-approval.
+    /// Only attempted when we hold a local identity to re-authenticate with; an identity-less test
+    /// agent surfaces the error unchanged. (A retried `Send` could in theory re-post if the first
+    /// attempt reached the hub before the drop — but a disconnect means no reply came, and in the
+    /// common idle case the socket was already dead, so nothing landed. A duplicate line is a benign
+    /// worst case for a chat bus.)
+    async fn request(&mut self, frame: ClientFrame) -> Result<ServerFrame> {
+        match self.transport.request(frame.clone()).await {
+            Err(e) if self.reconnectable(&e) => {
+                self.reconnect().await?;
+                self.transport.request(frame).await
+            }
+            other => other,
+        }
+    }
+
+    /// True when `e` is a lost-connection ([`crate::client::Disconnected`]) error *and* we hold an
+    /// identity to re-authenticate with. A hub *application* error (e.g. "not a member") is not
+    /// reconnectable — it would fail identically on a fresh connection.
+    fn reconnectable(&self, e: &anyhow::Error) -> bool {
+        self.identity.is_some() && e.downcast_ref::<crate::client::Disconnected>().is_some()
+    }
+
+    /// Rebuild the transport against the same identity + hub and restore the push subscription, so an
+    /// idle-timeout disconnect is invisible to the caller.
+    async fn reconnect(&mut self) -> Result<()> {
+        let identity = self
+            .identity
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("cannot reconnect without a local identity"))?;
+        let client =
+            HubClient::connect(&self.hub_url, identity, &self.name, self.role.as_deref()).await?;
+        self.transport = Box::new(client);
+        // Best-effort: if re-subscribe fails we simply fall back to pull-based reads.
+        if self.subscribed {
+            let _ = self.transport.subscribe().await;
+        }
+        Ok(())
     }
 
     /// Mint an invite. `kind` is `Dm` for a 1:1 hand-off, `Channel` for a group room, `Service` for
@@ -116,7 +162,6 @@ impl MeshAgent {
         require_approval: bool,
     ) -> Result<Invite> {
         match self
-            .transport
             .request(ClientFrame::Invite { kind, room, ttl_secs, max_uses, require_approval })
             .await?
         {
@@ -130,7 +175,7 @@ impl MeshAgent {
     /// Redeem a pasted code/link, distinguishing an immediate join from an approval-gated
     /// [`JoinOutcome::Pending`] (the owner must approve before the caller is admitted).
     pub async fn redeem(&mut self, code: &str) -> Result<JoinOutcome> {
-        match self.transport.request(ClientFrame::Redeem { code: code.to_string() }).await? {
+        match self.request(ClientFrame::Redeem { code: code.to_string() }).await? {
             ServerFrame::Joined { room, kind } => Ok(JoinOutcome::Joined { room, kind }),
             ServerFrame::JoinPending { room } => Ok(JoinOutcome::Pending { room }),
             other => bail!("unexpected reply to redeem: {other:?}"),
@@ -152,7 +197,7 @@ impl MeshAgent {
     /// List the pending join requests for a session/room you **own** (created via an approval-gated
     /// invite). The hub authorizes this to the owner only.
     pub async fn join_requests(&mut self, room: &str) -> Result<Vec<JoinRequest>> {
-        match self.transport.request(ClientFrame::JoinRequests { room: room.to_string() }).await? {
+        match self.request(ClientFrame::JoinRequests { room: room.to_string() }).await? {
             ServerFrame::JoinRequests { requests, .. } => Ok(requests),
             other => bail!("unexpected reply to join_requests: {other:?}"),
         }
@@ -163,7 +208,6 @@ impl MeshAgent {
     /// requester was admitted.
     pub async fn resolve_join(&mut self, room: &str, agent: &str, approve: bool) -> Result<bool> {
         match self
-            .transport
             .request(ClientFrame::ResolveJoin {
                 room: room.to_string(),
                 agent: agent.to_string(),
@@ -178,7 +222,7 @@ impl MeshAgent {
 
     /// Join/create a service room as a worker, so it can receive (`pull`) tasks sent to the service.
     pub async fn serve(&mut self, service: &str) -> Result<String> {
-        match self.transport.request(ClientFrame::Serve { service: service.to_string() }).await? {
+        match self.request(ClientFrame::Serve { service: service.to_string() }).await? {
             ServerFrame::Joined { room, .. } => Ok(room),
             other => bail!("unexpected reply to serve: {other:?}"),
         }
@@ -208,7 +252,6 @@ impl MeshAgent {
             parts.push(MessageSig { sig, ts, uid, target: target.clone() }.to_part());
         }
         match self
-            .transport
             .request(ClientFrame::Send { target, parts, mentions, reply_to })
             .await?
         {
@@ -240,7 +283,14 @@ impl MeshAgent {
             size: bundle.len() as u64,
             media_type: meta.media_type.clone(),
         };
-        match self.transport.upload_blob(put, bundle).await? {
+        let stored = match self.transport.upload_blob(put.clone(), bundle).await {
+            Err(e) if self.reconnectable(&e) => {
+                self.reconnect().await?;
+                self.transport.upload_blob(put, bundle).await
+            }
+            other => other,
+        }?;
+        match stored {
             ServerFrame::BlobStored { id, .. } if id == blob_id => {}
             ServerFrame::BlobStored { id, .. } => bail!("hub stored a different blob id: {id}"),
             other => bail!("unexpected reply to put_blob: {other:?}"),
@@ -267,9 +317,14 @@ impl MeshAgent {
 
     /// Download a blob's bytes by its content id (as carried in a `com.parler.bundle` part).
     pub async fn fetch_blob(&mut self, id: &str) -> Result<Vec<u8>> {
-        self.transport
-            .download_blob(ClientFrame::GetBlob { id: id.to_string() })
-            .await
+        let get = ClientFrame::GetBlob { id: id.to_string() };
+        match self.transport.download_blob(get.clone()).await {
+            Err(e) if self.reconnectable(&e) => {
+                self.reconnect().await?;
+                self.transport.download_blob(get).await
+            }
+            other => other,
+        }
     }
 
     /// Pull new messages for `room` (past the agent's cursor, which this advances), or past `since`
@@ -281,7 +336,6 @@ impl MeshAgent {
         limit: Option<u32>,
     ) -> Result<(Vec<StoredMessage>, i64)> {
         match self
-            .transport
             .request(ClientFrame::Pull { room: room.to_string(), since, limit })
             .await?
         {
@@ -295,7 +349,9 @@ impl MeshAgent {
     /// otherwise (an older hub) — in which case keep using `pull`. The subscription covers every room
     /// the agent belongs to now or joins later, and ends when the connection drops.
     pub async fn subscribe(&mut self) -> Result<bool> {
-        self.transport.subscribe().await
+        let ok = self.transport.subscribe().await?;
+        self.subscribed = ok;
+        Ok(ok)
     }
 
     /// Block up to `max_wait` for the next pushed message (a peer's, never your own); `None` on
@@ -303,7 +359,15 @@ impl MeshAgent {
     /// and does **not** advance the durable cursor, so the idiomatic use is "block here to wake
     /// promptly, then [`MeshAgent::pull`] to read + advance authoritatively" (which also dedups).
     pub async fn next_delivery(&mut self, max_wait: Duration) -> Result<Option<StoredMessage>> {
-        self.transport.next_delivery(max_wait).await
+        match self.transport.next_delivery(max_wait).await {
+            // A drop during a long-poll: reconnect now and report "nothing yet" — the caller's next
+            // pull runs on the fresh connection and returns anything it missed.
+            Err(e) if self.reconnectable(&e) => {
+                self.reconnect().await?;
+                Ok(None)
+            }
+            other => other,
+        }
     }
 
     /// Write a fact to the memory store (idempotent when `key` is set).
@@ -316,7 +380,6 @@ impl MeshAgent {
         embedding_model: Option<String>,
     ) -> Result<()> {
         match self
-            .transport
             .request(ClientFrame::Remember {
                 fact: Fact { key, text: text.to_string(), room },
                 embedding,
@@ -339,7 +402,6 @@ impl MeshAgent {
         embedding: Option<Vec<f32>>,
     ) -> Result<Vec<RecallHit>> {
         match self
-            .transport
             .request(ClientFrame::Recall { query: query.to_string(), room, limit, embedding })
             .await?
         {
@@ -350,7 +412,7 @@ impl MeshAgent {
 
     /// List the rooms the agent belongs to (with unread counts).
     pub async fn rooms(&mut self) -> Result<Vec<RoomInfo>> {
-        match self.transport.request(ClientFrame::Rooms).await? {
+        match self.request(ClientFrame::Rooms).await? {
             ServerFrame::Rooms { rooms } => Ok(rooms),
             other => bail!("unexpected reply to rooms: {other:?}"),
         }
@@ -358,7 +420,7 @@ impl MeshAgent {
 
     /// The members + presence of a room.
     pub async fn roster(&mut self, room: &str) -> Result<Vec<RosterEntry>> {
-        match self.transport.request(ClientFrame::Roster { room: room.to_string() }).await? {
+        match self.request(ClientFrame::Roster { room: room.to_string() }).await? {
             ServerFrame::Roster { entries, .. } => Ok(entries),
             other => bail!("unexpected reply to roster: {other:?}"),
         }
@@ -367,7 +429,6 @@ impl MeshAgent {
     /// Advertise presence (status + optional activity line).
     pub async fn presence(&mut self, status: &str, activity: Option<String>) -> Result<()> {
         match self
-            .transport
             .request(ClientFrame::Presence { status: status.to_string(), activity })
             .await?
         {
@@ -404,7 +465,6 @@ impl MeshAgent {
         };
         let sig = parler_auth::sign(&identity.seed, &canonical_card_bytes(&card))?;
         match self
-            .transport
             .request(ClientFrame::Register { card, visibility, sig: Some(sig) })
             .await?
         {
@@ -425,7 +485,6 @@ impl MeshAgent {
         limit: Option<u32>,
     ) -> Result<Vec<DirectoryEntry>> {
         match self
-            .transport
             .request(ClientFrame::Discover { scope, query, tag, skill, status, limit })
             .await?
         {
@@ -436,7 +495,7 @@ impl MeshAgent {
 
     /// Fetch a single agent's directory card by id.
     pub async fn lookup(&mut self, id: &str) -> Result<Option<DirectoryEntry>> {
-        match self.transport.request(ClientFrame::Lookup { id: id.to_string() }).await? {
+        match self.request(ClientFrame::Lookup { id: id.to_string() }).await? {
             ServerFrame::Card { entry } => Ok(entry),
             other => bail!("unexpected reply to lookup: {other:?}"),
         }
@@ -444,7 +503,7 @@ impl MeshAgent {
 
     /// Mint a read-scoped, expiring directory token (paste into the website to view a private hub).
     pub async fn mint_directory_token(&mut self, ttl_secs: Option<u64>) -> Result<(String, i64)> {
-        match self.transport.request(ClientFrame::MintDirectoryToken { ttl_secs }).await? {
+        match self.request(ClientFrame::MintDirectoryToken { ttl_secs }).await? {
             ServerFrame::DirectoryToken { token, expires_at } => Ok((token, expires_at)),
             other => bail!("unexpected reply to mint token: {other:?}"),
         }
@@ -455,7 +514,6 @@ impl MeshAgent {
     /// The hub authorizes this to the room owner only. Returns `(token, expires_at)`.
     pub async fn mint_watch_token(&mut self, room: &str, ttl_secs: Option<u64>) -> Result<(String, i64)> {
         match self
-            .transport
             .request(ClientFrame::MintWatch { room: room.to_string(), ttl_secs })
             .await?
         {

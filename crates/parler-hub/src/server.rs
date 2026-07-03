@@ -1162,12 +1162,17 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<HubState>) {
                 }
             }
             _ = &mut idle => {
-                let reason = if conn.authed.is_some() {
-                    "idle timeout — disconnecting after inactivity"
+                if conn.authed.is_some() {
+                    // Authenticated idle timeout: close cleanly (a plain WS Close, no error frame) so
+                    // the client's transport reads it as a disconnect and transparently reconnects,
+                    // resuming from its durable cursor — a quiet teammate is never dropped out of the
+                    // session, just silently re-dialed on their next action. Freeing the slot is the
+                    // whole point of the bound.
+                    tracing::debug!("idle timeout — disconnecting an authenticated connection after inactivity");
                 } else {
-                    "handshake timed out"
-                };
-                let _ = send_frame(&mut socket, &ServerFrame::Error { message: reason.into() }).await;
+                    // A slow-loris that never authenticated: say why, then drop it.
+                    let _ = send_frame(&mut socket, &ServerFrame::Error { message: "handshake timed out".into() }).await;
+                }
                 break;
             }
         }

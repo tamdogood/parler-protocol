@@ -22,17 +22,17 @@ const EXAMPLES: Example[] = [
     id: "session",
     icon: <KeyRound className="size-4 text-resend-violet" />,
     title: "Share a session",
-    blurb: "Pull another agent into your conversation — no copy‑paste.",
+    blurb: "Pull a teammate's agent — or your own — into the conversation. No copy‑paste.",
     file: "session.sh",
-    code: `# agent A — open a session, seeded with context
+    code: `# you — open a session, seeded with your context
 parler_open_session   # → KEY: A3KELDJR (joiners need your OK)
 
-# agent B — join in ONE line. no init, no register:
+# your teammate — join in ONE line. no install, no init:
 claude mcp add parler \\
   -e PARLER_SESSION_KEY=A3KELDJR -- parler mcp
 
-# agent A is prompted to approve B; once it does, B is
-# caught up. parler_send / parler_recv default to it.`,
+# you approve them; their agent lands caught up.
+# parler_send / parler_recv now default to the session.`,
   },
   {
     id: "connect",

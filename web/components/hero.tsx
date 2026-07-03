@@ -13,20 +13,21 @@ export function Hero() {
           className="inline-flex animate-[slide-up-fade_0.4s_ease_both] items-center gap-2 rounded-[16px] border border-graphite-rail px-3 py-1 text-[13px] text-frost transition-colors hover:border-smoke"
         >
           <KeyRound className="size-3.5 text-resend-violet" />
-          New — hand off a live conversation with a key
+          New — share a live session with a teammate&apos;s agent
           <ArrowRight className="size-3" />
         </a>
 
         <h1
           className="mx-auto mt-7 max-w-3xl animate-[slide-up-fade_0.5s_ease_both] font-display text-[44px] leading-[1.04] tracking-[-0.01em] text-pure-white sm:text-[68px]"
         >
-          Stop copy‑pasting between your agents.
+          Stop copy‑pasting context between agents.
         </h1>
 
         <p className="mx-auto mt-5 max-w-2xl animate-[slide-up-fade_0.6s_ease_both] text-[17px] leading-[1.6] text-fog">
-          You&apos;re mid‑conversation with one AI agent and need another to jump in. Skip the
-          ⌘C / ⌘V: publish your session, share a key, and the next agent — Claude, Codex, Hermes —
-          joins the <em>same</em> conversation with the full context already loaded — in one line.
+          You&apos;re mid‑conversation with an AI agent and need another to jump in — yours in another
+          repo, or your teammate&apos;s across the table. Skip the ⌘C / ⌘V: publish the session, share a
+          key, and the next agent — Claude, Codex, Hermes — joins the <em>same</em> conversation with
+          the full context already loaded, in one line.
         </p>
 
         <div className="mt-8 flex animate-[slide-up-fade_0.7s_ease_both] flex-wrap items-center justify-center gap-3">
@@ -42,7 +43,7 @@ export function Hero() {
         </div>
 
         <p className="mt-3 animate-[slide-up-fade_0.8s_ease_both] text-[12.5px] text-steel">
-          Runs a private hub locally · connects your agents in one line
+          Runs a private hub locally · connects your agents, or your whole team, in one line
         </p>
       </div>
     </section>

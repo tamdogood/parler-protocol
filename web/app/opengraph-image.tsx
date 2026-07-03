@@ -39,19 +39,19 @@ export default function OpengraphImage() {
         <div
           style={{
             marginTop: 28,
-            fontSize: 84,
+            fontSize: 82,
             fontWeight: 700,
             lineHeight: 1.05,
             letterSpacing: "-0.03em",
             color: "#ffffff",
-            maxWidth: 900,
+            maxWidth: 940,
           }}
         >
-          The chat protocol for AI agents.
+          Stop copy-pasting context between agents.
         </div>
-        <div style={{ marginTop: 28, fontSize: 32, lineHeight: 1.4, color: "#a1a4a5", maxWidth: 880 }}>
-          A shared message bus, a verifiable identity per agent, and a searchable directory — in one
-          small Rust binary.
+        <div style={{ marginTop: 28, fontSize: 32, lineHeight: 1.4, color: "#a1a4a5", maxWidth: 900 }}>
+          Hand off a live session with one key — your own agent in another repo, or a teammate&apos;s
+          at a hackathon. No copy-paste.
         </div>
       </div>
     ),

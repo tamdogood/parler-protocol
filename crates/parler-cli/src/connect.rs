@@ -595,6 +595,15 @@ pub fn run(opts: Options) -> Result<Vec<WiredAgent>> {
     let mut reports: Vec<Report> = Vec::new();
     let mut snippets: Vec<(String, String)> = Vec::new();
     let mut wired: Vec<WiredAgent> = Vec::new();
+    // If the user already minted an identity with a manual `parler mcp` (a bare `~/.parler/config.json`,
+    // no PARLER_HOME) before running connect, reuse it for the first host we wire — pointing that host
+    // at `~/.parler` — rather than minting a fresh per-agent identity and orphaning the one they
+    // already registered/joined a session with. Only when the bare identity dials the *same* hub we're
+    // wiring this host to, since `parler mcp` loads a saved config verbatim (it wouldn't follow a
+    // different PARLER_HUB). Non-destructive: nothing is moved or deleted; the other hosts still get
+    // their own per-agent identities.
+    let bare_hub = bare_identity_hub();
+    let mut primary_wired = false;
     for t in &targets {
         match t {
             Target::Known(def) => {
@@ -604,7 +613,9 @@ pub fn run(opts: Options) -> Result<Vec<WiredAgent>> {
                 let kept = kept_env.is_some();
                 let (host_hub, host_secret) =
                     kept_env.unwrap_or_else(|| (hub_url.clone(), secret.clone()));
-                let env = env_for(def.id, &opts, &host_hub, host_secret.as_deref());
+                let adopt_bare = !primary_wired && bare_hub.as_deref() == Some(host_hub.as_str());
+                primary_wired = true;
+                let env = env_for(def.id, &opts, &host_hub, host_secret.as_deref(), adopt_bare);
                 if opts.print {
                     snippets.push((def.name.to_string(), snippet_for(def, &env, &binpath)));
                     reports.push(Report {
@@ -647,7 +658,7 @@ pub fn run(opts: Options) -> Result<Vec<WiredAgent>> {
                 }
             }
             Target::Unknown(name) => {
-                let env = env_for(name, &opts, &hub_url, secret.as_deref());
+                let env = env_for(name, &opts, &hub_url, secret.as_deref(), false);
                 snippets.push((name.clone(), generic_snippet(&env, &binpath)));
                 reports.push(Report {
                     id: name.clone(),
@@ -764,8 +775,13 @@ fn run_remove(opts: &Options) -> Result<()> {
 }
 
 /// The env block written into each host — the whole of what makes an agent "an agent" on the mesh.
-fn env_for(id: &str, opts: &Options, hub_url: &str, secret: Option<&str>) -> Vec<(String, String)> {
-    let home = parler_root().join("agents").join(id);
+///
+/// Each host normally gets its own `PARLER_HOME` under `~/.parler/agents/<id>`, so its identity is
+/// stable and distinct. The one exception: `adopt_bare` points the *primary* host at `~/.parler`
+/// itself, reusing an identity the user already minted with a manual `parler mcp` (a bare
+/// `~/.parler/config.json`) instead of orphaning it and creating a second — see [`run`].
+fn env_for(id: &str, opts: &Options, hub_url: &str, secret: Option<&str>, adopt_bare: bool) -> Vec<(String, String)> {
+    let home = if adopt_bare { parler_root() } else { parler_root().join("agents").join(id) };
     let name = opts.name.clone().unwrap_or_else(|| id.to_string());
     let mut v = vec![
         ("PARLER_HOME".to_string(), home.to_string_lossy().into_owned()),
@@ -833,7 +849,7 @@ fn emit_human(opts: &Options, hub_url: &str, secret: Option<&str>, reports: &[Re
         for r in reports.iter().filter(|r| r.status == "wired") {
             println!("  {:<15} {}", r.name, restart_hint(&r.id));
         }
-        println!("\nEach agent gets its own identity under {}.", display_path(&parler_root().join("agents")));
+        println!("\nEach agent gets its own stable identity under {} (an agent you already set up keeps the one it has).", display_path(&parler_root().join("agents")));
         println!("Watch them come online:  parler connect --verify   (or check later: parler connect --list)");
     }
 
@@ -939,6 +955,15 @@ fn print_list(as_json: bool) -> Result<()> {
 /// `PARLER_HOME`, since `connect` is a machine-setup command, not a session).
 fn parler_root() -> PathBuf {
     user_home().join(".parler")
+}
+
+/// The hub URL saved in the bare `~/.parler/config.json` — the identity a manual `parler mcp` mints
+/// when no `PARLER_HOME` is set. `None` if there's no such identity (the common first-run case) or it
+/// can't be read. Used to decide whether the primary host can safely reuse that identity.
+fn bare_identity_hub() -> Option<String> {
+    let txt = std::fs::read_to_string(parler_root().join("config.json")).ok()?;
+    let v: Value = serde_json::from_str(&txt).ok()?;
+    v.get("hub_url").and_then(Value::as_str).map(String::from)
 }
 
 fn user_home() -> PathBuf {
@@ -1238,11 +1263,36 @@ mod tests {
             json: false,
             hub_pinned: false,
         };
-        let with = env_for("codex", &opts, "wss://h", Some("s3cr3t"));
+        let with = env_for("codex", &opts, "wss://h", Some("s3cr3t"), false);
         assert!(with.iter().any(|(k, v)| k == "PARLER_JOIN_SECRET" && v == "s3cr3t"));
         // Default name falls back to the agent id; no secret key when none is supplied.
-        let without = env_for("codex", &opts, "wss://h", None);
+        let without = env_for("codex", &opts, "wss://h", None, false);
         assert!(!without.iter().any(|(k, _)| k == "PARLER_JOIN_SECRET"));
         assert!(without.iter().any(|(k, v)| k == "PARLER_NAME" && v == "codex"));
+    }
+
+    #[test]
+    fn env_for_adopts_bare_home_for_primary_but_isolates_the_rest() {
+        let opts = Options {
+            hosts: vec![],
+            hub: Hub::Shared,
+            name: None,
+            join_secret: None,
+            print: false,
+            list: false,
+            remove: false,
+            json: false,
+            hub_pinned: false,
+        };
+        // A primary that adopts the bare identity points PARLER_HOME at ~/.parler itself, so
+        // `parler mcp` loads the identity the user already minted there.
+        let primary = env_for("claude-code", &opts, "wss://h", None, true);
+        let home = primary.iter().find(|(k, _)| k == "PARLER_HOME").map(|(_, v)| v.clone()).unwrap();
+        assert!(home.ends_with("/.parler"), "primary adopts the bare home, got {home}");
+        assert!(!home.ends_with("/agents/claude-code"), "primary must not be under agents/, got {home}");
+        // Every other host still gets its own per-agent identity under agents/<id>.
+        let normal = env_for("claude-code", &opts, "wss://h", None, false);
+        let home2 = normal.iter().find(|(k, _)| k == "PARLER_HOME").map(|(_, v)| v.clone()).unwrap();
+        assert!(home2.ends_with("/.parler/agents/claude-code"), "non-primary gets a per-agent home, got {home2}");
     }
 }

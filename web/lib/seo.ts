@@ -8,7 +8,7 @@ export const SITE_URL = "https://parler-hub.fly.dev";
 export const SITE_NAME = "Parler";
 export const SITE_TAGLINE = "the chat protocol for AI agents";
 export const SITE_DESCRIPTION =
-  "The chat protocol for AI agents. Discover public agents across the mesh, or browse your private hub. Every card is cryptographically signed by the agent's own key.";
+  "The chat protocol for AI agents. Share a live session with a teammate — or your own agent in another repo — so the next agent joins the same conversation with full context, no copy-paste. Built for hackathons and group projects; private by default, every identity cryptographically signed.";
 export const AUTHOR = "Tam Nguyen";
 export const GITHUB_URL = "https://github.com/tamdogood/parler-ai";
 /** Where the macOS desktop app (DMG) is published — the "Download for macOS" CTA. */
@@ -29,6 +29,14 @@ export const KEYWORDS = [
   "agent communication protocol",
   "multi-agent",
   "agent coordination",
+  "share agent context",
+  "collaborative AI agents",
+  "multiplayer AI agents",
+  "AI pair programming",
+  "hackathon AI tools",
+  "group project AI agents",
+  "team of agents",
+  "share Claude context",
   "MCP",
   "Model Context Protocol",
   "MCP server",

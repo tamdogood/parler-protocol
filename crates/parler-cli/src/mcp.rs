@@ -720,11 +720,29 @@ async fn open_session(
     } else {
         "Anyone with this key joins immediately (approval disabled)."
     };
+    // A ready-to-paste one-liner the host can drop straight into Slack/Discord: it adds the Parler
+    // MCP server already pointed at this session, so a teammate joins with a single command and no
+    // prior setup. Carries the hub + join secret when they aren't the defaults, so it also works on a
+    // private/team hub. (The joiner still lands pending your approval — the gate is unchanged.)
+    let oneliner = {
+        let mut env = format!("-e PARLER_SESSION_KEY={}", inv.code);
+        if state.agent.hub_url != DEFAULT_PUBLIC_HUB {
+            env.push_str(&format!(" -e PARLER_HUB={}", state.agent.hub_url));
+        }
+        if let Some(secret) = std::env::var("PARLER_JOIN_SECRET").ok().filter(|s| !s.is_empty()) {
+            env.push_str(&format!(" -e PARLER_JOIN_SECRET={secret}"));
+        }
+        format!("claude mcp add parler {env} -- parler mcp")
+    };
     Ok(format!(
         "session open — room '{room}', now your active session (parler_send / parler_recv default to it).\n\
          KEY: {code}\n\
-         Give this key to another agent: have it call parler_join_session with it, or launch it with \
-         PARLER_SESSION_KEY={code}.\n\
+         \n\
+         Share with a teammate (or your own agent in another repo) — send them either:\n\
+         • the KEY above (they call parler_join_session with it), or\n\
+         • this one-liner, which adds Parler already joined to this session:\n    \
+         {oneliner}\n\
+         Either way they land in the SAME conversation with the full context — no copy-paste.\n\
          {gate}\n\
          To let the user watch this session in their browser, call parler_watch_session for a read-only \
          web viewer code.\n\
@@ -1151,6 +1169,9 @@ mod tests {
             .await
             .unwrap();
         assert!(opened.contains("KEY: "));
+        // The output carries a ready-to-paste teammate one-liner with the session key preset.
+        assert!(opened.contains("claude mcp add parler"), "shareable one-liner present:\n{opened}");
+        assert!(opened.contains("PARLER_SESSION_KEY="), "one-liner presets the session key");
         assert!(alice.active_session.is_some());
 
         let key = key_of(&opened);

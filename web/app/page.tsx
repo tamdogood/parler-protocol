@@ -11,6 +11,8 @@ import {
   Network,
   Check,
   X,
+  Users,
+  GitBranch,
 } from "lucide-react";
 import { NavBar } from "@/components/nav-bar";
 import { Hero } from "@/components/hero";
@@ -23,11 +25,33 @@ import { SessionsFeature } from "@/components/sessions-feature";
 import { Reveal } from "@/components/reveal";
 import { Faq } from "@/components/faq";
 import { Footer } from "@/components/footer";
-import { ALT_RSS } from "@/lib/seo";
+import { ALT_RSS, SITE_NAME, SITE_URL } from "@/lib/seo";
 
-// The home canonical lives here (not on the root layout) so it doesn't leak to every route.
+// The home page carries its own keyword-targeted title + description (it's the money page for
+// search), alongside its canonical and the feed. The root layout only sets a generic site-wide
+// default. Its OpenGraph/Twitter image comes from the file-convention `opengraph-image.tsx`.
+// `absolute` sets the exact <title>: a parent `title.template` doesn't apply to the root segment's
+// own page, so we spell out the "primary keyword — brand" form here rather than rely on it.
+const HOME_TITLE = `Share your AI agent's context with your team — ${SITE_NAME}`;
+const HOME_DESCRIPTION =
+  "Hand off an AI agent's live context to another agent with one key — yours in another repo, or a teammate's at a hackathon. No copy-pasting transcripts. One small Rust binary, private by default.";
+
 export const metadata: Metadata = {
+  title: { absolute: HOME_TITLE },
+  description: HOME_DESCRIPTION,
   alternates: { canonical: "/", types: ALT_RSS },
+  openGraph: {
+    type: "website",
+    siteName: SITE_NAME,
+    url: SITE_URL,
+    title: HOME_TITLE,
+    description: HOME_DESCRIPTION,
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: HOME_TITLE,
+    description: HOME_DESCRIPTION,
+  },
 };
 
 export default function Home() {
@@ -35,6 +59,7 @@ export default function Home() {
     <main className="min-h-screen">
       <NavBar />
       <Hero />
+      <WhoItsFor />
       <SessionsFeature />
       <Directory />
       <HowItWorks />
@@ -45,6 +70,75 @@ export default function Home() {
       <Faq />
       <Footer />
     </main>
+  );
+}
+
+function WhoItsFor() {
+  const lanes = [
+    {
+      icon: <GitBranch className="size-5 text-opened-blue" />,
+      tag: "Just you",
+      title: "Across your own repos",
+      body: "You're deep in one repo and want an agent in another to weigh in. Open a session, hand the key to your other agent, and it joins with the whole context — no re-explaining, no pasted transcript.",
+      points: [
+        "Your agents, one shared conversation",
+        "Context rides the key, not the clipboard",
+        "Claude, Codex, Cursor, Gemini — any MCP host",
+      ],
+    },
+    {
+      icon: <Users className="size-5 text-delivered-green" />,
+      tag: "Your whole team",
+      title: "One project, many people",
+      body: "A hackathon, a group project, a repo three people are hacking on at once. Drop one key in your team chat and everyone's agent joins the same session — each person approved before they can read a line.",
+      points: [
+        "Everyone drives their own agent, in one room",
+        "One command to join — no install, no setup",
+        "Watch it live in the browser with a read-only code",
+      ],
+    },
+  ];
+  return (
+    <section id="who" className="scroll-mt-20 border-t border-graphite-rail">
+      <div className="mx-auto max-w-[1200px] px-6 py-20">
+        <p className="text-[14px] font-medium text-electric-blue">Who it&apos;s for</p>
+        <h2 className="mt-3 max-w-2xl text-[34px] font-semibold leading-[1.1] tracking-[-0.02em] text-pure-white">
+          One key. Two ways to use it.
+        </h2>
+        <p className="mt-4 max-w-2xl text-[15px] leading-relaxed text-fog">
+          Sharing an agent&apos;s live context is the same move whether the next agent is yours or a
+          teammate&apos;s — one key, one approval gate. Pick your lane.
+        </p>
+        <div className="mt-10 grid grid-cols-1 gap-4 md:grid-cols-2">
+          {lanes.map((lane, i) => (
+            <Reveal
+              key={lane.title}
+              delay={i * 90}
+              className="rounded-[16px] border border-graphite-rail bg-void-black p-8 transition-colors hover:border-smoke"
+            >
+              <div className="flex items-center gap-3">
+                <span className="flex size-10 items-center justify-center rounded-[12px] border border-graphite-rail surface-lift">
+                  {lane.icon}
+                </span>
+                <span className="rounded-full border border-graphite-rail px-2.5 py-0.5 font-mono text-[12px] text-fog">
+                  {lane.tag}
+                </span>
+              </div>
+              <h3 className="mt-5 text-[18px] font-semibold text-pure-white">{lane.title}</h3>
+              <p className="mt-2 text-[14px] leading-relaxed text-fog">{lane.body}</p>
+              <ul className="mt-5 space-y-2.5">
+                {lane.points.map((p) => (
+                  <li key={p} className="flex gap-2.5 text-[13.5px] leading-relaxed text-fog">
+                    <Check className="mt-0.5 size-4 shrink-0 text-delivered-green" />
+                    {p}
+                  </li>
+                ))}
+              </ul>
+            </Reveal>
+          ))}
+        </div>
+      </div>
+    </section>
   );
 }
 

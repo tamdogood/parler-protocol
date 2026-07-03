@@ -28,6 +28,26 @@ use tokio_tungstenite::{
 /// a dropped push is still returned by the next `Pull` — so this just bounds memory.
 const INBOX_CAP: usize = 1024;
 
+/// Marker error: the underlying WebSocket was lost — the hub closed it (e.g. an idle timeout) or an
+/// IO error killed it — as opposed to a hub *application* error (which is a valid reply frame). The
+/// agent layer treats this specifically as "reconnect and retry once", since room membership and
+/// read cursors are durable server-side, so a fresh connection resumes exactly where we left off.
+#[derive(Debug)]
+pub(crate) struct Disconnected;
+
+impl std::fmt::Display for Disconnected {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("connection to the hub was lost")
+    }
+}
+
+impl std::error::Error for Disconnected {}
+
+/// Build the [`Disconnected`] marker as an `anyhow::Error` (top-level, so `downcast_ref` finds it).
+fn disconnected() -> anyhow::Error {
+    anyhow::Error::new(Disconnected)
+}
+
 /// An authenticated WebSocket connection to a hub.
 pub struct HubClient {
     ws: WebSocketStream<MaybeTlsStream<TcpStream>>,
@@ -98,9 +118,12 @@ impl HubClient {
     }
 
     async fn send(&mut self, frame: &ClientFrame) -> Result<()> {
+        // A failed write means the socket is gone (broken pipe / already-closed) — surface it as a
+        // reconnectable disconnect, not an opaque IO error.
         self.ws
             .send(WsMessage::Text(serde_json::to_string(frame)?))
-            .await?;
+            .await
+            .map_err(|_| disconnected())?;
         Ok(())
     }
 
@@ -116,34 +139,34 @@ impl HubClient {
     /// interleave with it (so request/reply stays correct even while subscribed).
     async fn recv(&mut self) -> Result<ServerFrame> {
         while let Some(msg) = self.ws.next().await {
-            match msg? {
+            match msg.map_err(|_| disconnected())? {
                 WsMessage::Text(t) => match serde_json::from_str::<ServerFrame>(&t)? {
                     ServerFrame::Delivery { message } => self.buffer_push(message),
                     frame => return Ok(frame),
                 },
-                WsMessage::Close(_) => bail!("hub closed the connection"),
+                WsMessage::Close(_) => return Err(disconnected()),
                 _ => continue,
             }
         }
-        bail!("hub connection ended")
+        Err(disconnected())
     }
 
     /// Receive the next binary frame (a blob payload), surfacing an interleaved error frame as `Err`
     /// and buffering any interleaved push.
     async fn recv_binary(&mut self) -> Result<Vec<u8>> {
         while let Some(msg) = self.ws.next().await {
-            match msg? {
+            match msg.map_err(|_| disconnected())? {
                 WsMessage::Binary(b) => return Ok(b),
                 WsMessage::Text(t) => match serde_json::from_str::<ServerFrame>(&t) {
                     Ok(ServerFrame::Delivery { message }) => self.buffer_push(message),
                     Ok(ServerFrame::Error { message }) => bail!("{message}"),
                     _ => bail!("expected a binary blob, got a text frame"),
                 },
-                WsMessage::Close(_) => bail!("hub closed the connection"),
+                WsMessage::Close(_) => return Err(disconnected()),
                 _ => continue,
             }
         }
-        bail!("hub connection ended")
+        Err(disconnected())
     }
 
     /// Block on the socket until the next pushed message arrives (ignoring pings/pongs). `Ok(None)`
@@ -151,7 +174,7 @@ impl HubClient {
     /// notice) surfaces as `Err`. Callers wrap this in a timeout (see [`HubClient::next_delivery`]).
     async fn recv_push(&mut self) -> Result<Option<StoredMessage>> {
         while let Some(msg) = self.ws.next().await {
-            match msg? {
+            match msg.map_err(|_| disconnected())? {
                 WsMessage::Text(t) => match serde_json::from_str::<ServerFrame>(&t)? {
                     ServerFrame::Delivery { message } => return Ok(Some(message)),
                     ServerFrame::Error { message } => bail!("{message}"),

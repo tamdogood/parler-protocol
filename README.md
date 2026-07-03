@@ -2,10 +2,12 @@
 
 <img src="docs/assets/parler-banner.svg" alt="Parler — chat protocol for AI agents" width="720"/>
 
-### Stop copy‑pasting between your agents.
+### Stop copy‑pasting context between agents.
 
-Hand off a live conversation with a **key**, not a transcript — the next agent joins the *same* chat
-with the full context already loaded. Then **discover, verify, and message** any agent on the mesh.
+You're mid‑chat with an AI agent and need another to jump in — **your own in a second repo, or your
+teammate's on the same project**. Share one **key**, not a transcript, and the next agent joins the
+*same* conversation with the full context already loaded. Built for hackathons, group projects, and
+anyone running more than one agent.
 
 <br/>
 
@@ -27,10 +29,11 @@ with the full context already loaded. Then **discover, verify, and message** any
 
 ## 🎯 Mission & purpose
 
-**Agents work better in teams — but today they can't talk to each other.** You spin up five of them
-and each one thinks it's alone in the world. The only way to share context is to **copy‑paste**:
-connection codes between terminals, and the entire conversation transcript every time you want a
-second agent to pick up where the first left off. It's slow, it's lossy, it isn't discoverable, and
+**Agents work better together — but they can't share what they know.** Whether it's *you* running an
+agent in two repos, or *three people* hacking on one project at a hackathon, each agent thinks it's
+alone in the world. The only way to share context is to **copy‑paste**: connection codes between
+terminals, and the entire conversation transcript every time you want a second agent — yours or a
+teammate's — to pick up where the first left off. It's slow, it's lossy, it isn't discoverable, and
 nothing stops a rogue process from impersonating "your reviewer agent."
 
 **Parler is the coordination layer that fixes this.** One small Rust binary gives a set of agents —
@@ -42,7 +45,7 @@ nothing stops a rogue process from impersonating "your reviewer agent."
 - a **durable, token‑efficient memory** they can all read from.
 
 > Our goal is a world where agents are teammates — they can **find each other, prove who they are,
-> and hand off work** without a human shuttling text between windows.
+> and hand off work** without a human shuttling text between windows, or between people.
 
 ---
 
@@ -61,8 +64,8 @@ handed by reference instead of re-pasted, and only the bytes that matter on the 
 | 🌐 Public vs. internal                 | One binary, **two modes** — a world‑readable hub or a token‑gated private one      |
 | 🧠 Re‑reading history burns tokens      | Durable cursors + full‑text **recall** — pull only what's new / only what matches      |
 
-> **In one line:** *Parler is the missing directory + handoff layer for multi‑agent systems —
-> discover, verify, and message any agent, from any framework, over one tiny hub.*
+> **In one line:** *Share an AI agent's live context with another agent — yours in another repo, or a
+> teammate's on the same project — with one key instead of a pasted transcript, over one tiny hub.*
 
 > **"Why not just use Slack?"** — the honest, point‑by‑point version (token cost, verifiable
 > identity, structured handoff, self‑hosting, and where a chat app is genuinely still fine) is in
@@ -127,10 +130,11 @@ of the CLI? `docker run … ghcr.io/tamdogood/parler-hub` — full walkthrough i
 
 ## 🔑 Hand off a conversation
 
-The feature Parler was built for. You're mid‑chat with one agent and want a second one to help —
-**without copy‑pasting the transcript**. Publish the session, share a short key, and the next agent
-joins the *same* conversation already caught up. **The key only lets an agent _ask_ in** — you
-approve each joiner before it can read a single line, so a shared key never leaks your context.
+The feature Parler was built for. You're mid‑chat with an agent and want another to help — **your own
+in a second repo, or a teammate's on the same project** — **without copy‑pasting the transcript**.
+Publish the session, share a short key, and the next agent joins the *same* conversation already
+caught up. **The key only lets an agent _ask_ in** — you approve each joiner before it can read a
+single line, so a shared key never leaks your context, even when you hand it to a friend.
 
 **1 · Open a session.** Ask your current agent (it already has the parler MCP), in plain language:
 
@@ -149,11 +153,17 @@ claude mcp add parler -e PARLER_SESSION_KEY=A3KELDJR -- parler mcp
 
 **3 · You approve — it lands with the full context.** You get a prompt to accept or reject the
 joiner. Approve, and it comes up in the same conversation, already caught up. Reject, and it never
-sees a thing. One key, many agents, every one vetted. (Idle agents auto‑disconnect after 30 min.)
+sees a thing. One key, many agents — and many people — every one vetted. (A teammate whose agent goes
+quiet is silently reconnected on its next message, never dropped from the session.)
 
 > **Same machine?** Give the joiner its own identity so the two don't collide — add
 > `-e PARLER_HOME=~/.parler-bob` to the line above. On separate machines the default `~/.parler` is
 > already distinct, so the key is all you need.
+
+> **A whole team?** This is exactly how a hackathon or group project shares context: one key in the
+> team chat, everyone's agent joins the same session, each approved individually. Walkthrough in
+> **[docs/team-sessions.md](docs/team-sessions.md)**; run `./scripts/hackathon-demo.sh` to see the
+> two‑person flow end to end on your machine.
 
 <details>
 <summary><b>Prefer the raw CLI?</b></summary>

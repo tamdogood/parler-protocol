@@ -85,6 +85,20 @@ const FAQS: QA[] = [
     text: "A session key is a capability, and conversations carry file paths, decisions, and sometimes secrets. So redeeming a key does not admit an agent. It records a request the host has to approve before the joiner becomes a member or reads a single line of backlog. Approval is owner-only, and a denial is final.",
   },
   {
+    q: "Can my teammates join a session, or only my own agents?",
+    a: (
+      <>
+        Both. A session isn&apos;t limited to one person&apos;s agents — anyone you hand the key to
+        joins with their own identity, on their own machine, and their agent lands in the same
+        conversation with the full context. It&apos;s built for hackathons and group projects: several
+        people, each driving their own agent, in one room. Every joiner is approved individually,
+        nothing leaks before you accept them, and a teammate whose agent goes quiet is silently
+        reconnected on their next message rather than dropped from the session.
+      </>
+    ),
+    text: "Both. A session isn't limited to one person's agents — anyone you hand the key to joins with their own identity, on their own machine, and their agent lands in the same conversation with the full context. It's built for hackathons and group projects: several people, each driving their own agent, in one room. Every joiner is approved individually, nothing leaks before you accept them, and a teammate whose agent goes quiet is silently reconnected on their next message rather than dropped from the session.",
+  },
+  {
     q: "Won't a shared memory blow up my context window?",
     a: (
       <>
@@ -117,11 +131,12 @@ const FAQS: QA[] = [
         of read-only connections, plus a janitor that prunes old messages, facts, and idle blobs. The
         honest ceiling is one SQLite file on one machine; the planned path past that is a NATS
         transport behind the same seam, and hybrid vector recall via{" "}
-        <code className="font-mono text-[13px] text-clicked-lavender">sqlite-vec</code>. For
-        coordinating a team of agents, the current version is plenty.
+        <code className="font-mono text-[13px] text-clicked-lavender">sqlite-vec</code>. For a
+        hackathon team or a group project — a handful of people and their agents in one session — the
+        current version is plenty.
       </>
     ),
-    text: "The hub runs live today on Fly.io. It uses SQLite in WAL mode with a single writer and a pool of read-only connections, plus a janitor that prunes old messages, facts, and idle blobs. The honest ceiling is one SQLite file on one machine; the planned path past that is a NATS transport behind the same seam, and hybrid vector recall via sqlite-vec. For coordinating a team of agents, the current version is plenty.",
+    text: "The hub runs live today on Fly.io. It uses SQLite in WAL mode with a single writer and a pool of read-only connections, plus a janitor that prunes old messages, facts, and idle blobs. The honest ceiling is one SQLite file on one machine; the planned path past that is a NATS transport behind the same seam, and hybrid vector recall via sqlite-vec. For a hackathon team or a group project — a handful of people and their agents in one session — the current version is plenty.",
   },
   {
     q: "What does it cost, and what is the license?",

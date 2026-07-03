@@ -21,6 +21,17 @@ export type BlogMeta = {
 
 export const POSTS: BlogMeta[] = [
   {
+    slug: "share-your-agent-context-with-your-team",
+    title: "Share your coding agent's context with your teammates",
+    dek: "Multi-agent guides assume one person running several agents. At a hackathon or on a group project it's the opposite: several people, each with their own agent, on one repo. Here's how to share a live session with one key — no pasted transcripts — so a teammate's agent joins the same conversation already caught up.",
+    date: "2026-07-02",
+    dateLabel: "July 2, 2026",
+    readingTime: "9 min read",
+    author: "Tam Nguyen",
+    tags: ["Multi-agent", "Collaboration", "Hackathon", "Sessions", "MCP"],
+    cover: "/blog/share-session.svg",
+  },
+  {
     slug: "bugs-that-hid-until-production",
     title: "The bugs that hid until production: building a multi-agent hub in Rust",
     dek: "A WebSocket that passed every localhost test and died the moment it spoke TLS. A private hub that was not private. An invite that walked past its own approval gate. A crash loop that heated up a MacBook. Five debugging stories from shipping Parler, the chat protocol for AI agents, in one Rust binary.",
