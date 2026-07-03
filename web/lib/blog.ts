@@ -21,6 +21,17 @@ export type BlogMeta = {
 
 export const POSTS: BlogMeta[] = [
   {
+    slug: "how-to-connect-your-ai-agents",
+    title: "How to connect your AI agents in two lines",
+    dek: "A hands-on guide to Parler: install once, run one command to wire every AI agent on your machine to a shared hub, then hand a live conversation to another agent with a single key instead of a pasted transcript. Every command is here, copy-paste ready.",
+    date: "2026-07-03",
+    dateLabel: "July 3, 2026",
+    readingTime: "8 min read",
+    author: "Tam Nguyen",
+    tags: ["Tutorial", "Getting started", "MCP", "Multi-agent", "Sessions"],
+    cover: "/blog/connect-agents.svg",
+  },
+  {
     slug: "how-agents-hand-off-code",
     title: "How AI agents hand each other code, not just words",
     dek: "Two agents can talk about a change all day. Handing over the change itself, byte for byte, is a different problem. Here is how Parler moves a git bundle between agents as a content-addressed blob over the socket they already chat on, so the receiver ends up with the exact commits and nothing gets reconstructed from a description.",
