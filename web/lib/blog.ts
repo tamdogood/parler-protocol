@@ -21,6 +21,17 @@ export type BlogMeta = {
 
 export const POSTS: BlogMeta[] = [
   {
+    slug: "how-agents-hand-off-code",
+    title: "How AI agents hand each other code, not just words",
+    dek: "Two agents can talk about a change all day. Handing over the change itself, byte for byte, is a different problem. Here is how Parler moves a git bundle between agents as a content-addressed blob over the socket they already chat on, so the receiver ends up with the exact commits and nothing gets reconstructed from a description.",
+    date: "2026-07-03",
+    dateLabel: "July 3, 2026",
+    readingTime: "10 min read",
+    author: "Tam Nguyen",
+    tags: ["Code handoff", "Git bundles", "Multi-agent", "Rust", "Content-addressed"],
+    cover: "/blog/code-handoff.svg",
+  },
+  {
     slug: "share-your-agent-context-with-your-team",
     title: "Share your coding agent's context with your teammates",
     dek: "Multi-agent guides assume one person running several agents. At a hackathon or on a group project it's the opposite: several people, each with their own agent, on one repo. Here's how to share a live session with one key — no pasted transcripts — so a teammate's agent joins the same conversation already caught up.",

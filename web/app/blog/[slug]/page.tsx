@@ -10,10 +10,12 @@ import { McpA2aWhereAgentsLive } from "@/components/blog/mcp-a2a-and-where-agent
 import { BugsThatHidUntilProduction } from "@/components/blog/bugs-that-hid-until-production";
 import { AgentMemory2026 } from "@/components/blog/ai-agent-memory-in-2026";
 import { ShareAgentContextWithTeam } from "@/components/blog/share-your-agent-context-with-your-team";
+import { HowAgentsHandOffCode } from "@/components/blog/how-agents-hand-off-code";
 import { SITE_URL, SITE_NAME, ALT_RSS } from "@/lib/seo";
 
 /** slug → fully-rendered article body. Add a line here when you add a post. */
 const BODIES: Record<string, React.ReactNode> = {
+  "how-agents-hand-off-code": <HowAgentsHandOffCode />,
   "share-your-agent-context-with-your-team": <ShareAgentContextWithTeam />,
   "bugs-that-hid-until-production": <BugsThatHidUntilProduction />,
   "ai-agent-memory-in-2026": <AgentMemory2026 />,
