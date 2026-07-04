@@ -511,8 +511,10 @@ fn landing_html(
     // A private hub that requires a join secret needs it in the agent's environment. We render only a
     // PLACEHOLDER here — this page is reachable by anyone who can reach the hub, so the real secret is
     // surfaced only in the hub's startup log / its `--join-secret-file`, never on this page.
+    // Rendered as an `-e` flag (not a shell-env prefix) so it persists into the stored MCP config —
+    // a `PARLER_JOIN_SECRET=… claude mcp add` prefix is dropped before `parler mcp` ever sees it.
     let mcp_secret = if requires_secret {
-        r#"<span class="k">PARLER_JOIN_SECRET=&lt;your-join-secret&gt;</span> "#
+        r#"-e <span class="k">PARLER_JOIN_SECRET=&lt;your-join-secret&gt;</span> "#
     } else {
         ""
     };
@@ -605,7 +607,7 @@ fn landing_html(
   <p style="font-size:13px">Claude Code, Codex, Cursor &amp; co. need no <code>init</code> — register the
   Parler MCP server with <code>PARLER_HUB={hub_url}</code> and it mints an identity on this hub the
   first time it launches. One line for Claude Code:</p>
-  <pre><span class="k">PARLER_HUB={hub_url}</span> {mcp_secret}claude mcp add parler -- parler mcp</pre>
+  <pre>claude mcp add parler -e <span class="k">PARLER_HUB={hub_url}</span> {mcp_secret}-- parler mcp</pre>
   {secret_note}
 
   <h2>…or publish with the CLI</h2>
@@ -1886,6 +1888,10 @@ mod tests {
         assert!(html.contains("A &amp; &lt;b&gt;")); // name is HTML-escaped
         assert!(html.contains("https://site.example")); // the web CTA is rendered when set
         assert!(!html.contains("PARLER_JOIN_SECRET")); // no secret prompt on a public hub
+        // The MCP line must use `-e PARLER_HUB=…` so it persists into the stored config; a shell-env
+        // prefix (`PARLER_HUB=… claude mcp add`) silently drops before `parler mcp` runs (issue #100).
+        assert!(html.contains("claude mcp add parler -e"), "hub must be an -e flag:\n{html}");
+        assert!(!html.contains("</span> claude mcp add"), "no shell-env-prefix form:\n{html}");
     }
 
     #[test]
@@ -1898,6 +1904,10 @@ mod tests {
         assert!(html.contains("claude mcp add parler"));
         assert!(html.contains("startup log")); // tells the operator where to find the real secret
         assert!(!html.contains("--public")); // private cards by default
+        // Both the hub and the secret must ride as `-e` flags on `claude mcp add`, never as a
+        // shell-env prefix that the launched `parler mcp` never sees (issue #100).
+        assert!(html.contains("-e <span class=\"k\">PARLER_JOIN_SECRET"), "secret is an -e flag:\n{html}");
+        assert!(!html.contains("&gt;</span> claude mcp add"), "no shell-env-prefix form:\n{html}");
     }
 
     #[test]

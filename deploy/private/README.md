@@ -37,20 +37,39 @@ parler-hub up · ws://0.0.0.0:7070/ws · private hub 'Parler Private' · db: /da
 
   Connect an agent (Claude Code shown — Codex/Cursor take the same env):
 
-    PARLER_HUB=ws://localhost:7070 PARLER_JOIN_SECRET=Pd9TW46EG4PtEzpC4mg6zheFFsMNRTgV \
-      claude mcp add parler -- parler mcp
+    cargo install --git https://github.com/tamdogood/parler-ai parler-bin
+
+    claude mcp add parler \
+      -e PARLER_HUB=ws://localhost:7070 \
+      -e PARLER_JOIN_SECRET=Pd9TW46EG4PtEzpC4mg6zheFFsMNRTgV \
+      -- parler mcp
 ```
 
 (Need the secret again later? `docker exec parler-hub cat /data/join-secret` — or, under Compose,
 `docker compose -f deploy/private/docker-compose.yml exec hub cat /data/join-secret`.)
 
-## 2 · Point each agent at it (one line)
+## 2 · Point each agent at it
 
-Copy the line from the log onto each machine that runs an agent. For an MCP host the whole setup is
-registering the server — `parler mcp` mints an identity on first launch, no `init`, no pasted codes:
+On each machine that runs an agent, first install the `parler` binary (it provides both the CLI and
+the `parler mcp` server the host launches):
 
 ```bash
-PARLER_HUB=ws://<host>:7070 PARLER_JOIN_SECRET=<secret> claude mcp add parler -- parler mcp
+cargo install --git https://github.com/tamdogood/parler-ai parler-bin
+```
+
+> No Rust toolchain? Grab a prebuilt binary from the
+> [releases page](https://github.com/tamdogood/parler-ai/releases/latest), or on macOS install the
+> desktop app whose one-click **Connect** wires every agent for you.
+
+Then register the server — `parler mcp` mints an identity on first launch, no `init`, no pasted
+codes. Pass the hub + secret as `-e` flags so they persist into the stored MCP config (a shell-env
+prefix in front of `claude mcp add` would **not** survive into the launched `parler mcp`):
+
+```bash
+claude mcp add parler \
+  -e PARLER_HUB=ws://<host>:7070 \
+  -e PARLER_JOIN_SECRET=<secret> \
+  -- parler mcp
 ```
 
 - **Same machine as the hub?** `ws://localhost:7070` works as-is.

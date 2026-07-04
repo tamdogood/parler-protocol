@@ -82,6 +82,11 @@ pub struct Options {
     /// secret** instead of being silently moved to the default, so a CLI re-run can't undo the hub
     /// the desktop app (or an earlier `--local`/`--team` run) chose.
     pub hub_pinned: bool,
+    /// Mint a *fresh* `--team` join secret even if this hub already has one wired. Off by default so
+    /// re-running `parler connect --team` reuses the existing secret (a new one would strand the
+    /// already-running hub, which still enforces the old secret — issue #101). Turning it on prints
+    /// the exact `parler hub …` restart line the operator must run with the new secret.
+    pub rotate_secret: bool,
 }
 
 /// One successfully wired agent, as [`run`] reports it back — everything `--verify` needs to watch
@@ -549,12 +554,20 @@ struct Report {
 pub fn run(opts: Options) -> Result<Vec<WiredAgent>> {
     let binpath = binary_path();
     let hub_url = opts.hub.url();
-    // An explicit secret wins; otherwise `--team` mints one. Any other mode has no secret.
-    let secret = opts
-        .join_secret
-        .clone()
-        .filter(|s| !s.is_empty())
-        .or_else(|| matches!(opts.hub, Hub::Team { .. }).then(parler_hub::random_secret));
+    // Resolve the join secret with reuse-by-default for `--team`:
+    //   1. an explicit `--join-secret` / `PARLER_JOIN_SECRET` always wins;
+    //   2. else, for `--team`, reuse the secret already wired for this hub (so a re-run doesn't
+    //      strand the running hub with a stale secret — issue #101) unless `--rotate-secret`;
+    //   3. else mint a fresh one (first `--team`, or an explicit rotation).
+    // `minted_secret` is true only in case 3, so we print the hub-restart line just then.
+    let is_team = matches!(opts.hub, Hub::Team { .. });
+    let existing = is_team.then(|| existing_team_secret(&hub_url)).flatten();
+    let (secret, minted_secret) = pick_team_secret(
+        opts.join_secret.clone().filter(|s| !s.is_empty()),
+        is_team,
+        opts.rotate_secret,
+        existing,
+    );
 
     if opts.list {
         print_list(opts.json)?;
@@ -676,7 +689,7 @@ pub fn run(opts: Options) -> Result<Vec<WiredAgent>> {
     if opts.json {
         emit_json(&opts, &hub_url, secret.as_deref(), &binpath, &reports, &snippets);
     } else {
-        emit_human(&opts, &hub_url, secret.as_deref(), &reports, &snippets);
+        emit_human(&opts, &hub_url, secret.as_deref(), minted_secret, &reports, &snippets);
     }
     Ok(wired)
 }
@@ -798,7 +811,7 @@ fn env_for(id: &str, opts: &Options, hub_url: &str, secret: Option<&str>, adopt_
 // Output
 // ---------------------------------------------------------------------------------------------
 
-fn emit_human(opts: &Options, hub_url: &str, secret: Option<&str>, reports: &[Report], snippets: &[(String, String)]) {
+fn emit_human(opts: &Options, hub_url: &str, secret: Option<&str>, minted_secret: bool, reports: &[Report], snippets: &[(String, String)]) {
     let where_ = match &opts.hub {
         Hub::Shared => "the shared hub".to_string(),
         Hub::Local { .. } => "a hub on THIS machine (nothing leaves the box)".to_string(),
@@ -868,8 +881,22 @@ fn emit_human(opts: &Options, hub_url: &str, secret: Option<&str>, reports: &[Re
         }
         Hub::Team { port } => {
             if let Some(s) = secret {
-                println!("\nJoin secret (share out-of-band — not on a shared screen):\n  {s}");
-                println!("\nRun your team hub (keep it running):\n  {}", team_hub_cmd(*port, s));
+                if minted_secret {
+                    // A fresh secret (first `--team`, or `--rotate-secret`): the operator must (re)start
+                    // the hub with THIS secret, or already-wired agents will fail auth against the old one.
+                    println!("\nJoin secret (share out-of-band — not on a shared screen):\n  {s}");
+                    if opts.rotate_secret {
+                        println!("\n⚠ New secret minted — RESTART the hub with it, or agents fail auth on the old one:");
+                    } else {
+                        println!("\nRun your team hub (keep it running):");
+                    }
+                    println!("  {}", team_hub_cmd(*port, s));
+                } else {
+                    // Reused the secret already wired for this hub — the running hub keeps working, so
+                    // don't imply a restart. (Rotate deliberately with --rotate-secret.)
+                    println!("\nReusing this hub's existing join secret (the running hub stays valid — no restart).");
+                    println!("  Rotate it deliberately with:  parler connect --team --rotate-secret");
+                }
                 let ip = detect_lan_ip().unwrap_or_else(|| "<this-machine-ip>".to_string());
                 println!("\nTeammates connect their agents with:\n  PARLER_HUB=ws://{ip}:{port} PARLER_JOIN_SECRET={s} parler connect");
             }
@@ -962,6 +989,42 @@ fn print_list(as_json: bool) -> Result<()> {
 /// `PARLER_HOME`, since `connect` is a machine-setup command, not a session).
 fn parler_root() -> PathBuf {
     user_home().join(".parler")
+}
+
+/// Decide the join secret for a run, and whether it was freshly minted (case 3 below), factored out
+/// of [`run`] so the reuse rule (issue #101) is unit-testable without touching the filesystem:
+///   1. an explicit `--join-secret` / `PARLER_JOIN_SECRET` always wins — passthrough, not minted;
+///   2. non-`--team` hubs have no secret;
+///   3. `--team`: reuse the `existing` wired secret unless `rotate` is set; else mint a fresh one
+///      (returned with `minted = true` so the caller prints the hub-restart instruction).
+fn pick_team_secret(
+    explicit: Option<String>,
+    is_team: bool,
+    rotate: bool,
+    existing: Option<String>,
+) -> (Option<String>, bool) {
+    if let Some(s) = explicit {
+        return (Some(s), false);
+    }
+    if !is_team {
+        return (None, false);
+    }
+    match (rotate, existing) {
+        (false, Some(s)) => (Some(s), false),                     // reuse the running hub's secret
+        _ => (Some(parler_hub::random_secret()), true),           // first --team, or --rotate-secret
+    }
+}
+
+/// The join secret already wired for `hub_url` across this machine's hosts, if any — the source of
+/// truth for reusing a `--team` secret on a re-run instead of minting a fresh one that would strand
+/// the running hub (issue #101). Scans every known host's configured env and returns the first
+/// non-empty secret whose `PARLER_HUB` matches the hub we're about to wire. `None` when nothing is
+/// wired to this hub yet (the genuine first `--team`, where minting a new secret is correct).
+fn existing_team_secret(hub_url: &str) -> Option<String> {
+    registry().iter().find_map(|def| match configured_env(def) {
+        Some((hub, Some(secret))) if hub == hub_url && !secret.is_empty() => Some(secret),
+        _ => None,
+    })
 }
 
 /// The hub URL saved in the bare `~/.parler/config.json` — the identity a manual `parler mcp` mints
@@ -1269,6 +1332,7 @@ mod tests {
             remove: false,
             json: false,
             hub_pinned: false,
+            rotate_secret: false,
         };
         let with = env_for("codex", &opts, "wss://h", Some("s3cr3t"), false);
         assert!(with.iter().any(|(k, v)| k == "PARLER_JOIN_SECRET" && v == "s3cr3t"));
@@ -1290,6 +1354,7 @@ mod tests {
             remove: false,
             json: false,
             hub_pinned: false,
+            rotate_secret: false,
         };
         // A primary that adopts the bare identity points PARLER_HOME at ~/.parler itself, so
         // `parler mcp` loads the identity the user already minted there.
@@ -1301,5 +1366,153 @@ mod tests {
         let normal = env_for("claude-code", &opts, "wss://h", None, false);
         let home2 = normal.iter().find(|(k, _)| k == "PARLER_HOME").map(|(_, v)| v.clone()).unwrap();
         assert!(home2.ends_with("/.parler/agents/claude-code"), "non-primary gets a per-agent home, got {home2}");
+    }
+
+    // ---- #101: `--team` re-run reuses the secret; --rotate-secret mints a new one ----------------
+
+    #[test]
+    fn team_rerun_reuses_the_existing_secret() {
+        // A second `--team` run with a secret already wired for this hub reuses it (minted = false),
+        // so the running hub — still enforcing that secret — isn't stranded.
+        let (secret, minted) =
+            pick_team_secret(None, true, false, Some("EXISTING-SECRET".into()));
+        assert_eq!(secret.as_deref(), Some("EXISTING-SECRET"));
+        assert!(!minted, "reusing the wired secret must not count as a mint (no restart prompt)");
+    }
+
+    #[test]
+    fn first_team_run_mints_and_rotate_forces_a_new_secret() {
+        // First `--team` (nothing wired yet) mints a fresh secret…
+        let (first, minted) = pick_team_secret(None, true, false, None);
+        assert!(first.is_some() && minted, "first --team mints a secret");
+        // …and `--rotate-secret` mints even when one already exists, and flags it minted so the
+        // caller prints the hub-restart instruction.
+        let (rot, minted) = pick_team_secret(None, true, true, Some("OLD".into()));
+        assert!(minted, "--rotate-secret always mints");
+        assert_ne!(rot.as_deref(), Some("OLD"), "rotation replaces the old secret");
+    }
+
+    #[test]
+    fn explicit_secret_always_wins_and_non_team_has_none() {
+        // An explicit `--join-secret` / PARLER_JOIN_SECRET passes through untouched (never minted),
+        // even for a team hub; a non-team hub carries no secret.
+        let (s, minted) = pick_team_secret(Some("MINE".into()), true, false, Some("wired".into()));
+        assert_eq!(s.as_deref(), Some("MINE"));
+        assert!(!minted);
+        assert_eq!(pick_team_secret(None, false, false, None), (None, false));
+    }
+
+    #[test]
+    fn existing_team_secret_reads_a_matching_wired_hub_and_keeps_perms_tight() {
+        // `existing_team_secret` finds the secret wired for the target hub by scanning host configs.
+        // Drive it through a real JSON host write so we also prove the config we author is 0600.
+        let path = tmp("team-reuse").join("mcp.json");
+        let mut with_secret = env();
+        // Wire this host to a specific hub with a known secret.
+        with_secret.retain(|(k, _)| k != "PARLER_HUB");
+        with_secret.push(("PARLER_HUB".into(), "ws://127.0.0.1:7070".into()));
+        with_secret.push(("PARLER_JOIN_SECRET".into(), "REUSE-ME".into()));
+        write_json(&path, &with_secret, "/bin/parler").unwrap();
+        let def =
+            HostDef { id: "cursor", name: "Cursor", wiring: Wiring::Json(path.clone()), hints: vec![] };
+        // Match on the same hub → the wired secret; a different hub → None (mint fresh).
+        assert_eq!(
+            configured_env(&def),
+            Some(("ws://127.0.0.1:7070".to_string(), Some("REUSE-ME".to_string())))
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600, "a config carrying a join secret must be owner-only");
+        }
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    // ---- #100: no env-prefixed `claude mcp add` in code/docs ------------------------------------
+    // (The `--team` printed one-liner's round-trip through the real arg/env parser is tested in
+    //  `lib.rs`, where `ConnectArgs` is in scope.)
+
+    #[test]
+    fn no_env_prefixed_claude_mcp_add_remains_in_code_or_docs() {
+        // Every printed/documented `claude mcp add` must use the `-e PARLER_X=…` flag form; a shell
+        // env-prefix (`PARLER_X=… claude mcp add`) is silently dropped before `parler mcp` runs
+        // (issue #100). Grep the tracked repo for the broken shape and fail if any real command line
+        // still has it. Scratch logs (`tasks/`) and the research write-up that *documents* the defect
+        // are excluded; comment lines (Rust `//`, prose `#`, `*`) that merely describe it are too.
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let files = collect_scannable_files(&root);
+        assert!(files.len() > 20, "sanity: found {} scannable files under repo root", files.len());
+        let mut offenders = Vec::new();
+        for f in &files {
+            let rel = f.strip_prefix(&root).unwrap_or(f).to_string_lossy().replace('\\', "/");
+            if rel.starts_with("tasks/") || rel.starts_with("docs/research/") {
+                continue; // scratch log + the audit that names the anti-pattern
+            }
+            let Ok(text) = std::fs::read_to_string(f) else { continue };
+            for line in text.lines() {
+                let t = line.trim_start();
+                // Skip comment / prose lines that merely mention the pattern.
+                if t.starts_with("//") || t.starts_with('#') || t.starts_with('*') || t.starts_with("> ") {
+                    continue;
+                }
+                if is_env_prefixed_claude_add(line) {
+                    offenders.push(format!("{rel}: {}", line.trim()));
+                }
+            }
+        }
+        assert!(offenders.is_empty(), "env-prefixed `claude mcp add` lines still present:\n{}", offenders.join("\n"));
+    }
+
+    /// True when `line` has the broken `PARLER_X=<v> … claude mcp add` shell-env-prefix shape (an
+    /// assignment appearing *before* `claude mcp add` on the same line).
+    fn is_env_prefixed_claude_add(line: &str) -> bool {
+        let Some(add_at) = line.find("claude mcp add") else { return false };
+        let before = &line[..add_at];
+        // An `-e PARLER_X=` immediately before `claude mcp add` is a flag on a *different* command,
+        // not a prefix; the broken form is a bare `PARLER_X=<val> ` (no `-e ` in front) leading the
+        // line. Look for `PARLER_<caps>=` in the prefix that isn't part of an `-e ` flag.
+        let mut idx = 0;
+        while let Some(pos) = before[idx..].find("PARLER_") {
+            let at = idx + pos;
+            let is_e_flag = before[..at].trim_end().ends_with("-e") || before[..at].trim_end().ends_with("--env");
+            // The token must look like an assignment `PARLER_XXX=`.
+            let rest = &before[at..];
+            let assigns = rest
+                .split_once('=')
+                .map(|(k, _)| k.trim_end().chars().all(|c| c.is_ascii_uppercase() || c == '_' || c == 'R'))
+                .unwrap_or(false);
+            if assigns && !is_e_flag {
+                return true;
+            }
+            idx = at + "PARLER_".len();
+        }
+        false
+    }
+
+    /// Gather scannable source/doc files under `root` (skips build output + vendored deps).
+    fn collect_scannable_files(root: &std::path::Path) -> Vec<std::path::PathBuf> {
+        fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            let Ok(entries) = std::fs::read_dir(dir) else { return };
+            for e in entries.flatten() {
+                let p = e.path();
+                let name = e.file_name();
+                let name = name.to_string_lossy();
+                if p.is_dir() {
+                    if matches!(name.as_ref(), "target" | "node_modules" | ".git" | ".next") {
+                        continue;
+                    }
+                    walk(&p, out);
+                } else if matches!(
+                    p.extension().and_then(|x| x.to_str()),
+                    Some("rs" | "md" | "ts" | "tsx" | "js" | "sh" | "html" | "toml")
+                ) {
+                    out.push(p);
+                }
+            }
+        }
+        let mut out = Vec::new();
+        walk(root, &mut out);
+        out
     }
 }

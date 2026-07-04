@@ -153,7 +153,11 @@ struct ConnectArgs {
     /// agent on its current hub; this flag is how you move it back.)
     #[arg(long, conflicts_with_all = ["local", "team", "hub"])]
     shared: bool,
-    /// Advanced: dial this explicit hub URL instead of the shared/local one.
+    /// Advanced: dial this explicit hub URL instead of the shared/local one. A bare `parler connect`
+    /// (no `--local`/`--team`/`--shared`/`--hub`) also honors the `PARLER_HUB` env var, so the
+    /// teammate one-liner `--team` prints (`PARLER_HUB=… PARLER_JOIN_SECRET=… parler connect`) works
+    /// verbatim. (Read in `cmd_connect`, not via clap `env=`, so an *exported* `PARLER_HUB` never
+    /// conflicts with an explicit `--local`/`--team`.)
     #[arg(long)]
     hub: Option<String>,
     /// Port for the `--local` / `--team` hub (default 7070).
@@ -163,8 +167,15 @@ struct ConnectArgs {
     #[arg(long)]
     name: Option<String>,
     /// Join secret required by a secret-gated hub (pair with `--hub`). `--team` mints one for you.
+    /// A bare `parler connect` also honors `PARLER_JOIN_SECRET` from env (read in `cmd_connect`
+    /// alongside `PARLER_HUB`) so the printed teammate one-liner works verbatim.
     #[arg(long)]
     join_secret: Option<String>,
+    /// Mint a fresh `--team` join secret instead of reusing this hub's existing one. Re-running
+    /// `parler connect --team` reuses the secret by default so it doesn't strand the running hub;
+    /// rotate deliberately with this flag, then restart the hub with the printed line.
+    #[arg(long)]
+    rotate_secret: bool,
     /// Don't write anything — just print the config snippet to paste yourself.
     #[arg(long)]
     print: bool,
@@ -483,8 +494,11 @@ pub async fn run() -> Result<()> {
 }
 
 async fn connect() -> Result<MeshAgent> {
-    let mut cfg = match Config::load() {
-        Ok(c) => c,
+    // One env/config precedence rule for the whole CLI: hub/name/role resolve through the same
+    // `explicit env > saved config > default` helper the MCP server uses, so `parler` and
+    // `parler mcp` on the same machine can never dial different hubs (issue #99).
+    let cfg = match Config::load() {
+        Ok(c) => mcp::apply_env_overrides(c),
         Err(e) => {
             let fallback_path = std::env::var("HOME")
                 .map(std::path::PathBuf::from)
@@ -493,10 +507,10 @@ async fn connect() -> Result<MeshAgent> {
                 .join("config.json");
             if fallback_path.exists() {
                 std::env::set_var("PARLER_HOME", fallback_path.parent().unwrap());
-                Config::load().map_err(|_| e)?
+                mcp::apply_env_overrides(Config::load().map_err(|_| e)?)
             } else if !Config::exists() {
-                // Zero-setup, same as `parler mcp`: mint an identity on first use instead of
-                // telling the user to go run `parler init` first.
+                // Zero-setup, same as `parler mcp`: mint an identity on first use (already env-aware)
+                // instead of telling the user to go run `parler init` first.
                 let cfg = mcp::load_or_bootstrap_config()?;
                 eprintln!(
                     "✱ first run — created your identity at {} (hub: {})",
@@ -509,11 +523,6 @@ async fn connect() -> Result<MeshAgent> {
             }
         }
     };
-    if let Ok(hub) = std::env::var("PARLER_HUB") {
-        if !hub.is_empty() {
-            cfg.hub_url = hub;
-        }
-    }
     MeshAgent::connect(&cfg).await.map_err(|e| {
         anyhow::anyhow!("{e} (run `parler doctor` to troubleshoot)")
     })
@@ -552,31 +561,90 @@ async fn cmd_hub(a: HubArgs) -> Result<()> {
     parler_hub::serve(listener, state).await
 }
 
-async fn cmd_connect(a: ConnectArgs) -> Result<()> {
-    // "Pinned" = the user said where traffic goes; a bare run keeps already-wired agents in place.
-    let hub_pinned = a.shared || a.team || a.local || a.hub.is_some();
-    let hub = if let Some(u) = a.hub {
+/// The hub-selection inputs to [`resolve_connect_hub`] — the `--hub`/`--shared`/`--team`/`--local`
+/// flags plus the `PARLER_HUB`/`PARLER_JOIN_SECRET` env values (read by the caller). Grouped into a
+/// struct so the resolver stays a single, testable function.
+struct HubInputs {
+    hub_flag: Option<String>,
+    shared: bool,
+    team: bool,
+    local: bool,
+    port: u16,
+    join_secret_flag: Option<String>,
+    env_hub: Option<String>,
+    env_secret: Option<String>,
+}
+
+/// Resolve the hub topology + join secret + pinned flag for a `parler connect` run, applying the
+/// env-var honoring the teammate one-liner relies on. Pure over its inputs (env is read by the
+/// caller) so the precedence is unit-testable (issue #100):
+///   * an explicit `--hub`/`--local`/`--team`/`--shared` always wins over env;
+///   * only a **bare** `parler connect` (no hub flag) adopts `PARLER_HUB` from env — so an exported
+///     `PARLER_HUB` never conflicts with an intentional `--local`/`--team`;
+///   * `--join-secret` wins over `PARLER_JOIN_SECRET`.
+///
+/// Returns `(hub, join_secret, hub_pinned)`.
+fn resolve_connect_hub(i: HubInputs) -> (connect::Hub, Option<String>, bool) {
+    let no_hub_flag = !i.shared && !i.team && !i.local && i.hub_flag.is_none();
+    let hub_arg = i.hub_flag.or(if no_hub_flag { i.env_hub } else { None });
+    let join_secret = i.join_secret_flag.or(i.env_secret);
+    // An env-provided PARLER_HUB counts as pinning (the teammate is deliberately moving to the team
+    // hub); a truly bare run with no env stays unpinned and keeps already-wired agents in place.
+    let hub_pinned = i.shared || i.team || i.local || hub_arg.is_some();
+    let hub = if let Some(u) = hub_arg {
         connect::Hub::Explicit(u)
-    } else if a.team {
-        connect::Hub::Team { port: a.port }
-    } else if a.local {
-        connect::Hub::Local { port: a.port }
+    } else if i.team {
+        connect::Hub::Team { port: i.port }
+    } else if i.local {
+        connect::Hub::Local { port: i.port }
     } else {
         connect::Hub::Shared
     };
+    (hub, join_secret, hub_pinned)
+}
+
+async fn cmd_connect(a: ConnectArgs) -> Result<()> {
+    // The teammate one-liner `--team` prints is `PARLER_HUB=… PARLER_JOIN_SECRET=… parler connect`
+    // (no flags). Honor those env vars **only when no hub-mode flag is given** (issue #100), read
+    // here rather than via clap `env=` so an *exported* `PARLER_HUB` never conflicts with an explicit
+    // `--local`/`--team`.
+    let env_hub = std::env::var("PARLER_HUB").ok().filter(|s| !s.is_empty());
+    let env_secret = std::env::var("PARLER_JOIN_SECRET").ok().filter(|s| !s.is_empty());
+    let (hub, join_secret, hub_pinned) = resolve_connect_hub(HubInputs {
+        hub_flag: a.hub.clone(),
+        shared: a.shared,
+        team: a.team,
+        local: a.local,
+        port: a.port,
+        join_secret_flag: a.join_secret.clone(),
+        env_hub,
+        env_secret,
+    });
+    // Remember whether this is a `--local` run (and its port) — after wiring, we offer to start the
+    // loopback hub so the user doesn't have to babysit a foreground terminal (issue #102).
+    let started_local = (a.local, a.port);
+    let interactive = !a.json && !a.print && !a.list && !a.remove;
     let wired = connect::run(connect::Options {
         hosts: a.hosts,
         hub,
         name: a.name,
-        join_secret: a.join_secret,
+        join_secret,
         print: a.print,
         list: a.list,
         remove: a.remove,
         json: a.json,
         hub_pinned,
+        rotate_secret: a.rotate_secret,
     })?;
     if a.json || wired.is_empty() {
         return Ok(());
+    }
+    // For `--local`, offer to bring the loopback hub up detached (db under ~/.parler) so the user
+    // never has to keep a terminal open — the minimum bar the flow audit set (issue #102).
+    if interactive {
+        if let (true, port) = started_local {
+            maybe_start_local_hub(port);
+        }
     }
     if a.verify {
         verify_dial_in(wired, Duration::from_secs(a.verify_timeout_secs)).await?;
@@ -627,6 +695,48 @@ fn report_unreachable(hub: &str, err: &str) {
         println!("     start it and keep it running:  parler hub --local");
     } else {
         println!("     the wiring is saved — your agents will connect once the hub is reachable.");
+    }
+}
+
+/// After a `--local` wire, bring the loopback hub up **detached** if it isn't already listening, so
+/// the user never has to keep a foreground terminal alive (issue #102). Best-effort and quiet on the
+/// happy path: if the hub is already up we say nothing, and if spawning fails we fall back to
+/// printing the manual start line rather than erroring. The child stores its db under `~/.parler`
+/// (via `parler hub --local`) and outlives this process; we print how to stop it.
+fn maybe_start_local_hub(port: u16) {
+    // Already listening? Then a previous run (or the desktop app) started it — leave it alone.
+    if std::net::TcpStream::connect_timeout(
+        &format!("127.0.0.1:{port}").parse().expect("loopback addr"),
+        Duration::from_millis(300),
+    )
+    .is_ok()
+    {
+        println!("\nLocal hub already running on 127.0.0.1:{port} — nothing to start.");
+        return;
+    }
+    let exe = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("parler"));
+    let mut cmd = std::process::Command::new(&exe);
+    cmd.arg("hub").arg("--local");
+    if port != 7070 {
+        cmd.arg("--addr").arg(format!("127.0.0.1:{port}"));
+    }
+    // Detach: no inherited stdio, so the child neither blocks this terminal nor writes over its
+    // output. It outlives `parler connect` (which exits right after the reachability probe below).
+    cmd.stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    match cmd.spawn() {
+        Ok(child) => {
+            println!("\n✓ started your local hub in the background (pid {}) — db under {}.",
+                child.id(),
+                parler_connector::home_dir().display());
+            println!("  stop it later with:  kill {}", child.id());
+            println!("  or run it yourself in a terminal instead:  parler hub --local");
+        }
+        Err(e) => {
+            println!("\n⚠ couldn't auto-start the local hub ({e}).");
+            println!("  start it yourself and keep it running:  parler hub --local");
+        }
     }
 }
 
@@ -1402,6 +1512,10 @@ async fn cmd_doctor() -> Result<()> {
     } else {
         match Config::load() {
             Ok(cfg) => {
+                // Show the *resolved* hub/name/role — the same `explicit env > saved config`
+                // precedence the CLI and MCP server actually dial with, so doctor reports where the
+                // agent really goes (and any env override is announced by the helper's stderr line).
+                let cfg = mcp::apply_env_overrides(cfg);
                 println!("✅ LOADED");
                 println!("     Hub URL:      {}", cfg.hub_url);
                 println!("     Agent Name:   {}", cfg.name);
@@ -1459,7 +1573,9 @@ async fn cmd_doctor() -> Result<()> {
                 } else {
                     println!("❌ FAILED");
                     println!("     Could not connect to {}: {}", cfg.hub_url, e);
-                    println!("     👉 Fix: Start a local hub with 'parler hub --local' or check your network/URL.");
+                    // Name the exact start command for the hub this agent points at, so an
+                    // agent-started-before-hub is never a mystery (issue #102).
+                    println!("     👉 Fix: {} (or check your network/URL).", mcp::start_hub_hint(&cfg.hub_url));
                 }
                 clean = false;
             }
@@ -1808,6 +1924,41 @@ fn run_curl_post_headers(url: &str, json_payload: &str, headers: &[(&str, &str)]
 mod tests {
     use super::*;
     use std::sync::Arc;
+
+    #[test]
+    fn team_teammate_oneliner_resolves_to_the_team_hub_with_secret() {
+        // Issue #100(a): the teammate line `--team` prints is
+        //   `PARLER_HUB=… PARLER_JOIN_SECRET=… parler connect`  (a bare `parler connect`, no flags).
+        // With those env vars set and no hub flag, resolution must land on the team hub + secret —
+        // not the silent public-hub default the issue warns about — and mark the run pinned.
+        let (hub, secret, pinned) = resolve_connect_hub(HubInputs {
+            hub_flag: None, shared: false, team: false, local: false, port: 7070,
+            join_secret_flag: None,
+            env_hub: Some("ws://10.0.0.5:7070".into()),
+            env_secret: Some("TEAMSECRET123".into()),
+        });
+        assert!(matches!(&hub, connect::Hub::Explicit(u) if u == "ws://10.0.0.5:7070"), "PARLER_HUB → explicit hub");
+        assert_eq!(secret.as_deref(), Some("TEAMSECRET123"), "PARLER_JOIN_SECRET carried through");
+        assert!(pinned, "an env-provided hub pins the run so the teammate actually moves");
+    }
+
+    #[test]
+    fn exported_hub_env_never_overrides_an_explicit_local_flag() {
+        // The clap `env=` version regressed here: an *exported* PARLER_HUB made `--local` a conflict
+        // error. Reading env only for a bare run fixes it — `--local` wins, env is ignored.
+        let (hub, _s, pinned) = resolve_connect_hub(HubInputs {
+            hub_flag: None, shared: false, team: false, local: true, port: 7071,
+            join_secret_flag: None, env_hub: Some("ws://exported:7070".into()), env_secret: None,
+        });
+        assert!(matches!(hub, connect::Hub::Local { port: 7071 }), "--local wins over exported PARLER_HUB");
+        assert!(pinned);
+        // An explicit --hub also wins over env.
+        let (hub2, _s, _p) = resolve_connect_hub(HubInputs {
+            hub_flag: Some("ws://flag:9".into()), shared: false, team: false, local: false, port: 7070,
+            join_secret_flag: None, env_hub: Some("ws://env:1".into()), env_secret: None,
+        });
+        assert!(matches!(hub2, connect::Hub::Explicit(u) if u == "ws://flag:9"), "--hub flag wins over env");
+    }
 
     /// Boot an in-memory hub on an ephemeral port; return its ws:// URL.
     async fn start_hub() -> String {

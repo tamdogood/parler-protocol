@@ -38,7 +38,7 @@ pub async fn serve_stdio() -> Result<()> {
             return Err(e);
         }
     };
-    let mut agent = match MeshAgent::connect(&cfg).await {
+    let mut agent = match connect_with_retry(&cfg).await {
         Ok(a) => a,
         Err(e) => {
             // Leave a breadcrumb before we exit: a GUI host swallows stderr, so `parler doctor`
@@ -117,7 +117,55 @@ where
     Ok(())
 }
 
-/// Load the saved identity, or — for zero-setup onboarding — mint one on first launch.
+/// How long `parler mcp` keeps retrying a down hub at startup before giving up. A host often
+/// launches the agent the instant the user opens the editor — possibly *before* their `--local`
+/// hub is up — so dying on the first refused connection would leave a dead MCP server with no
+/// visible cause (issue #102). Retrying for a short window lets the agent ride out a hub that's
+/// still coming up (or that the user starts a few seconds later).
+const CONNECT_RETRY_WINDOW: Duration = Duration::from_secs(30);
+const CONNECT_RETRY_INTERVAL: Duration = Duration::from_secs(2);
+
+/// Connect to the hub, retrying a *reachability* failure for [`CONNECT_RETRY_WINDOW`] instead of
+/// dying instantly. An auth failure (bad/absent join secret) is returned immediately — retrying
+/// can't fix it and would only delay the breadcrumb. Each retry leaves a log line so `parler
+/// doctor` can show the agent was waiting on the hub, and names the exact start command.
+async fn connect_with_retry(cfg: &Config) -> Result<MeshAgent> {
+    let start = std::time::Instant::now();
+    let mut announced = false;
+    loop {
+        match MeshAgent::connect(cfg).await {
+            Ok(a) => return Ok(a),
+            Err(e) => {
+                // A join-secret / auth rejection won't heal by waiting — surface it now.
+                let msg = e.to_string();
+                let is_auth = msg.contains("authentication failed") || msg.contains("join secret");
+                if is_auth || start.elapsed() >= CONNECT_RETRY_WINDOW {
+                    return Err(e);
+                }
+                if !announced {
+                    announced = true;
+                    let hint = start_hub_hint(&cfg.hub_url);
+                    eprintln!("parler: hub {} not reachable yet — retrying for {}s. {hint}", cfg.hub_url, CONNECT_RETRY_WINDOW.as_secs());
+                    log_event(&format!("hub {} down at startup — retrying up to {}s ({hint})", cfg.hub_url, CONNECT_RETRY_WINDOW.as_secs()));
+                }
+                tokio::time::sleep(CONNECT_RETRY_INTERVAL).await;
+            }
+        }
+    }
+}
+
+/// The one command that starts the hub an agent is waiting on — a loopback URL means `parler hub
+/// --local`; anything else is a remote hub the user must bring up (or already have running).
+pub(crate) fn start_hub_hint(hub_url: &str) -> String {
+    if hub_url.contains("127.0.0.1") || hub_url.contains("localhost") {
+        "Start it with:  parler hub --local".to_string()
+    } else {
+        "Start/reach the hub, then it will connect automatically.".to_string()
+    }
+}
+
+/// Load the saved identity, or — for zero-setup onboarding — mint one on first launch, then apply
+/// the one env/config precedence rule identically for the CLI and the MCP server.
 ///
 /// A new user shouldn't have to run `parler init` before wiring up the MCP server: the first time
 /// an MCP host starts `parler mcp`, we create an Ed25519 identity pointed at the public hub and
@@ -126,10 +174,19 @@ where
 ///   - `PARLER_HUB`  — hub to dial (default: the public hub; use `ws://host:port` for a private one)
 ///   - `PARLER_NAME` — display name (default: `$USER`, else `agent`)
 ///   - `PARLER_ROLE` — role advertised on the card (planner, reviewer, …)
+///
+/// The precedence is **explicit env var > saved config > default**, matching how
+/// `PARLER_JOIN_SECRET` is already read live from the environment on every connect. This is the
+/// single source of truth: both `parler mcp` and the CLI's [`crate::connect`]-time agent resolve
+/// their hub/name/role through here, so a re-run of `parler connect` that rewrites the env block
+/// genuinely moves/renames the agent on next launch instead of being silently ignored.
 pub(crate) fn load_or_bootstrap_config() -> Result<Config> {
     if Config::exists() {
-        return Config::load();
+        // A saved identity keeps its stable id + seed, but its hub/name/role follow the live env so
+        // that re-wiring via `parler connect` (which rewrites the env block) takes effect.
+        return Ok(apply_env_overrides(Config::load()?));
     }
+    // First run — mint the identity from the env (falling back to $USER / the public hub).
     let hub = std::env::var("PARLER_HUB")
         .ok()
         .filter(|s| !s.is_empty())
@@ -147,6 +204,56 @@ pub(crate) fn load_or_bootstrap_config() -> Result<Config> {
     eprintln!("parler: initialized new agent {} ({}) → {}", cfg.name, cfg.identity.id, cfg.hub_url);
     log_event(&format!("bootstrapped identity {} → {}", cfg.identity.id, cfg.hub_url));
     Ok(cfg)
+}
+
+/// Apply the `explicit env var > saved config > default` rule to a *loaded* config's hub/name/role.
+///
+/// The identity (id + seed) is untouched — only the mutable, re-wireable fields follow the live
+/// environment, so pointing an already-bootstrapped agent at a new hub is a matter of rewriting its
+/// `PARLER_HUB` env (what `parler connect` does) rather than editing `config.json`. Each field the
+/// env actually changes is announced once — stderr for the user, `log_event` so `parler doctor` can
+/// show which hub was chosen and why (clig.dev: "if you change state, tell the user").
+pub(crate) fn apply_env_overrides(cfg: Config) -> Config {
+    let env = |k: &str| std::env::var(k).ok().filter(|s| !s.is_empty());
+    apply_overrides(cfg, env("PARLER_HUB"), env("PARLER_NAME"), env("PARLER_ROLE"), &mut |line| {
+        // Announce each real change once: stderr for the user, `log_event` so `parler doctor` can
+        // show which hub was chosen and why (clig.dev: "if you change state, tell the user").
+        eprintln!("parler: {line}");
+        log_event(&line);
+    })
+}
+
+/// The pure precedence rule, factored out of [`apply_env_overrides`] so it can be unit-tested
+/// without touching (racy, process-global) environment variables — each present env value wins over
+/// the saved config; the identity (id + seed) is never touched. `note` is called once per field the
+/// env actually changes, so the caller decides how to surface it.
+fn apply_overrides(
+    mut cfg: Config,
+    env_hub: Option<String>,
+    env_name: Option<String>,
+    env_role: Option<String>,
+    note: &mut dyn FnMut(String),
+) -> Config {
+    if let Some(hub) = env_hub {
+        if hub != cfg.hub_url {
+            note(format!("PARLER_HUB overrides saved hub — dialing {hub} (was {})", cfg.hub_url));
+            cfg.hub_url = hub;
+        }
+    }
+    if let Some(name) = env_name {
+        if name != cfg.name {
+            note(format!("PARLER_NAME overrides saved name — '{name}' (was '{}')", cfg.name));
+            cfg.name = name;
+        }
+    }
+    if let Some(role) = env_role {
+        if cfg.role.as_deref() != Some(role.as_str()) {
+            let was = cfg.role.as_deref().unwrap_or("none").to_string();
+            note(format!("PARLER_ROLE overrides saved role — '{role}' (was '{was}')"));
+            cfg.role = Some(role);
+        }
+    }
+    cfg
 }
 
 /// Where the MCP connection breadcrumb log lives (`~/.parler/mcp.log`).
@@ -2412,6 +2519,89 @@ mod tests {
             "Found references to parler_* tools/names that are not in the valid tools list: {:?}",
             invalid
         );
+    }
+
+    // ---- #99: one env/config precedence rule (explicit env > saved config > default) -------------
+
+    /// Build a config with the given saved hub/name/role (identity is a throwaway in-memory one).
+    fn saved(hub: &str, name: &str, role: Option<&str>) -> Config {
+        Config::create(hub.to_string(), name.to_string(), role.map(String::from)).unwrap()
+    }
+
+    #[test]
+    fn env_hub_overrides_saved_config() {
+        // An existing config.json + PARLER_HUB=ws://other ⇒ the resolved hub is ws://other, so
+        // launching `parler mcp` (or any CLI command) dials the env hub, not the saved one. The
+        // identity is untouched.
+        let cfg = saved("wss://parler-hub.fly.dev", "codex", None);
+        let saved_id = cfg.identity.id.clone();
+        let mut notes = Vec::new();
+        let out = apply_overrides(cfg, Some("ws://other:7070".into()), None, None, &mut |l| notes.push(l));
+        assert_eq!(out.hub_url, "ws://other:7070", "env PARLER_HUB must win over saved config");
+        assert_eq!(out.identity.id, saved_id, "identity (id/seed) is never rewritten by an env override");
+        assert_eq!(out.name, "codex", "name untouched when PARLER_NAME is unset");
+        assert!(notes.iter().any(|n| n.contains("PARLER_HUB overrides")), "override is announced once: {notes:?}");
+    }
+
+    #[test]
+    fn env_name_and_role_take_effect_over_saved_config() {
+        // PARLER_NAME / PARLER_ROLE env changes take effect (so re-wiring via `parler connect`,
+        // which rewrites the env block, genuinely renames/re-roles the agent on next launch).
+        let cfg = saved("ws://h:1", "old-name", Some("planner"));
+        let mut notes = Vec::new();
+        let out = apply_overrides(cfg, None, Some("new-name".into()), Some("reviewer".into()), &mut |l| notes.push(l));
+        assert_eq!(out.name, "new-name");
+        assert_eq!(out.role.as_deref(), Some("reviewer"));
+        assert_eq!(out.hub_url, "ws://h:1", "hub untouched when PARLER_HUB is unset");
+        assert_eq!(notes.len(), 2, "one note per changed field: {notes:?}");
+    }
+
+    #[test]
+    fn saved_config_wins_when_env_absent_and_matching_env_is_silent() {
+        // Absent env ⇒ the saved values stand (default precedence). And an env that merely *matches*
+        // the saved value is not announced (no spurious "override" line, no false state-change).
+        let cfg = saved("ws://h:1", "keep", Some("planner"));
+        let mut notes = Vec::new();
+        let out = apply_overrides(cfg, Some("ws://h:1".into()), Some("keep".into()), Some("planner".into()), &mut |l| notes.push(l));
+        assert_eq!(out.hub_url, "ws://h:1");
+        assert_eq!(out.name, "keep");
+        assert_eq!(out.role.as_deref(), Some("planner"));
+        assert!(notes.is_empty(), "matching env is not a state change: {notes:?}");
+    }
+
+    // ---- #102: MCP client retries a down hub instead of dying instantly --------------------------
+
+    #[test]
+    fn start_hub_hint_names_the_local_start_command() {
+        // A loopback hub that's down has one obvious fix — the exact command belongs in the hint the
+        // MCP retry logs and `parler doctor` echoes, so an agent-before-hub launch is never a silent
+        // dead server (issue #102).
+        assert!(start_hub_hint("ws://127.0.0.1:7070").contains("parler hub --local"));
+        assert!(start_hub_hint("ws://localhost:7070").contains("parler hub --local"));
+        // A remote hub isn't something we tell the user to `parler hub --local` — different guidance.
+        assert!(!start_hub_hint("wss://parler-hub.fly.dev").contains("parler hub --local"));
+    }
+
+    #[tokio::test]
+    async fn connect_with_retry_rides_out_a_hub_that_starts_late() {
+        // Agent launches BEFORE the hub is up: bind the listener but don't serve yet, so the first
+        // dials are refused; then start serving. `connect_with_retry` must ride the short window and
+        // succeed rather than die on the first refusal (the core #102 acceptance).
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let hub = format!("ws://{addr}");
+        // Start serving after a delay that spans a couple of retry intervals.
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(250)).await;
+            let store = parler_hub::Store::open(None).unwrap();
+            let state = Arc::new(parler_hub::HubState::new(
+                store, "parler://test".into(), "late hub".into(), parler_hub::HubMode::Private,
+            ));
+            let _ = parler_hub::serve(listener, state).await;
+        });
+        let cfg = Config::create(hub, "late-joiner".to_string(), None).unwrap();
+        let agent = connect_with_retry(&cfg).await;
+        assert!(agent.is_ok(), "must connect once the late hub comes up, not die on the first refusal");
     }
 }
 
