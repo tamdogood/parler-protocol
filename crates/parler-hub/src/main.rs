@@ -173,11 +173,17 @@ async fn main() -> anyhow::Result<()> {
     if state.mode == HubMode::Private {
         let connect_url = display_hub_url(&state.public_url);
         println!("\n  Connect an agent (Claude Code shown — Codex/Cursor take the same env):\n");
+        // Pass the hub + secret as `-e` flags so they persist into the stored MCP server config; a
+        // shell-env prefix in front of `claude mcp add` would NOT survive into the launched
+        // `parler mcp` (issue #100). First, install the binary; then wire the agent.
+        println!("    cargo install --git https://github.com/tamdogood/parler-ai parler-bin\n");
         match &state.join_secret {
             Some(secret) => println!(
-                "    PARLER_HUB={connect_url} PARLER_JOIN_SECRET={secret} \\\n      claude mcp add parler -- parler mcp\n"
+                "    claude mcp add parler \\\n      -e PARLER_HUB={connect_url} \\\n      -e PARLER_JOIN_SECRET={secret} \\\n      -- parler mcp\n"
             ),
-            None => println!("    PARLER_HUB={connect_url} claude mcp add parler -- parler mcp\n"),
+            None => println!(
+                "    claude mcp add parler -e PARLER_HUB={connect_url} -- parler mcp\n"
+            ),
         }
     }
 

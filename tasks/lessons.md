@@ -180,3 +180,21 @@ Format: `- **<short trigger>:** <the rule>. <why, in a clause>`
   *raw* pull length (`msgs.len() >= limit`), not the post-filter count. Digest joins rely on the same
   thing: `join_session` keeps `pull(None, None)` (advances past the whole backlog) and only changes the
   *render* to a seed+tail digest — cursor and render are decoupled. (2026-07-03 P0.3/P0.4.)
+
+- **clap `env=` participates in `conflicts_with`, so it can break a sibling flag:** adding
+  `#[arg(long, env = "PARLER_HUB")]` to `--hub` (which `conflicts_with_all` `--local`/`--team`/
+  `--shared`) made an *exported* `PARLER_HUB` count as "`--hub` is present" — so anyone with the var
+  in their shell got `error: '--local' cannot be used with '--hub'` on `parler connect --local`.
+  clap can't tell an env-sourced value from a typed flag for conflict checks. Fix: when a flag has a
+  `conflicts_with`, DON'T give it `env=`; read the env var by hand in the command (here: only when no
+  hub-mode flag is given) so the flag still wins and the env only fills a bare run. Test both: the
+  bare-run one-liner resolves via env, AND `--local` + exported env still picks `--local`. (2026-07-04
+  #100.) Real CLI-behavior regression only a `parler connect --local` run under an exported env surfaces.
+
+- **Factor CLI env/precedence decisions into a pure fn; keep the env read a one-liner at the call
+  site:** #99/#100/#101/#102 all had a "resolve X from env > config > default" or "reuse vs mint"
+  choice. Testing them by `set_var` races other threads on process-global env (cargo runs tests in
+  one process). Extracting `apply_overrides`, `resolve_connect_hub(HubInputs)`, `pick_team_secret`,
+  `start_hub_hint` made each deterministic and dodged the `too_many_arguments` clippy gate (group the
+  inputs in a struct once you pass ~7). The thin env-reading wrapper stays untested-but-trivial.
+  (2026-07-04.)
