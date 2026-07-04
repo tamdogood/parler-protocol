@@ -795,7 +795,10 @@ fn run_remove(opts: &Options) -> Result<()> {
 /// `~/.parler/config.json`) instead of orphaning it and creating a second — see [`run`].
 fn env_for(id: &str, opts: &Options, hub_url: &str, secret: Option<&str>, adopt_bare: bool) -> Vec<(String, String)> {
     let home = if adopt_bare { parler_root() } else { parler_root().join("agents").join(id) };
-    let name = opts.name.clone().unwrap_or_else(|| id.to_string());
+    // Default the display name to `<host>-<user>` (e.g. `claude-code-tam`) instead of the bare host
+    // id — otherwise every Claude Code on the shared hub registers as "claude-code" and name-DMs are
+    // ambiguous (issue #103). An explicit `--name` is honored verbatim.
+    let name = opts.name.clone().unwrap_or_else(|| default_agent_name(id));
     let mut v = vec![
         ("PARLER_HOME".to_string(), home.to_string_lossy().into_owned()),
         ("PARLER_HUB".to_string(), hub_url.to_string()),
@@ -805,6 +808,28 @@ fn env_for(id: &str, opts: &Options, hub_url: &str, secret: Option<&str>, adopt_
         v.push(("PARLER_JOIN_SECRET".to_string(), s.to_string()));
     }
     v
+}
+
+/// The default `PARLER_NAME` for a wired host: `<host>-<user>` (e.g. `claude-code-tam`), so the
+/// shared hub doesn't fill up with identical "claude-code" cards. Falls back to the bare host id
+/// when there's no usable `$USER`. Sanitized to lowercase `[a-z0-9-]` so it's a clean handle.
+fn default_agent_name(host_id: &str) -> String {
+    match std::env::var("USER").ok().map(|u| sanitize_name_part(&u)).filter(|u| !u.is_empty()) {
+        Some(user) => format!("{host_id}-{user}"),
+        None => host_id.to_string(),
+    }
+}
+
+/// Lowercase and keep only `[a-z0-9-]`, collapsing anything else to `-`, so a raw `$USER` (which can
+/// carry spaces, dots, or capitals) becomes a clean name fragment.
+fn sanitize_name_part(s: &str) -> String {
+    s.trim()
+        .to_ascii_lowercase()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '-' })
+        .collect::<String>()
+        .trim_matches('-')
+        .to_string()
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1208,6 +1233,27 @@ mod tests {
     }
 
     #[test]
+    fn sanitize_name_part_makes_a_clean_handle() {
+        assert_eq!(sanitize_name_part("Tam Nguyen"), "tam-nguyen");
+        assert_eq!(sanitize_name_part("  root  "), "root");
+        assert_eq!(sanitize_name_part("a.b_c"), "a-b-c");
+        assert_eq!(sanitize_name_part(""), "");
+    }
+
+    #[test]
+    fn default_agent_name_disambiguates_by_user() {
+        // #103: the default name carries the user so the shared hub isn't all "claude-code".
+        // (USER is set in practically every environment CI runs in.)
+        if let Ok(u) = std::env::var("USER") {
+            let expected = format!("claude-code-{}", sanitize_name_part(&u));
+            if !sanitize_name_part(&u).is_empty() {
+                assert_eq!(default_agent_name("claude-code"), expected);
+                assert_ne!(default_agent_name("claude-code"), "claude-code");
+            }
+        }
+    }
+
+    #[test]
     fn parse_env_from_text_reads_the_wired_values() {
         let text = "PARLER_HOME=/x\nPARLER_HUB=ws://127.0.0.1:7071\nPARLER_JOIN_SECRET=s3cr3t\nPARLER_NAME=cursor";
         assert_eq!(parse_env_from_text(text, "PARLER_HUB"), Some("ws://127.0.0.1:7071".to_string()));
@@ -1336,10 +1382,14 @@ mod tests {
         };
         let with = env_for("codex", &opts, "wss://h", Some("s3cr3t"), false);
         assert!(with.iter().any(|(k, v)| k == "PARLER_JOIN_SECRET" && v == "s3cr3t"));
-        // Default name falls back to the agent id; no secret key when none is supplied.
+        // Default name is `<host>-<user>` (unique-by-default, #103), or the bare host id when there's
+        // no usable $USER; either way it starts with the host id. No secret key when none supplied.
         let without = env_for("codex", &opts, "wss://h", None, false);
         assert!(!without.iter().any(|(k, _)| k == "PARLER_JOIN_SECRET"));
-        assert!(without.iter().any(|(k, v)| k == "PARLER_NAME" && v == "codex"));
+        assert!(
+            without.iter().any(|(k, v)| k == "PARLER_NAME" && (v == "codex" || v.starts_with("codex-"))),
+            "default name is codex or codex-<user>"
+        );
     }
 
     #[test]

@@ -182,6 +182,24 @@ pub(crate) fn start_hub_hint(hub_url: &str) -> String {
 /// single source of truth: both `parler mcp` and the CLI's [`crate::connect`]-time agent resolve
 /// their hub/name/role through here, so a re-run of `parler connect` that rewrites the env block
 /// genuinely moves/renames the agent on next launch instead of being silently ignored.
+/// A short, stable, lowercase handle suffix derived from an agent id (its nkey public key). Used to
+/// disambiguate otherwise-identical default names (#103): the id is unique, so the last few of its
+/// characters make a cheap unique-ish tag like the `7k2f` in `claude-code-tam-7k2f`.
+fn name_suffix(id: &str) -> String {
+    let tail: String = id
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .take(4)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+    tail.to_ascii_lowercase()
+}
+
 pub(crate) fn load_or_bootstrap_config() -> Result<Config> {
     if Config::exists() {
         // A saved identity keeps its stable id + seed, but its hub/name/role follow the live env so
@@ -193,13 +211,20 @@ pub(crate) fn load_or_bootstrap_config() -> Result<Config> {
         .ok()
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| DEFAULT_PUBLIC_HUB.to_string());
-    let name = std::env::var("PARLER_NAME")
-        .ok()
-        .filter(|s| !s.is_empty())
+    let explicit_name = std::env::var("PARLER_NAME").ok().filter(|s| !s.is_empty());
+    let base = explicit_name
+        .clone()
         .or_else(|| std::env::var("USER").ok())
         .unwrap_or_else(|| "agent".into());
     let role = std::env::var("PARLER_ROLE").ok().filter(|s| !s.is_empty());
-    let cfg = Config::create(hub, name, role)?;
+    let mut cfg = Config::create(hub, base.clone(), role)?;
+    // Unique-by-default (issue #103): when the name wasn't set explicitly (bare `parler mcp`, where
+    // it would otherwise default to `$USER`), append a short suffix derived from the freshly-minted
+    // agent id so two fresh identities on the same hub don't both register as the same "$USER".
+    // An explicit PARLER_NAME (e.g. what `parler connect` wires) is honored verbatim.
+    if explicit_name.is_none() {
+        cfg.name = format!("{base}-{}", name_suffix(&cfg.identity.id));
+    }
     cfg.save()?;
     // First-run visibility: announce the freshly minted identity so a user (or `parler doctor`) can
     // confirm setup took, instead of an identity materializing silently.
@@ -2117,6 +2142,27 @@ mod tests {
         let full = call_session_tool(&mut bob, "parler_recv", &json!({ "since": seq, "limit": 1 })).await.unwrap();
         assert!(full.contains(&long), "explicit since re-read returns the full body");
         assert!(!full.contains("chars — parler_recv since="), "re-reads are never truncated");
+    }
+
+    #[test]
+    fn name_suffix_is_a_stable_lowercase_tag() {
+        // Deterministic, lowercase, alphanumeric, and short.
+        let s = name_suffix("UABCDXYZ1234");
+        assert_eq!(s, name_suffix("UABCDXYZ1234"), "deterministic");
+        assert_eq!(s, "1234");
+        assert!(s.chars().all(|c| c.is_ascii_alphanumeric() && !c.is_ascii_uppercase()));
+    }
+
+    #[test]
+    fn two_fresh_identities_get_distinct_default_names() {
+        // #103 AC1: with no explicit PARLER_NAME, two freshly-minted identities must not collide on
+        // the same bare "$USER" — the id-derived suffix makes them distinct.
+        let a = Config::create("ws://h", "tam", None).unwrap();
+        let b = Config::create("ws://h", "tam", None).unwrap();
+        assert_ne!(a.identity.id, b.identity.id, "two mints have distinct ids");
+        let name_a = format!("tam-{}", name_suffix(&a.identity.id));
+        let name_b = format!("tam-{}", name_suffix(&b.identity.id));
+        assert_ne!(name_a, name_b, "distinct ids ⇒ distinct default names: {name_a} vs {name_b}");
     }
 
     #[test]
