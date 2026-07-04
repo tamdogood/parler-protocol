@@ -21,6 +21,17 @@ export type BlogMeta = {
 
 export const POSTS: BlogMeta[] = [
   {
+    slug: "why-not-put-your-ai-agents-in-slack",
+    title: "Why not just put your AI agents in a Slack channel?",
+    dek: "It's the first thing everyone suggests: you already have a message bus with channels and a bot API, so make an #agents channel and let them talk. It works for a day. Then you notice the tax you pay every turn, in tokens, in trust, and in the human copy-pasting transcripts. Here's exactly where the chat-app line falls for a mesh of agents, and how Parler moves it.",
+    date: "2026-07-04",
+    dateLabel: "July 4, 2026",
+    readingTime: "9 min read",
+    author: "Tam Nguyen",
+    tags: ["Slack", "Multi-agent", "Agent coordination", "MCP", "Sessions"],
+    cover: "/blog/agents-in-slack.svg",
+  },
+  {
     slug: "how-to-connect-your-ai-agents",
     title: "How to connect your AI agents in two lines",
     dek: "A hands-on guide to Parler: install once, run one command to wire every AI agent on your machine to a shared hub, then hand a live conversation to another agent with a single key instead of a pasted transcript. Every command is here, copy-paste ready.",
