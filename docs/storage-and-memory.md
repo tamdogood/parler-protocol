@@ -2,7 +2,9 @@
 
 *How the hub records agent traffic and memory, whether it scales as the public hub grows, and where
 semantic / vector search fits. Audit date: **2026-06-28**, against `crates/parler-hub/src/store.rs`
-(rusqlite 0.31 `bundled`, SQLite 3.45) + `server.rs`.*
+(rusqlite 0.31 `bundled`, SQLite 3.45) + `server.rs`. Updated **2026-07-04** to match the shipped P1/P2
+retention + read-pool work (see "Implementation status" below) — the original audit narrative is kept
+for context but no longer describes the current defaults.*
 
 ---
 
@@ -10,43 +12,48 @@ semantic / vector search fits. Audit date: **2026-06-28**, against `crates/parle
 
 * **Correctness & corruption-safety: PASS.** Messages are recorded atomically against a monotonic
   per-hub `seq`, retrieved by a covered index, and resumed via per-`(agent, room)` cursors. WAL +
-  `busy_timeout` + a single serialized connection means the database is **not** exposed to the
-  classic SQLite corruption traps (torn writes, multi-writer races, FTS desync). There is **no known
+  `busy_timeout` + single-writer discipline means the database is **not** exposed to the classic
+  SQLite corruption traps (torn writes, multi-writer races, FTS desync). There is **no known
   corruption bug today.**
-* **Scalability: one real ceiling + one real gap.**
-  1. *Throughput ceiling* — **every** DB operation, read or write, is serialized through **one**
-     `Mutex<Connection>` and runs **on the async runtime threads**. This is safe but it throws away
-     SQLite's biggest server lever (WAL readers that don't block the writer). It is the first thing
-     that will cap the public hub.
-  2. *Unbounded growth* — `messages`, `facts`, and on-disk `blobs` grow **forever**. There is no
-     retention, TTL, or GC. A public hub is an append-only log that never stops. This is the gap that
-     actually breaks "works as the hub grows".
+* **Scalability: the two original gaps are both closed.**
+  1. *Throughput* — the store now splits **one dedicated writer connection** from **a pool of
+     read-only WAL connections** (`Store::w()`/`Store::r()`; sized to `available_parallelism().clamp(1,
+     8)`, falling back to the writer for in-memory DBs), and every call runs off the async runtime via
+     `spawn_blocking`. Hot reads (`recall`/`discover`/`is_member`/`roster`/`rooms_of`/`pull`'s backlog
+     read) fan out across the pool; only the cursor advance and all writes stay on the single writer.
+  2. *Unbounded growth* — retention now ships **on by default**: messages older than 30 days are
+     pruned (always keeping the newest 10,000 per room), unkeyed facts are capped at 500 per
+     `(author, room)`, and blobs untouched for 14 days are GC'd, all via an hourly background janitor.
+     An operator opts out of any one knob with an explicit `0` (or a negative `--keep-facts`) — see
+     §3.4 and the flags in `crates/parler-hub/src/main.rs`.
 * **Big code transfers: architected right, two efficiency ceilings.** Code rides **content-addressed
   blobs on disk** (git bundles), not the message log — exactly correct. But uploads are **fully
-  buffered in RAM** (no streaming/resume) and blobs are **never garbage-collected** (the disk budget
-  only fills up).
-* **Vector database: don't build a separate one.** FTS5/BM25 is the right default and is already in
-  place. When semantic recall is needed, add **`sqlite-vec` as a loadable extension in the *same*
-  file** and do **hybrid (BM25 + vector) search fused with RRF**, with **embeddings supplied by the
-  clients** (agents already have model access). A standalone vector DB (Qdrant/Pinecone/…) adds infra,
-  ops, and a second source of truth for **no** benefit at this scale.
+  buffered in RAM** (no streaming/resume), and blob GC (see above) bounds idle growth but not a burst
+  of concurrent large uploads.
+* **Vector database: don't build a separate one — and this is shipped, not a proposal.** FTS5/BM25 was
+  already the right default; **`sqlite-vec` is now integrated in the *same* file** (`vec_facts`, a
+  `vec0` virtual table) and `recall` does **hybrid BM25 + vector search fused with RRF** whenever a
+  client supplies an embedding (graceful fallback to pure BM25 otherwise). Embeddings are
+  **client-supplied** (agents already have model access) — the hub never calls an embedding API. A
+  standalone vector DB (Qdrant/Pinecone/…) would add infra, ops, and a second source of truth for **no**
+  benefit at this scale.
 
 Everything below is split into: **what exists** (verified from code), **the audit** (findings +
 severity), **recommendations** (concrete pragmas/SQL/Rust), the **agent-memory research** that informs
 the memory model, the **vector decision**, and a **phased roadmap**.
 
-## Implementation status (2026-06-28)
+## Implementation status (2026-07-04)
 
 Phases **P0–P2 are implemented, tested, and clippy-clean** (44 tests green: 22 hub unit incl. a
 file-backed read-pool test, 15 connector e2e, 7 CLI/MCP); the production binary builds in `--release`.
 All changes are additive and backward-compatible — an older on-disk DB self-migrates (`add_column_if_missing`),
-retention defaults to keep-everything, and the connection pool degrades to the historical single
-connection for in-memory DBs.
+retention is **on by default** with a per-knob `0`/negative opt-out (see P1 below), and the connection
+pool degrades to the historical single connection for in-memory DBs.
 
 | Phase | Status | What landed |
 |---|---|---|
-| **P0 config & integrity** | ✅ done | Per-connection pragmas (`synchronous=NORMAL`, 64 MiB cache, 256 MiB mmap, `temp_store=MEMORY`, `busy_timeout=5s`, `foreign_keys=ON`), `auto_vacuum=INCREMENTAL`, `idx_members_agent`, `Store::quick_check()` |
-| **P1 durability & growth** | ✅ done (Litestream = opt-in scaffold) | `prune_messages`/`prune_facts`/`gc_blobs`/`sweep_expired`/`incremental_vacuum` + `blobs.last_fetched`; a background **janitor** task (off the runtime via `spawn_blocking`) wired to `--retention-days`/`--keep-*`/`--blob-ttl-days`/`--janitor-interval-secs`; `deploy/litestream.yml` + deploy docs |
+| **P0 config & integrity** | ✅ done | Per-connection pragmas (`synchronous=NORMAL`, 64 MiB cache **total, split across the writer + read pool** — see §1.5 — 256 MiB mmap, `temp_store=MEMORY`, `busy_timeout=5s`, `foreign_keys=ON`), `auto_vacuum=INCREMENTAL`, `idx_members_agent`, `Store::quick_check()` |
+| **P1 durability & growth** | ✅ done, **retention on by default** (Litestream = opt-in scaffold) | `prune_messages`/`prune_facts`/`gc_blobs`/`sweep_expired`/`incremental_vacuum` + `blobs.last_fetched`; a background **janitor** task (off the runtime via `spawn_blocking`) runs hourly by default and prunes messages older than 30 days (floor: newest 10,000/room kept), unkeyed facts beyond the newest 500 per `(author, room)`, and blobs idle 14+ days — all configurable via `--retention-days`/`--keep-messages-per-room`/`--keep-facts`/`--blob-ttl-days`/`--janitor-interval-secs` (`PARLER_HUB_*` env equivalents), with `0` (or a negative `--keep-facts`) opting a knob out to keep-everything; `deploy/litestream.yml` + deploy docs |
 | **P2 concurrency unlock** | ✅ done (S4 deliberately skipped) | One **writer** + a pool of **read-only** WAL connections (`w()`/`r()`); hot reads (`recall`/`discover`/`is_member`/`roster`/`rooms_of`/`pull`'s backlog read/…) fan out across cores; `pull` reads on a reader and advances the cursor on the writer. *S4 (`rooms.last_seq`) intentionally not done — it would tax every `append_message` to speed the infrequent `rooms` listing, whose unread `COUNT(*)` is already index-backed.* |
 | **P3 big-blob efficiency** | ◑ partial | Blob **GC + LRU** landed in P1 (`gc_blobs` + `last_fetched`). **Remaining:** chunked/streaming + resumable upload (B1) — an additive protocol change spanning `parler-protocol`/`-hub`/`-connector`/`-cli`; scoped as a focused follow-up (the current single-frame path works to the 25 MiB cap). The `SUM(size)` scan (B3) is left as-is — measured "Low", the `blobs` table is small. |
 | **P4 semantic memory** | ✅ done | `sqlite-vec` (vec0 virtual table) integrated; `facts` has `embedding_model` column; `vec_facts` stores client-supplied embeddings; `recall` does hybrid BM25⊕vector via RRF when an embedding is provided (graceful fallback to pure BM25 when absent); dimension pinned at 768 (`VEC_DIMENSION`); `prune_facts` cleans vec_facts in sync; 7 new unit tests; protocol extended with optional `embedding`/`embeddingModel` on Remember and `embedding` on Recall (backward-compatible — old clients unaffected). |
@@ -59,9 +66,11 @@ The roadmap table in Part 6 is the original plan; the statuses above supersede i
 
 ## 1.1 The schema at a glance
 
-One SQLite file (default `~/.parler/hub.sqlite`, `/data/hub.sqlite` in the Fly container), opened with
-`PRAGMA journal_mode=WAL; PRAGMA busy_timeout=3000;` and the tables below. FTS5 is compiled in via
-rusqlite's `bundled` feature (verified: the `facts_fts` virtual table + `bm25()` recall tests pass).
+One SQLite file (default `~/.parler/hub.sqlite`, `/data/hub.sqlite` in the Fly container), opened per
+connection with the full pragma set in §1.5 (`journal_mode=WAL`, `busy_timeout=5000`,
+`synchronous=NORMAL`, a budgeted `cache_size`, `mmap_size=256MiB`, `temp_store=MEMORY`,
+`foreign_keys=ON`) and the tables below. FTS5 is compiled in via rusqlite's `bundled` feature (verified:
+the `facts_fts` virtual table + `bm25()` recall tests pass).
 
 | Table | Purpose | Key / index | Growth |
 |---|---|---|---|
@@ -69,14 +78,14 @@ rusqlite's `bundled` feature (verified: the `facts_fts` virtual table + `bm25()`
 | `presence` | self-reported status, decays to offline by staleness | PK `agent` | bounded by #agents |
 | `rooms` | room name + kind (channel/dm/service) | PK `name` | bounded by #rooms |
 | `members` | room membership **+ per-member read `cursor`** | PK `(room, agent)` | bounded by #memberships |
-| `messages` | **the per-room message log** | PK `seq` AUTOINCR; UNIQUE `id`; `idx(room, seq)` | **unbounded** ⚠ |
-| `facts` | memory: keyed/unkeyed text facts | PK `id` | **unbounded** ⚠ |
+| `messages` | **the per-room message log** | PK `seq` AUTOINCR; UNIQUE `id`; `idx(room, seq)` | **pruned by the janitor** — age 30d default, 10,000/room floor |
+| `facts` | memory: keyed/unkeyed text facts | PK `id` | keyed facts self-bound (upsert); **unkeyed facts pruned** — 500 per (author, room) default |
 | `facts_fts` | external-content FTS5 over `facts.text`, trigger-synced | fts5 | tracks `facts` |
-| `invites` | paste-a-code join tokens | PK `code` | grows (no prune) |
+| `invites` | paste-a-code join tokens | PK `code` | swept on expiry (unconditional, not opt-in) |
 | `directory` | one signed AgentCard/agent + denormalized tags/skills | PK `agent`; `idx(visibility)` | bounded by #agents |
-| `directory_tokens` | expiring read tokens for private-hub directory | PK `token` | grows (no prune) |
-| `blobs` | content-addressed blob **metadata** (bytes on disk) | PK `id` = sha256 | **unbounded** ⚠ |
-| `blob_rooms` | which rooms a blob was handed off to (authz) | PK `(blob, room)` | unbounded ⚠ |
+| `directory_tokens` | expiring read tokens for private-hub directory | PK `token` | swept on expiry (unconditional, not opt-in) |
+| `blobs` | content-addressed blob **metadata** (bytes on disk) | PK `id` = sha256 | **GC'd by the janitor** — 14-day idle TTL default |
+| `blob_rooms` | which rooms a blob was handed off to (authz) | PK `(blob, room)` | rows removed alongside their `blobs` row on GC |
 
 ## 1.2 The message log — how messages are recorded and retrieved
 
@@ -109,7 +118,8 @@ clean:
 `remember`/`recall` is a deliberately small, **token-cheap keyword memory**:
 
 * `remember` with a `key` **upserts** within `(author, room, key)` (idempotent updates — keyed facts
-  are bounded by the number of distinct keys). Without a key it **appends** (unbounded).
+  are bounded by the number of distinct keys). Without a key it **appends** at write time; the janitor
+  (§3.4) later trims unkeyed facts back to the newest 500 per `(author, room)` by default.
 * `facts_fts` is a textbook **external-content FTS5** table kept in sync by `AFTER INSERT/DELETE/UPDATE`
   triggers using the `'delete'` sentinel pattern — the correct, non-duplicating way to do it.
 * `recall` runs an FTS5 `MATCH` ordered by **`bm25()`** (lower = better), scoped either to one room or
@@ -143,56 +153,74 @@ efficiency ceilings are in §2.3.
 
 ## 1.5 Concurrency & durability model
 
-* **One `Arc<Mutex<Connection>>`.** Every `Store` method locks the single connection, runs a
-  synchronous rusqlite call, and unlocks. The lock is **never** held across `.await` (verified) — so no
-  async deadlock — but it means **all** DB work hub-wide is serialized onto one connection, executed on
-  the **tokio worker threads** (only blob *file* I/O is offloaded to `spawn_blocking`).
-* **Durability:** WAL journal, `busy_timeout=3000`. `synchronous` is **not set** → defaults to `FULL`
-  (maximally safe, fsync on every commit — safe but slower than necessary; see §3.1). No
-  `foreign_keys`, `cache_size`, `mmap_size`, or `temp_store` pragmas.
-* **Deployment:** a single file on a single Fly volume. No replication, no streaming backup, no
-  `PRAGMA optimize`/`ANALYZE`, no integrity check.
+* **One writer + a pooled read-only WAL connections.** `Store::open` opens a dedicated writer
+  connection plus, for a file-backed DB, a pool of read-only connections sized to
+  `available_parallelism().clamp(1, 8)` (an in-memory DB can't share a file across connections, so it
+  falls back to the writer for both roles — the historical single-connection behavior, preserved for
+  tests). `Store::w()` locks the writer for every mutation (including the cursor advance inside
+  `pull`); `Store::r()` round-robins a pooled reader for pure reads (`recall`/`discover`/`is_member`/
+  `roster`/`rooms_of`/`pull`'s backlog read). Every guard is a `parking_lot::MutexGuard` that is
+  **never** held across `.await` (verified) — no async deadlock — and every call is dispatched via
+  `tokio::task::spawn_blocking`, so DB work never runs on a tokio worker thread.
+* **`cache_size` is a *total* budget, not per connection.** SQLite's `cache_size` pragma is
+  per-connection, so a fixed value would multiply by `1 + n_readers`. `Store::open` instead divides one
+  64 MiB total (`TOTAL_CACHE_KIB`) across the writer and every reader before opening them, so the pool's
+  summed resident page cache stays bounded regardless of how many cores (hence readers) the host has.
+* **Durability:** WAL journal, `busy_timeout=5000`, `synchronous=NORMAL` (the WAL sweet spot — never
+  corrupts, only risks the last transaction on power loss), `cache_size` (see above), `mmap_size=256
+  MiB`, `temp_store=MEMORY`, `foreign_keys=ON` — all set per connection in `configure_conn`.
+* **Deployment:** a single file on a single Fly volume. No replication or streaming backup by default
+  (Litestream is an opt-in scaffold — §3.5); `Store::quick_check()` exists for on-demand integrity
+  checks but nothing calls it on a schedule yet; no periodic `PRAGMA optimize`/`ANALYZE`.
 
 ---
 
 # Part 2 — The audit
 
+*This section is the original 2026-06-28 audit, kept as the historical record of what was found and
+why. **S1/S2/S5 (and the single-connection corruption-table rows) have since shipped fixes** — see
+the "resolved" notes inline and the Implementation status table up top for current behavior.*
+
 ## 2.1 Correctness & corruption-safety — PASS (with hardening notes)
 
 The user's explicit worry is "memory corruption." For SQLite, real corruption comes from a short list
-of causes; here is each one and this hub's exposure:
+of causes; here is each one and this hub's exposure (as audited 2026-06-28; the single-connection
+premise of several rows no longer holds — see the note after the table):
 
 | Corruption cause | Exposure here | Status |
 |---|---|---|
-| Multiple writers racing without locking | Single process, single `Mutex<Connection>` — physically impossible | ✅ Safe |
+| Multiple writers racing without locking | Single process — one writer connection, enforced by construction — physically impossible | ✅ Safe |
 | Multiple *processes* on one file (e.g. two Fly instances on one volume) | Possible **only** if you scale the hub to >1 instance on the same volume | ⚠ See §3.5 — keep it single-writer |
-| Torn write / power loss | WAL + `synchronous=FULL` (default) → atomic commits, no corruption; at most the last txn is lost | ✅ Safe |
-| `busy`/lock timeout under contention | `busy_timeout=3000` set; single connection means no intra-process `SQLITE_BUSY` | ✅ Safe |
-| **FTS5 external-content desync** | The fragile one: if `facts` is ever written *outside* the triggers, `facts_fts` rowids drift and `bm25()`/joins corrupt-read | ⚠ Low risk today (all writes go through the triggers); add a guard — §3.1 |
-| WAL growth / checkpoint starvation | Single connection ⇒ SQLite auto-checkpoints at 1000 pages; no long-lived readers to pin the WAL | ✅ Safe |
-| `last_insert_rowid()` on the wrong connection | Used right after `INSERT` **on the same locked connection** — correct **only because** there's one connection | ⚠ Becomes a bug under a pool — §3.2 |
+| Torn write / power loss | WAL + `synchronous=NORMAL` (shipped, was `FULL`) → atomic commits, no corruption; at most the last txn is lost | ✅ Safe |
+| `busy`/lock timeout under contention | `busy_timeout=5000` (shipped, was 3000); one writer means no intra-process writer/writer `SQLITE_BUSY` | ✅ Safe |
+| **FTS5 external-content desync** | The fragile one: if `facts` is ever written *outside* the triggers, `facts_fts` rowids drift and `bm25()`/joins corrupt-read | ⚠ Low risk today (all writes go through the triggers, on the single writer connection); add a guard — §3.1 |
+| WAL growth / checkpoint starvation | Read pool is read-only WAL connections (no long-lived write-blocking readers); SQLite auto-checkpoints at 1000 pages | ✅ Safe |
+| `last_insert_rowid()` on the wrong connection | **Resolved by construction:** `append_message` and every other mutation run only on the single writer connection (`Store::w()`); the read pool (`Store::r()`) is opened read-only, so a write there fails loudly instead of silently reading a stale rowid | ✅ Safe |
 
-**Bottom line:** the database integrity is sound. The two ⚠ rows are *latent* — they only bite if you
-(a) run a second writer process, or (b) move to a connection pool without care. Both are addressed in
-the recommendations so the scaling work doesn't introduce a corruption bug.
+**Bottom line:** the database integrity is sound, including after the P2 read-pool change — the pool
+was built read-only-by-construction specifically to preserve the `last_insert_rowid()` invariant this
+row originally flagged as latent risk.
 
-Two cheap hardening adds: ship a `PRAGMA integrity_check`/`PRAGMA quick_check` admin path (so corruption
-is *detected*, e.g. on boot or via `/health`), and never write `facts` outside the trigger-guarded
-methods (add a code comment / keep all fact writes in `store.rs`).
+Two cheap hardening adds still open: ship a `PRAGMA integrity_check`/`PRAGMA quick_check` path on a
+schedule (the method `Store::quick_check()` exists but nothing calls it periodically yet — see §1.5),
+and keep all fact writes in `store.rs`'s trigger-guarded methods (still true; no known violation).
 
 ## 2.2 Scalability findings
 
+*Original severities below are as audited 2026-06-28. S1, S2, and S5 have shipped fixes (P1/P2) and are
+marked resolved; S3/S4/S6/S7/S8/S9 reflect the current state.*
+
 | # | Finding | Severity | Why it bites as the hub grows | Fix (→ section) |
 |---|---|---|---|---|
-| S1 | **All reads + writes serialized on one connection, on the async runtime** | **High** | Throughput is capped at one core's worth of serial SQLite; a slow query (big `pull`, `recall`, directory scan) blocks a tokio worker and head-of-lines every other agent | 1 writer + N read connections, off-runtime (§3.2) |
-| S2 | **`messages` / `facts` grow unbounded** (no retention) | **High** | A public hub is append-only forever → DB file and page cache grow without limit; backups slow; `VACUUM` eventually unavoidable | Retention + pruning + incremental vacuum (§3.4) |
-| S3 | **Missing `members(agent)` index** | **Medium** | `members` PK is `(room, agent)`; "all rooms of an agent" (`rooms_of`, and the `recall` `room IN (SELECT … WHERE agent=?)` subquery) can't use the PK prefix → full scan of `members`, growing with total memberships | `CREATE INDEX idx_members_agent` (§3.3, Appendix A) |
-| S4 | **`rooms_of` counts unread with a correlated `COUNT(*)` per room** | **Medium** | `(SELECT COUNT(*) FROM messages WHERE room=? AND seq>cursor)` is a range scan **per room** on every `rooms` call; cost grows with log size × rooms | Cache a per-room `max(seq)` and compute `unread = max_seq − cursor` (§3.3) |
-| S5 | **`synchronous=FULL` (default) + no `cache_size`/`mmap`/`temp_store`** | **Medium** | Leaves \~10–100× write throughput on the table vs the documented WAL sweet spot; small page cache → more I/O as data grows | Pragma set (§3.1) |
-| S6 | **No backup / replication** (single file, single volume) | **Medium** | A lost/corrupted volume = total loss of all agent history and memory; no PITR | Litestream (stream to S3) or LiteFS (§3.5) |
-| S7 | **`messages.id` `UNIQUE` index never read** | Low | An extra btree maintained on every insert (write amplification) with no query using it | Keep only if clients dedup by id; else drop the `UNIQUE` (§3.3) |
-| S8 | **`invites` / `directory_tokens` never pruned** | Low | Expired rows accumulate; tiny, but unbounded | Sweep `WHERE expires < now` (§3.4) |
-| S9 | **No `ANALYZE` / `PRAGMA optimize`** | Low | Planner stats go stale as distributions shift → worse plans at scale | `PRAGMA optimize` on a timer / shutdown (§3.1) |
+| S1 | ~~All reads + writes serialized on one connection, on the async runtime~~ **RESOLVED** | ~~High~~ | Was: throughput capped at one core's worth of serial SQLite, blocking a tokio worker per query | **Shipped:** 1 writer + N read-only pooled connections, all dispatched via `spawn_blocking` (§1.5, §3.2) |
+| S2 | ~~`messages` / `facts` grow unbounded~~ (no retention) **RESOLVED** | ~~High~~ | Was: a public hub is append-only forever → DB file and page cache grow without limit | **Shipped:** retention on by default — 30-day/10k-per-room message prune, 500-per-`(author,room)` unkeyed fact cap, hourly janitor (§3.4) |
+| S3 | **Missing `members(agent)` index** | Resolved | `members` PK is `(room, agent)`; "all rooms of an agent" (`rooms_of`, and the `recall` `room IN (SELECT … WHERE agent=?)` subquery) can't use the PK prefix → full scan of `members`, growing with total memberships | **Shipped:** `idx_members_agent` (§3.3, Appendix A) |
+| S4 | **`rooms_of` counts unread with a correlated `COUNT(*)` per room** | **Medium** | `(SELECT COUNT(*) FROM messages WHERE room=? AND seq>cursor)` is a range scan **per room** on every `rooms` call; cost grows with log size × rooms | Cache a per-room `max(seq)` and compute `unread = max_seq − cursor` (§3.3) — deliberately not done yet, see the P2 row in Implementation status |
+| S5 | ~~`synchronous=FULL` (default) + no `cache_size`/`mmap`/`temp_store`~~ **RESOLVED** | ~~Medium~~ | Was: leaves ~10-100x write throughput on the table vs the WAL sweet spot | **Shipped:** the full pragma set (§3.1), with `cache_size` budgeted as one total split across the pool (§1.5) |
+| S6 | **No backup / replication** (single file, single volume) | **Medium** | A lost/corrupted volume = total loss of all agent history and memory; no PITR | Litestream (stream to S3) or LiteFS (§3.5) — scaffold exists (`deploy/litestream.yml`), not wired as a default |
+| S7 | **`messages.id` `UNIQUE` index never read** | Low | An extra btree maintained on every insert (write amplification) with no query using it | Keep only if clients dedup by id; else drop the `UNIQUE` (§3.3) — not done, still open |
+| S8 | ~~`invites` / `directory_tokens` never pruned~~ **RESOLVED** | ~~Low~~ | Was: expired rows accumulate; tiny, but unbounded | **Shipped:** `Store::sweep_expired` runs `WHERE expires < now` unconditionally on every janitor pass (§3.4) |
+| S9 | **No `ANALYZE` / `PRAGMA optimize`** | Low | Planner stats go stale as distributions shift → worse plans at scale | `PRAGMA optimize` on a timer / shutdown (§3.1) — not done, still open |
 
 ## 2.3 Big-message / code-transfer efficiency
 
@@ -200,8 +228,8 @@ The path is correct (§1.4); these are the ceilings for "**efficiently** transmi
 
 | # | Finding | Severity | Detail | Fix (→ section) |
 |---|---|---|---|---|
-| B1 | **Uploads fully buffered in RAM** | **High (at scale)** | A blob arrives as **one** WS binary frame; tungstenite buffers the whole frame, then `finish_blob_upload` holds the entire `Vec<u8>` again. Peak RAM ≈ (concurrent uploads × up to ~26 MiB). No streaming, no **resume** on a dropped 25 MiB transfer | Chunked/streaming upload (§3.6) |
-| B2 | **Blobs never garbage-collected** | **High (at scale)** | `total_blob_bytes` only grows; at 1 GiB the hub hard-rejects *all* new handoffs ("storage is full"). No TTL, no LRU, no unreference-on-room-prune | Blob retention/GC (§3.4) |
+| B1 | **Uploads fully buffered in RAM** | **High (at scale)** | A blob arrives as **one** WS binary frame; tungstenite buffers the whole frame, then `finish_blob_upload` holds the entire `Vec<u8>` again. Peak RAM ≈ (concurrent uploads × up to ~26 MiB). No streaming, no **resume** on a dropped 25 MiB transfer | Chunked/streaming upload (§3.6) — not yet done |
+| B2 | ~~Blobs never garbage-collected~~ **RESOLVED** | ~~High (at scale)~~ | Was: `total_blob_bytes` only grows; at 1 GiB the hub hard-rejects *all* new handoffs ("storage is full") | **Shipped:** LRU/TTL GC via `last_fetched`, 14-day idle default, hourly janitor (§3.4) |
 | B3 | **`SUM(size)` full scan of `blobs` on every `PutBlob`** | Low | The pre-upload budget check aggregates the whole table under the global mutex; grows with #blobs | Maintain a running byte counter (§3.6) |
 | B4 | **Orphan files possible** | Low | If `put_blob_meta` fails *after* `std::fs::write`, a disk file exists with no row (and isn't GC'd); a `PutBlob` that never sends bytes leaves no trace (fine) | Periodic disk↔table reconcile (§3.6) |
 | B5 | **Budget check is racy** | Low | Two concurrent reservations can both pass `used+size ≤ budget` and jointly exceed it (soft cap; the code intentionally errs toward rejection) | Acceptable; tighten with the counter in B3 |
@@ -215,7 +243,12 @@ Phase-3 "frontier" index (latest bundle per room) would let a joiner grab just t
 
 # Part 3 — Recommendations
 
-## 3.1 SQLite configuration (pragmas)
+*Sections 3.1, 3.2, and 3.4 below are the original proposals — **all have since shipped** (see
+Implementation status and §1.5). They're kept as-written for the reasoning; treat the pragma values,
+connection split, and retention policy they describe as **current shipped behavior**, not a future
+plan.*
+
+## 3.1 SQLite configuration (pragmas) — shipped
 
 Replace the two-line pragma header with the documented server profile. All are runtime-safe and
 backward-compatible:
@@ -238,10 +271,10 @@ not discovered. `synchronous=NORMAL` is the single highest-value line — it is 
 "never corrupts the database" WAL setting, trading only a possible loss of the **last** transaction on
 power loss for a large write speedup. (Sources: SQLite WAL docs; Kerkour; oneuptime; PowerSync.)
 
-## 3.2 Connection architecture — the scalability unlock (S1)
+## 3.2 Connection architecture — the scalability unlock (S1) — shipped
 
-Today: one `Mutex<Connection>` for everything, on the runtime. The idiomatic **"SQLite for servers"**
-pattern, which WAL is built for:
+Then: one `Mutex<Connection>` for everything, on the runtime. Now shipped (`Store::w()`/`Store::r()`
+in `store.rs`): the idiomatic **"SQLite for servers"** pattern, which WAL is built for:
 
 * **One dedicated writer connection** (keep the serialization — SQLite is single-writer anyway), and
 * **A small pool of read-only connections** (e.g. `N = num_cpus`), since **WAL readers run concurrently
@@ -276,23 +309,36 @@ A pragmatic first step (smaller change, most of the win): wrap the existing sync
 * **Optional** `idx_facts_room`/`idx_facts_author` only if non-FTS scans over `facts` ever appear; today
   FTS narrows first, so skip.
 
-## 3.4 Retention & growth — the "works as it grows" fix (S2, S8, B2)
+## 3.4 Retention & growth — the "works as it grows" fix (S2, S8, B2) — shipped, on by default
 
-A public hub **must** bound its append-only state. Policy proposal (all configurable):
+A public hub **must** bound its append-only state. Policy proposal (all configurable) — **shipped as
+the default policy** (see `Retention::default()` in `crates/parler-hub/src/server.rs` and the CLI flags
+in `crates/parler-hub/src/main.rs`; an operator opts a knob out with an explicit `0`, or a negative
+value for `--keep-facts`):
 
-* **Messages** — keep the last *N* per room **and/or** the last *D* days, whichever is larger. Prune
-  only `seq ≤ MIN(cursor)` across that room's members (so you never delete unread-by-someone history),
-  *or* prune by age and clamp lagging cursors up to the prune watermark. A room's `members.cursor`s make
-  this safe and precise.
-* **Facts** — keyed facts are self-bounding (upsert). Cap **unkeyed** facts per `(author, room)` (e.g.
-  keep newest *K*) or TTL them. Deletes flow through the FTS triggers automatically.
-* **Blobs (B2)** — GC by **unreference + LRU/TTL**: when all rooms a blob is bound to are pruned/empty,
-  or it hasn't been fetched in *T* days, delete the row **and** the disk file. Track `last_fetched`.
-* **Expired rows (S8)** — periodic `DELETE FROM invites/directory_tokens WHERE expires < now`.
-* **Reclaim space** — set `PRAGMA auto_vacuum = INCREMENTAL` (needs a one-time `VACUUM` on the existing
-  DB to switch modes) and run `PRAGMA incremental_vacuum` after prunes, so the file actually shrinks.
+* **Messages** — `Store::prune_messages` deletes rows older than `--retention-days` (default **30**,
+  `PARLER_HUB_RETENTION_DAYS`; `0` disables age pruning entirely) **and** beyond the newest
+  `--keep-messages-per-room` (default **10,000**, `PARLER_HUB_KEEP_MESSAGES_PER_ROOM`) — both
+  conditions must hold, so the per-room floor always protects recent history regardless of age, and a
+  room under the floor is never trimmed by age alone. No cursor fix-up is needed: `pull` reads
+  `seq > cursor`, so a cursor below a pruned `seq` just resumes at the next surviving row.
+* **Facts** — keyed facts are self-bounding (upsert). `Store::prune_facts` caps **unkeyed** facts per
+  `(author, room)` at `--keep-facts` (default **500**, `PARLER_HUB_KEEP_FACTS`; a negative value keeps
+  all). Deletes flow through the FTS triggers automatically, and orphaned `vec_facts` rows are cleaned
+  up in the same call.
+* **Blobs (B2)** — `Store::gc_blobs` GC's by **LRU/TTL**: a blob neither created nor fetched within
+  `--blob-ttl-days` (default **14**, `PARLER_HUB_BLOB_TTL_DAYS`; `0` disables) has its row **and** disk
+  file removed. `last_fetched` is bumped on every download.
+* **Expired rows (S8)** — `Store::sweep_expired` runs `DELETE FROM invites/directory_tokens WHERE
+  expires < now` on every janitor pass, unconditionally (not a retention knob — expired rows are always
+  dead weight).
+* **Reclaim space** — `PRAGMA auto_vacuum = INCREMENTAL` is set at migration time, and
+  `Store::incremental_vacuum()` runs after every janitor pass, so the file actually shrinks.
 
-Run all of this as a single periodic "janitor" task (e.g. every N minutes) on the writer connection.
+All of this runs as a single periodic **janitor** task (`run_janitor` in `server.rs`), on an interval
+set by `--janitor-interval-secs` (default **3600**, i.e. hourly, `PARLER_HUB_JANITOR_INTERVAL_SECS`).
+The DB work runs via `spawn_blocking` so a large prune never stalls the async runtime; only the
+resulting blob file unlinks happen back on the async side.
 
 ## 3.5 Durability & backup (S6) and the single-writer rule
 
@@ -368,8 +414,8 @@ taxonomy**, and a consistent **retrieval** stack. Summary of the current finding
 
 # Part 5 — Should we build a vector database?
 
-**Recommendation: No separate vector database. Add `sqlite-vec` to the existing file when (and only
-when) semantic recall is needed, and run hybrid BM25 + vector search fused with RRF.**
+**Recommendation (shipped): no separate vector database. `sqlite-vec` is added to the existing file,
+and `recall` runs hybrid BM25 + vector search fused with RRF whenever a client supplies an embedding.**
 
 ### Why not a dedicated vector DB
 A standalone vector DB (Qdrant, Pinecone, Weaviate, Milvus…) would add a network service, ops/HA burden,
@@ -419,16 +465,18 @@ hub. The clean fit, consistent with Part 4's "intelligence in the clients" princ
   "clients supply embeddings" proves impractical.
 
 ### Phasing the vector work
-* **Phase 0 (now):** keep FTS5/BM25. It's good, and most recall queries are keyword-shaped.
-* **Phase 1 (when semantic recall is demanded):** load `sqlite-vec`; add `vec_facts`; extend the
-  protocol with client-supplied embeddings; make `recall` hybrid (BM25 ⊕ vec via RRF). One file, one
-  extension, no new service. (Integration: `sqlite-vec` is loadable via rusqlite's `load_extension`, or
-  statically linked + `sqlite3_vec_init`. Pin the embedding model/dimension; store the model id so mixed
-  dimensions never collide.)
-* **Phase 2 (only if a partition ever exceeds brute-force comfort):** partition `vec0` by room/author
-  (sqlite-vec supports partition/metadata keys in current versions), or move that tier to an ANN
-  extension (`vectorlite`/`usearch`) for approximate search. Still inside SQLite. A dedicated vector DB
-  remains unnecessary until the >10M-vector / distributed thresholds above.
+* **Phase 0:** keep FTS5/BM25. It's good, and most recall queries are keyword-shaped. (Superseded by
+  Phase 1 below, but pure-BM25 remains the fallback when a client sends no embedding.)
+* **Phase 1 — ✅ shipped:** `sqlite-vec` is loaded (statically linked via `sqlite3_vec_init`, registered
+  as an auto-extension in `store.rs`); `vec_facts` (a `vec0` virtual table, dimension pinned at 768 via
+  `VEC_DIMENSION`) stores client-supplied embeddings; the protocol carries optional `embedding`/
+  `embeddingModel` on `Remember` and `embedding` on `Recall`; `recall` runs hybrid BM25 ⊕ vector search
+  fused with RRF (`rrf_k = 60`) whenever an embedding is supplied, falling back to pure BM25 otherwise.
+  One file, one extension, no new service.
+* **Phase 2 (only if a partition ever exceeds brute-force comfort — not yet needed):** partition `vec0`
+  by room/author (sqlite-vec supports partition/metadata keys in current versions), or move that tier to
+  an ANN extension (`vectorlite`/`usearch`) for approximate search. Still inside SQLite. A dedicated
+  vector DB remains unnecessary until the >10M-vector / distributed thresholds above.
 
 ---
 
@@ -447,27 +495,30 @@ as a single small, backward-compatible PR.
 
 ---
 
-## Appendix A — Phase-0 ready-to-apply diff
+## Appendix A — Phase-0 diff (shipped)
 
-In `crates/parler-hub/src/store.rs`, the `MIGRATION` header:
+This landed in `crates/parler-hub/src/store.rs` (`configure_conn`, called per connection — writer and
+every reader), with one refinement over the original sketch below: **`cache_size` is a total budget
+divided across the pool** (`TOTAL_CACHE_KIB = 65_536` KiB ÷ `1 + n_readers`, floored at
+`MIN_CACHE_KIB_PER_CONN`), not a flat `-65536` on every connection — a fixed per-connection value would
+have silently multiplied the resident page cache by the pool size.
 
 ```sql
 PRAGMA journal_mode = WAL;
 PRAGMA busy_timeout = 5000;            -- was 3000
-PRAGMA synchronous  = NORMAL;          -- NEW
-PRAGMA cache_size   = -65536;          -- NEW (64 MiB)
-PRAGMA temp_store   = MEMORY;          -- NEW
-PRAGMA mmap_size    = 268435456;       -- NEW (256 MiB)
-PRAGMA foreign_keys = ON;              -- NEW
+PRAGMA synchronous  = NORMAL;
+PRAGMA cache_size   = -{cache_kib};    -- TOTAL_CACHE_KIB split across writer + readers, not a flat 64 MiB each
+PRAGMA temp_store   = MEMORY;
+PRAGMA mmap_size    = 268435456;       -- 256 MiB
+PRAGMA foreign_keys = ON;
 ```
-…and after the `messages` index, add:
+…and after the `messages` index:
 ```sql
-CREATE INDEX IF NOT EXISTS idx_members_agent ON members(agent);   -- S3
+CREATE INDEX IF NOT EXISTS idx_members_agent ON members(agent);   -- S3, shipped
 ```
-> Note: `journal_mode`/`busy_timeout`/`synchronous`/`cache_size`/`mmap_size`/`temp_store` are
-> *connection-level* pragmas — set them in `Store::open` **per connection** (especially once a read pool
-> exists), not only inside the one-time `execute_batch(MIGRATION)`. `foreign_keys` likewise is per
-> connection. Add a `Store::check()` calling `PRAGMA quick_check` for the boot/`/health` path.
+> Note: these are *connection-level* pragmas, so `configure_conn` runs them on the writer **and** on
+> every pooled reader, not only inside the one-time `execute_batch(MIGRATION)`. `Store::quick_check()`
+> exists for the boot/`/health` `PRAGMA quick_check` path but isn't wired into a periodic schedule yet.
 
 ## Appendix B — Phase-4 vector schema sketch
 
