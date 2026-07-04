@@ -394,8 +394,9 @@ async fn handle(state: &mut McpState, method: &str, params: Value) -> Result<Val
             // other tool only touches the agent.
             let result = match name.as_str() {
                 "parler_open_session" | "parler_join_session" | "parler_close_session"
-                | "parler_send" | "parler_recv" | "parler_handoff" | "parler_join_requests"
-                | "parler_approve_join" | "parler_deny_join" | "parler_watch_session" => {
+                | "parler_join" | "parler_send" | "parler_recv" | "parler_handoff"
+                | "parler_join_requests" | "parler_approve_join" | "parler_deny_join"
+                | "parler_watch_session" => {
                     call_session_tool(state, &name, &args).await
                 }
                 _ => call_tool(&mut state.agent, &name, &args).await,
@@ -553,10 +554,14 @@ async fn call_tool(agent: &mut MeshAgent, name: &str, args: &Value) -> Result<St
 
     match name {
         "parler_invite" => {
+            // Validate against the documented enum; an unknown kind errors instead of silently
+            // becoming a DM (#110 case 2). "channel" stays an accepted alias of "group" for older
+            // callers, but a typo no longer maps to dm.
             let kind = match s("kind").as_deref() {
+                None | Some("dm") => RoomKind::Dm,
                 Some("group") | Some("channel") => RoomKind::Channel,
                 Some("service") => RoomKind::Service,
-                _ => RoomKind::Dm,
+                Some(other) => bail!("unknown invite kind '{other}' — use one of: dm, group, service"),
             };
             let inv = agent
                 .invite(kind, s("name"), args.get("ttl_secs").and_then(Value::as_u64), u32opt("max_uses"))
@@ -569,26 +574,14 @@ async fn call_tool(agent: &mut MeshAgent, name: &str, args: &Value) -> Result<St
                 inv.url,
             ))
         }
-        "parler_join" => {
-            let code = s("code").ok_or_else(|| anyhow!("missing 'code'"))?;
-            let (room, kind) = agent.join(&code).await?;
-            Ok(format!("joined {} room '{}'", kind.as_str(), room))
-        }
         "parler_serve" => {
             let svc = s("service").ok_or_else(|| anyhow!("missing 'service'"))?;
             let room = agent.serve(&svc).await?;
             Ok(format!("serving '{svc}' (room '{room}')"))
         }
         "parler_push" => {
-            let target = if let Some(r) = s("room") {
-                Target::Room { room: r }
-            } else if let Some(t) = s("to") {
-                Target::Dm { agent: t }
-            } else if let Some(sv) = s("service") {
-                Target::Service { service: sv }
-            } else {
-                bail!("provide exactly one of room / to / service");
-            };
+            let target = select_target(s("room"), s("to"), s("service"))?
+                .ok_or_else(|| anyhow!("provide exactly one of room / to / service"))?;
             let target = crate::resolve_target(agent, target).await?;
             let gitref = s("gitref").unwrap_or_else(|| "HEAD".into());
             let (bytes, tip, summary) =
@@ -724,16 +717,42 @@ async fn call_tool(agent: &mut MeshAgent, name: &str, args: &Value) -> Result<St
                 Some("public") => Visibility::Public,
                 _ => Visibility::Private,
             };
-            let tags = str_list(args, "tags");
-            let skills = str_list(args, "skills")
-                .into_iter()
-                .map(|k| AgentSkill { id: k.clone(), name: k, description: None })
-                .collect();
-            let (visibility, verified) = agent.register(visibility, tags, skills, s("description")).await?;
+            // Merge semantics (#110 case 4): every connect already auto-registers a card from the
+            // PARLER_* env, so a field the caller *omits* must keep its current card value. Otherwise a
+            // no-arg parler_register silently flipped a PARLER_PUBLIC card back to private and dropped
+            // env tags/skills. Only fields explicitly passed are changed; the result states the diff.
+            let my_id = agent.id.clone();
+            let current = agent.lookup(&my_id).await.ok().flatten();
+            let cur_card = current.as_ref().map(|e| e.card.clone());
+
+            let visibility = match args.get("visibility").and_then(Value::as_str) {
+                Some(_) => visibility, // explicit → honor it (public/anything-else = private, as before)
+                None => current.as_ref().map(|e| e.visibility).unwrap_or(visibility),
+            };
+            let tags = if args.get("tags").is_some() {
+                str_list(args, "tags")
+            } else {
+                cur_card.as_ref().and_then(|c| c.tags.clone()).unwrap_or_default()
+            };
+            let skills = if args.get("skills").is_some() {
+                str_list(args, "skills")
+                    .into_iter()
+                    .map(|k| AgentSkill { id: k.clone(), name: k, description: None })
+                    .collect()
+            } else {
+                cur_card.as_ref().and_then(|c| c.skills.clone()).unwrap_or_default()
+            };
+            let description = match s("description") {
+                Some(d) => Some(d),
+                None => cur_card.as_ref().and_then(|c| c.description.clone()),
+            };
+            let tag_n = tags.len();
+            let (visibility, verified) = agent.register(visibility, tags, skills, description).await?;
             Ok(format!(
-                "registered as {} ({})",
+                "registered as {} ({}) — {} tag(s) kept/set",
                 visibility.as_str(),
-                if verified { "signature verified" } else { "unsigned" }
+                if verified { "signature verified" } else { "unsigned" },
+                tag_n
             ))
         }
         "parler_discover" => {
@@ -798,6 +817,63 @@ async fn call_tool(agent: &mut MeshAgent, name: &str, args: &Value) -> Result<St
     }
 }
 
+/// Enforce "exactly one of room / to / service". Returns `None` when the caller passed no selector
+/// (the caller then supplies its own fallback — the active session for send/handoff, or an error for
+/// push). Errors naming the conflict when more than one selector is given, so a mistaken double
+/// target no longer resolves silently by if-else precedence. (#110 case 1.)
+fn select_target(
+    room: Option<String>,
+    to: Option<String>,
+    service: Option<String>,
+) -> Result<Option<Target>> {
+    let mut chosen: Option<Target> = None;
+    let mut names: Vec<&str> = Vec::new();
+    if let Some(r) = room {
+        names.push("room");
+        chosen = Some(Target::Room { room: r });
+    }
+    if let Some(t) = to {
+        names.push("to");
+        chosen = Some(Target::Dm { agent: t });
+    }
+    if let Some(sv) = service {
+        names.push("service");
+        chosen = Some(Target::Service { service: sv });
+    }
+    if names.len() > 1 {
+        bail!("provide exactly one target, but got {} ({}) — pick a single room, to, or service", names.len(), names.join(" + "));
+    }
+    Ok(chosen)
+}
+
+/// Resolve an approve/deny target against a room's pending join requests. The owner sees the
+/// joiner's *name* in the pending-join notice, so accept an id or a unique pending name (matching
+/// what `parler_send` does for directory names). Returns the joiner's id to pass to the hub.
+async fn resolve_pending_joiner(agent: &mut MeshAgent, room: &str, who: &str) -> Result<String> {
+    let pending = agent.join_requests(room).await?;
+    // Exact id match wins outright (also the old-behavior fast path).
+    if pending.iter().any(|r| r.agent == who) {
+        return Ok(who.to_string());
+    }
+    let by_name: Vec<&parler_protocol::JoinRequest> =
+        pending.iter().filter(|r| r.name.eq_ignore_ascii_case(who)).collect();
+    match by_name.len() {
+        1 => Ok(by_name[0].agent.clone()),
+        0 => bail!(
+            "no pending join request from '{who}' in session '{room}' — run parler_join_requests to \
+             see who is waiting (each line shows a name and an id)"
+        ),
+        _ => {
+            let list = by_name
+                .iter()
+                .map(|r| format!("  {}  {}", r.name, r.agent))
+                .collect::<Vec<_>>()
+                .join("\n");
+            bail!("'{who}' matches more than one pending joiner in session '{room}' — pass the id instead:\n{list}")
+        }
+    }
+}
+
 /// Tools that read or mutate the active session (or default their target to it).
 async fn call_session_tool(state: &mut McpState, name: &str, args: &Value) -> Result<String> {
     let s = |k: &str| args.get(k).and_then(Value::as_str).map(str::to_string);
@@ -824,6 +900,24 @@ async fn call_session_tool(state: &mut McpState, name: &str, args: &Value) -> Re
             let wait_secs = args.get("wait_secs").and_then(Value::as_u64).filter(|w| *w > 0);
             join_session(state, &key, Backlog::from_arg(s("backlog").as_deref()), wait_secs).await
         }
+        "parler_join" => {
+            // One code, one door (#109): a session key redeemed through parler_join behaves exactly
+            // like parler_join_session — a Channel room (what open_session mints) adopts session
+            // semantics (active session + digest + backlog), and a pending approval reads as
+            // success-in-progress, not an error. Plain DM/service invites keep the lightweight join.
+            let code = s("code").ok_or_else(|| anyhow!("missing 'code'"))?;
+            let wait_secs = args.get("wait_secs").and_then(Value::as_u64).filter(|w| *w > 0);
+            match state.agent.redeem(&code).await? {
+                JoinOutcome::Pending { room } => match wait_for_approval(state, &code, wait_secs).await? {
+                    Some(room) => enter_session(state, room, Backlog::Recent).await,
+                    None => Ok(pending_output(&room)),
+                },
+                JoinOutcome::Joined { room, kind } => match kind {
+                    RoomKind::Channel => enter_session(state, room, Backlog::Recent).await,
+                    _ => Ok(format!("joined {} room '{}'", kind.as_str(), room)),
+                },
+            }
+        }
         "parler_close_session" => close_session(state).await,
         "parler_join_requests" => {
             let room = s("room")
@@ -849,8 +943,13 @@ async fn call_session_tool(state: &mut McpState, name: &str, args: &Value) -> Re
             let room = s("room")
                 .or_else(|| state.active_session.clone())
                 .ok_or_else(|| anyhow!("missing 'room' (open a session, or pass room)"))?;
-            let who = s("agent").ok_or_else(|| anyhow!("missing 'agent' (the joiner's id to resolve)"))?;
+            let who = s("agent").ok_or_else(|| anyhow!("missing 'agent' (the joiner's id or name, as shown in the pending-join notice)"))?;
             let approve = name == "parler_approve_join";
+            // Resolve `who` the way the owner saw it: the pending-join notice shows a name, so accept
+            // an id *or* a unique pending name (ambiguity → error listing candidates with ids), like
+            // parler_send resolves directory names. Only reach for the hub round-trip when it isn't
+            // already an exact id match against the pending set.
+            let who = resolve_pending_joiner(&mut state.agent, &room, &who).await?;
             let approved = state.agent.resolve_join(&room, &who, approve).await?;
             Ok(if approved {
                 format!("✓ approved {who} into session '{room}' — they can now read the conversation and participate.")
@@ -873,17 +972,13 @@ async fn call_session_tool(state: &mut McpState, name: &str, args: &Value) -> Re
         }
         "parler_send" => {
             let text = s("text").ok_or_else(|| anyhow!("missing 'text'"))?;
-            // Default to the active session; otherwise require exactly one explicit target.
-            let target = if let Some(r) = s("room") {
-                Target::Room { room: r }
-            } else if let Some(t) = s("to") {
-                Target::Dm { agent: t }
-            } else if let Some(sv) = s("service") {
-                Target::Service { service: sv }
-            } else if let Some(room) = state.active_session.clone() {
-                Target::Room { room }
-            } else {
-                bail!("provide one of room / to / service, or open/join a session first");
+            // Exactly one explicit target; otherwise default to the active session.
+            let target = match select_target(s("room"), s("to"), s("service"))? {
+                Some(t) => t,
+                None => match state.active_session.clone() {
+                    Some(room) => Target::Room { room },
+                    None => bail!("provide one of room / to / service, or open/join a session first"),
+                },
             };
             // Let `to` be a directory name, not just a 56-char id (unique-match-or-error; never guess).
             let target = crate::resolve_target(&mut state.agent, target).await?;
@@ -924,16 +1019,12 @@ async fn call_session_tool(state: &mut McpState, name: &str, args: &Value) -> Re
         }
         "parler_handoff" => {
             let next = s("next").ok_or_else(|| anyhow!("missing 'next' (what the next agent should do)"))?;
-            let target = if let Some(r) = s("room") {
-                Target::Room { room: r }
-            } else if let Some(t) = s("to") {
-                Target::Dm { agent: t }
-            } else if let Some(sv) = s("service") {
-                Target::Service { service: sv }
-            } else if let Some(room) = state.active_session.clone() {
-                Target::Room { room }
-            } else {
-                bail!("provide one of room / to / service, or open/join a session first");
+            let target = match select_target(s("room"), s("to"), s("service"))? {
+                Some(t) => t,
+                None => match state.active_session.clone() {
+                    Some(room) => Target::Room { room },
+                    None => bail!("provide one of room / to / service, or open/join a session first"),
+                },
             };
             let target = crate::resolve_target(&mut state.agent, target).await?;
             let handoff = HandoffRef { next, summary: s("summary"), to: s("for"), bundle: s("bundle") };
@@ -956,7 +1047,7 @@ async fn call_session_tool(state: &mut McpState, name: &str, args: &Value) -> Re
             // advances the cursor only through the batch, so the rest waits for the next call). An
             // explicit `since` is a full-detail history re-read: never cap it, never budget its bodies.
             let re_read = since.is_some();
-            let effective_limit = recv_limit(explicit_limit, re_read, verbose_render());
+            let effective_limit = recv_limit(explicit_limit, verbose_render());
             let (mut msgs, mut cursor) = state.agent.pull(&room, since, effective_limit).await?;
             // Long-poll: if nothing new yet and the caller asked to wait, prefer the hub's
             // **server-side wait** (`pull_wait`) — it works with zero push machinery (even on a
@@ -1135,11 +1226,14 @@ fn verbose_render() -> bool {
 /// The message limit a `parler_recv` should pull with. Pure so it's unit-testable without touching the
 /// process env: an explicit `limit` always wins; a history re-read (`since`) or verbose mode is
 /// uncapped (`None`); otherwise the default cap applies.
-fn recv_limit(explicit: Option<u32>, re_read: bool, verbose: bool) -> Option<u32> {
-    match (explicit, re_read, verbose) {
-        (Some(l), _, _) => Some(l),
-        (None, false, false) => Some(RECV_DEFAULT_LIMIT),
-        _ => None,
+fn recv_limit(explicit: Option<u32>, verbose: bool) -> Option<u32> {
+    match (explicit, verbose) {
+        // An explicit limit always wins; otherwise the default cap applies to *both* cursor reads and
+        // `since` re-reads (#110 case 3 — a `since` poll used to silently drop the limit and replay
+        // unbounded full-detail history). Verbose stays the global uncapped escape hatch.
+        (Some(l), _) => Some(l),
+        (None, false) => Some(RECV_DEFAULT_LIMIT),
+        (None, true) => None,
     }
 }
 
@@ -1230,22 +1324,19 @@ async fn join_session(
     backlog: Backlog,
     wait_secs: Option<u64>,
 ) -> Result<String> {
-    let room = match state.agent.redeem(key).await? {
-        JoinOutcome::Joined { room, .. } => room,
-        JoinOutcome::Pending { room } => {
-            match wait_for_approval(state, key, wait_secs).await? {
-                Some(room) => room,
-                None => {
-                    return Ok(format!(
-                        "⏳ join request sent — waiting for the host to approve you into session '{room}'.\n\
-                         You are NOT in the conversation yet and cannot see its context until the host \
-                         approves. Call parler_join_session again with the same key (add wait_secs to \
-                         hold this one call open until the host decides).",
-                    ))
-                }
-            }
-        }
-    };
+    match state.agent.redeem(key).await? {
+        JoinOutcome::Joined { room, .. } => enter_session(state, room, backlog).await,
+        JoinOutcome::Pending { room } => match wait_for_approval(state, key, wait_secs).await? {
+            Some(room) => enter_session(state, room, backlog).await,
+            None => Ok(pending_output(&room)),
+        },
+    }
+}
+
+/// Adopt a just-redeemed room as the active session and render the catch-up context. Shared by
+/// `parler_join_session` and `parler_join` (#109) so a session key does the same thing through either
+/// door — active session set, backlog digested, arrival announced.
+async fn enter_session(state: &mut McpState, room: String, backlog: Backlog) -> Result<String> {
     // since=None advances our fresh cursor to the live edge (this full pull is load-bearing), so a
     // later parler_recv only returns genuinely new messages rather than re-delivering this backlog.
     // We render a *digest* of what we pulled — the cursor still advanced past all of it.
@@ -1272,6 +1363,18 @@ async fn join_session(
         "joined session — room '{room}', now your active session.\n\
          {digest_line}--- context so far ---\n{body}\n--- end context ---{roster_line}"
     ))
+}
+
+/// The success-in-progress result for an approval-gated redeem the host hasn't decided yet. NOT an
+/// error — the request *was* filed — and identical whether reached via parler_join_session or
+/// parler_join (#109).
+fn pending_output(room: &str) -> String {
+    format!(
+        "⏳ join request sent — waiting for the host to approve you into session '{room}'.\n\
+         You are NOT in the conversation yet and cannot see its context until the host \
+         approves. Call parler_join_session again with the same key (add wait_secs to \
+         hold this one call open until the host decides)."
+    )
 }
 
 /// The rolling session digest, if the host maintains one. Convention (P1.3): the host upserts a
@@ -1477,16 +1580,16 @@ fn tool_specs() -> Vec<Value> {
             "parler_approve_join",
             "Approve a pending joiner (from parler_join_requests or the send/recv prompt) — they can then read and participate. Defaults to active session. Confirm with the user before approving.",
             json!({
-                "agent": { "type": "string", "description": "the id of the joiner to admit" },
+                "agent": { "type": "string", "description": "the joiner's name or id (from parler_join_requests)" },
                 "room": { "type": "string", "description": "the session room (defaults to your active session)" }
             }),
             &["agent"],
         ),
         tool(
             "parler_deny_join",
-            "Reject a pending joiner — turned away, can't re-request. Pass the joiner's id. Defaults to active session.",
+            "Reject a pending joiner — turned away, can't re-request. Pass the joiner's name or id. Defaults to active session.",
             json!({
-                "agent": { "type": "string", "description": "the id of the joiner to reject" },
+                "agent": { "type": "string", "description": "the joiner's name or id (from parler_join_requests)" },
                 "room": { "type": "string", "description": "the session room (defaults to your active session)" }
             }),
             &["agent"],
@@ -1513,8 +1616,10 @@ fn tool_specs() -> Vec<Value> {
         ),
         tool(
             "parler_join",
-            "Redeem a pasted invite code/link to join its room.",
-            json!({ "code": { "type": "string" } }),
+            "Redeem any pasted code/link. A session key acts like parler_join_session (active session + digest; gated = 'waiting for host', not an error); a DM/service invite just joins.",
+            json!({
+                "code": { "type": "string", "description": "the code, link, or session key you were handed" }
+            }),
             &["code"],
         ),
         tool(
@@ -1539,7 +1644,7 @@ fn tool_specs() -> Vec<Value> {
             "Pull new messages since your cursor (advances it). Defaults to active session; pass room for another. wait_secs long-polls that many seconds for a pushed reply instead of returning empty (cheaper than repeated calls). Long bodies are truncated with a refetch hint; since+limit re-reads that range in FULL (never truncated). Default batch is bounded — a 'more waiting' line means call again.",
             json!({
                 "room": { "type": "string" },
-                "since": { "type": "integer", "description": "re-read from this seq in full (no cursor advance, no truncation)" },
+                "since": { "type": "integer", "description": "read-only replay from seq in full (no cursor advance); default limit applies unless you pass limit" },
                 "limit": { "type": "integer", "description": "max messages this call (default bounded; raise to read more at once)" },
                 "wait_secs": { "type": "integer", "description": "block up to this many seconds for a pushed message when nothing is waiting (sub-second wake; max 60)" }
             }),
@@ -1728,8 +1833,11 @@ mod tests {
     // Fixed-size synthetic messages keep the counts deterministic; consts carry ~20% headroom.
 
     /// Serialized `tools/list` payload size — permanent context cost, paid by every agent every
-    /// session. Pre-diet baseline 11,598 B; post-diet (P0.2) 11,030 B. Ceiling with ~5% headroom.
-    const TOOL_SPECS_BUDGET: usize = 11_600;
+    /// session. Pre-diet baseline 11,598 B; post-diet (P0.2) 11,030 B. The UX-accuracy round
+    /// (#107/#109/#110) added ~250 B so descriptions match the newly-enforced behavior (one-door
+    /// parler_join, name-resolving approve/deny, strict inputs) — the point of those issues. Ceiling
+    /// raised to 12,000 to keep a meaningful guardrail against large regressions.
+    const TOOL_SPECS_BUDGET: usize = 12_000;
     /// Just the human-readable descriptions (the part the diet targets; schema scaffolding is
     /// load-bearing). Pre-diet 5,261 B → post-diet (P0.2) 4,304 B; P1.2 adds ~230 B of cheap-path
     /// steering (name-based `to`/`card`, compact discover/roster, `detail`) that earns its bytes.
@@ -2013,15 +2121,15 @@ mod tests {
 
     #[test]
     fn recv_limit_decides_the_cap() {
-        // Explicit limit always wins (even in re-read / verbose).
-        assert_eq!(recv_limit(Some(5), false, false), Some(5));
-        assert_eq!(recv_limit(Some(5), true, true), Some(5));
+        // Explicit limit always wins (even in verbose).
+        assert_eq!(recv_limit(Some(5), false), Some(5));
+        assert_eq!(recv_limit(Some(5), true), Some(5));
         // Plain cursor read → the default cap.
-        assert_eq!(recv_limit(None, false, false), Some(RECV_DEFAULT_LIMIT));
-        // A history re-read (`since`) is uncapped (full detail).
-        assert_eq!(recv_limit(None, true, false), None);
+        assert_eq!(recv_limit(None, false), Some(RECV_DEFAULT_LIMIT));
+        // A history re-read (`since`) now also gets the default cap unless a limit is explicit (#110).
+        assert_eq!(recv_limit(None, false), Some(RECV_DEFAULT_LIMIT));
         // Verbose is the global escape hatch → uncapped.
-        assert_eq!(recv_limit(None, false, true), None);
+        assert_eq!(recv_limit(None, true), None);
     }
 
     #[test]
@@ -2405,6 +2513,109 @@ mod tests {
         let joined = join_session(&mut bob, &key, Backlog::Recent, None).await.unwrap();
         assert!(joined.contains("secret plan: ship friday"), "an approved joiner gets the context: {joined}");
         assert_eq!(bob.active_session, alice.active_session, "both now share the session room");
+    }
+
+    #[test]
+    fn select_target_enforces_exactly_one() {
+        // Zero selectors → None (caller supplies the fallback).
+        assert!(select_target(None, None, None).unwrap().is_none());
+        // Exactly one → that target.
+        assert!(matches!(select_target(Some("r".into()), None, None).unwrap(), Some(Target::Room { .. })));
+        assert!(matches!(select_target(None, Some("a".into()), None).unwrap(), Some(Target::Dm { .. })));
+        // More than one → an error that names the conflict (no silent precedence).
+        let err = select_target(Some("r".into()), Some("a".into()), None).unwrap_err().to_string();
+        assert!(err.contains("exactly one") && err.contains("room") && err.contains("to"), "err: {err}");
+        assert!(select_target(Some("r".into()), Some("a".into()), Some("s".into())).is_err());
+    }
+
+    #[tokio::test]
+    async fn invite_rejects_an_unknown_kind() {
+        // #110 case 2: a typo'd kind errors instead of silently becoming a DM.
+        let hub = start_hub().await;
+        let mut alice = state(&hub, "alice").await;
+        let bad = call_tool(&mut alice.agent, "parler_invite", &json!({ "kind": "grup" })).await;
+        assert!(bad.is_err(), "unknown kind must error");
+        assert!(bad.unwrap_err().to_string().contains("dm, group, service"), "error names the valid kinds");
+        // A valid kind still works.
+        assert!(call_tool(&mut alice.agent, "parler_invite", &json!({ "kind": "group", "name": "x" })).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn register_no_args_keeps_public_visibility_and_tags() {
+        // #110 case 4: a no-arg parler_register on an env-configured card is a no-op — it must not
+        // flip a public card private or drop its tags.
+        let hub = start_hub().await;
+        let mut alice = state(&hub, "alice").await;
+        // Establish a public card with tags (as auto-register from PARLER_* env would).
+        call_tool(&mut alice.agent, "parler_register", &json!({ "visibility": "public", "tags": ["rust", "infra"] }))
+            .await
+            .unwrap();
+        // No-arg re-register: visibility and tags survive.
+        let out = call_tool(&mut alice.agent, "parler_register", &json!({})).await.unwrap();
+        assert!(out.contains("public"), "no-arg register kept public visibility: {out}");
+        assert!(out.contains("2 tag"), "no-arg register kept the tags: {out}");
+    }
+
+    #[tokio::test]
+    async fn join_tool_and_join_session_agree_on_a_session_key() {
+        // #109 "one code, one door": a session key redeemed via parler_join sets up the session the
+        // same way parler_join_session does — active session set + context digest delivered.
+        let hub = start_hub().await;
+        let mut host = state(&hub, "host").await;
+        let opened =
+            open_session(&mut host, Some("blueprint: ship the thing"), None, None, None, false).await.unwrap();
+        let key = key_of(&opened);
+
+        let mut bob = state(&hub, "bob").await;
+        let via_join = call_session_tool(&mut bob, "parler_join", &json!({ "code": key })).await.unwrap();
+        assert!(via_join.contains("blueprint: ship the thing"), "parler_join delivers the context: {via_join}");
+        assert!(via_join.contains("active session"), "parler_join adopts the active session: {via_join}");
+        assert_eq!(bob.active_session, host.active_session, "parler_join joined the session room");
+    }
+
+    #[tokio::test]
+    async fn join_tool_on_a_gated_session_is_pending_not_an_error() {
+        // #109: an approval-gated session key via parler_join returns success-in-progress, never an
+        // error (the request is actually filed — the old parler_join.join() bailed here).
+        let hub = start_hub().await;
+        let mut host = state(&hub, "host").await;
+        let opened = open_session(&mut host, Some("secret"), None, None, None, true).await.unwrap();
+        let key = key_of(&opened);
+
+        let mut bob = state(&hub, "bob").await;
+        let out = call_session_tool(&mut bob, "parler_join", &json!({ "code": key })).await;
+        assert!(out.is_ok(), "a pending join must be a normal result, not an error");
+        let out = out.unwrap();
+        assert!(out.contains("waiting for the host"), "reads as success-in-progress: {out}");
+        assert!(bob.active_session.is_none(), "not in the session until approved");
+        // The request really was filed — the host sees it pending.
+        let reqs = host.agent.join_requests(host.active_session.as_ref().unwrap()).await.unwrap();
+        assert!(reqs.iter().any(|r| r.agent == bob.agent.id), "the join request was recorded");
+    }
+
+    #[tokio::test]
+    async fn approve_join_resolves_a_pending_name_like_send_does() {
+        // #107: the owner sees the joiner's *name* in the pending notice, so approve/deny must accept
+        // a unique name (not just the 56-char id). Ambiguity errors with candidates; a bad name errors.
+        let hub = start_hub().await;
+        let mut alice = state(&hub, "alice").await;
+        let mut bob = state(&hub, "bob").await;
+
+        let opened = open_session(&mut alice, Some("secret plan"), None, None, None, true).await.unwrap();
+        let key = key_of(&opened);
+        join_session(&mut bob, &key, Backlog::Recent, None).await.unwrap(); // pending
+
+        // A name that nobody is waiting under errors actionably (points at parler_join_requests).
+        let miss = call_session_tool(&mut alice, "parler_approve_join", &json!({ "agent": "nobody" })).await;
+        assert!(miss.is_err(), "an unknown name must not silently pass through to the hub");
+
+        // Approving by the pending name (case-insensitive) admits bob, exactly like approving by id.
+        let approved = call_session_tool(&mut alice, "parler_approve_join", &json!({ "agent": "BOB" }))
+            .await
+            .unwrap();
+        assert!(approved.contains("approved"), "approve-by-name admits the joiner: {approved}");
+        let joined = join_session(&mut bob, &key, Backlog::Recent, None).await.unwrap();
+        assert!(joined.contains("secret plan"), "the name-approved joiner gets the context: {joined}");
     }
 
     #[tokio::test]
