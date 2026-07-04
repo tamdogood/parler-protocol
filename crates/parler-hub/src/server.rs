@@ -14,8 +14,9 @@
 
 use crate::{now_ms, Store};
 use axum::extract::ws::{Message as WsMessage, WebSocket, WebSocketUpgrade};
-use axum::extract::{Path, Query, State};
+use axum::extract::{ConnectInfo, Path, Query, Request, State};
 use axum::http::{HeaderMap, StatusCode};
+use axum::middleware::{self, Next};
 use axum::response::{Html, IntoResponse};
 use axum::routing::get;
 use axum::{Json, Router};
@@ -26,6 +27,7 @@ use parler_protocol::{
 use rand::Rng;
 use serde::Deserialize;
 use std::collections::HashMap;
+use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 use parking_lot::Mutex;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -52,6 +54,14 @@ pub const DEFAULT_MAX_MESSAGE_BYTES: usize = 1024 * 1024;
 
 /// Default ceiling on concurrent WebSocket connections to one hub.
 pub const DEFAULT_MAX_CONNECTIONS: usize = 1024;
+
+/// Default per-client-IP HTTP request budget over a fixed 60s window, spanning the whole public front
+/// door: the REST/A2A directory + session-viewer endpoints *and* the `/ws` upgrade. Unlike the
+/// per-agent [`RateLimits`] (which only apply once a socket has authenticated), this bounds
+/// *unauthenticated* abuse — directory/session scraping and connection/registration floods — from any
+/// single source. 600/min (10/s) sits far above what a real agent or a session viewer needs while
+/// still throttling a flood. `0` disables it. In-memory, resets on restart.
+pub const DEFAULT_MAX_HTTP_PER_MIN: u32 = 600;
 
 /// How long an unauthenticated socket may stay open before it must complete the handshake. Bounds
 /// slow-loris connections that open a socket and never authenticate.
@@ -198,12 +208,17 @@ pub struct HubState {
     /// Optional shared join secret. When set, a connection must present a matching `secret` on its
     /// signed `Hello` to authenticate — the access gate for a closed/private hub. `None` ⇒ open.
     pub join_secret: Option<String>,
-    /// Per-agent flood limits.
+    /// Per-agent flood limits (authenticated WS ops).
     pub limits: RateLimits,
+    /// Per-client-IP HTTP request budget per 60s window across the public front door (REST + `/ws`
+    /// upgrade). `0` disables. Defaults to [`DEFAULT_MAX_HTTP_PER_MIN`].
+    pub max_http_per_min: u32,
     /// How the background janitor bounds append-only growth (defaults to keep-everything).
     pub retention: Retention,
     /// In-memory rate-limit counters, keyed by agent id (resets on restart).
     rate: Mutex<HashMap<String, AgentRate>>,
+    /// In-memory per-IP HTTP rate windows (resets on restart), pruned by the janitor alongside `rate`.
+    http_rate: Mutex<HashMap<IpAddr, Window>>,
     /// Live connection count, for the `max_connections` ceiling.
     conn_count: AtomicUsize,
     /// Live push subscribers: agent id → its subscribed connections. A message appended to a room is
@@ -252,8 +267,10 @@ impl HubState {
             idle_timeout: Some(Duration::from_secs(DEFAULT_IDLE_TIMEOUT_SECS)),
             join_secret: None,
             limits: RateLimits::default(),
+            max_http_per_min: DEFAULT_MAX_HTTP_PER_MIN,
             retention: Retention::default(),
             rate: Mutex::new(HashMap::new()),
+            http_rate: Mutex::new(HashMap::new()),
             conn_count: AtomicUsize::new(0),
             subscribers: Mutex::new(HashMap::new()),
             notifiers: Mutex::new(HashMap::new()),
@@ -367,6 +384,75 @@ impl HubState {
         w.count += 1;
         true
     }
+
+    /// Charge one HTTP request against `ip`'s fixed 60s window; `true` if it is within
+    /// [`HubState::max_http_per_min`] (a `0` budget disables the limit). Same fixed-window shape as
+    /// [`rate_allows`], keyed by source IP rather than agent id so it gates *unauthenticated* traffic.
+    fn http_rate_allows(&self, ip: IpAddr, now: i64) -> bool {
+        let limit = self.max_http_per_min;
+        if limit == 0 {
+            return true;
+        }
+        let mut map = self.http_rate.lock();
+        let w = map.entry(ip).or_default();
+        if now - w.start >= 60_000 {
+            w.start = now;
+            w.count = 0;
+        }
+        if w.count >= limit {
+            return false;
+        }
+        w.count += 1;
+        true
+    }
+}
+
+/// Resolve the client IP to rate-limit a request by. Behind the reference Fly deployment the edge sets
+/// `Fly-Client-IP` to the real client (not spoofable *through* Fly); behind a self-hosted proxy
+/// (Caddy/nginx) the leftmost `X-Forwarded-For` hop carries it; a direct connection has neither, so we
+/// fall back to the socket peer. This mirrors the existing proxy-trust posture — `request_base_url`
+/// already trusts `X-Forwarded-Proto` — so a forwarded IP is only as trustworthy as the proxy in
+/// front; the socket-peer fallback guarantees there is always *some* stable key to bound a flood by.
+fn client_ip(headers: &HeaderMap, peer: Option<IpAddr>) -> Option<IpAddr> {
+    if let Some(ip) = headers
+        .get("fly-client-ip")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.trim().parse().ok())
+    {
+        return Some(ip);
+    }
+    if let Some(ip) = headers
+        .get("x-forwarded-for")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.split(',').next())
+        .and_then(|s| s.trim().parse().ok())
+    {
+        return Some(ip);
+    }
+    peer
+}
+
+/// Per-IP flood guard on the public HTTP front door (REST/A2A endpoints + the `/ws` upgrade). Runs
+/// before every route except `/health` (Fly's liveness probe must never be throttled). A request over
+/// the budget gets `429 Too Many Requests` with a `Retry-After`. When the source IP can't be resolved
+/// (no forwarded header and no connect-info — e.g. a caller of [`app`] that didn't attach it) the
+/// request is allowed through: fail-open, since there is no key to charge.
+async fn rate_limit(State(state): State<Arc<HubState>>, req: Request, next: Next) -> axum::response::Response {
+    if req.uri().path() == "/health" {
+        return next.run(req).await;
+    }
+    let peer = req.extensions().get::<ConnectInfo<SocketAddr>>().map(|ci| ci.0.ip());
+    if let Some(ip) = client_ip(req.headers(), peer) {
+        if !state.http_rate_allows(ip, now_ms()) {
+            return (
+                StatusCode::TOO_MANY_REQUESTS,
+                [(axum::http::header::RETRY_AFTER, "60")],
+                "rate limit: too many requests — slow down\n",
+            )
+                .into_response();
+        }
+    }
+    next.run(req).await
 }
 
 /// Build the axum router: health, the human join page, the agent WebSocket, and the read-only
@@ -391,6 +477,9 @@ pub fn app(state: Arc<HubState>) -> Router {
         .route("/.well-known/agent-card.json", get(a2a_well_known))
         .route("/a2a/directory", get(a2a_directory))
         .route("/a2a/agents/:id", get(a2a_agent))
+        // Per-IP flood guard, inside CORS so a preflight `OPTIONS` is answered (and not counted) by
+        // the CORS layer before it reaches the limiter.
+        .layer(middleware::from_fn_with_state(state.clone(), rate_limit))
         .layer(cors)
         .with_state(state)
 }
@@ -399,7 +488,9 @@ pub fn app(state: Arc<HubState>) -> Router {
 pub async fn serve(listener: tokio::net::TcpListener, state: Arc<HubState>) -> anyhow::Result<()> {
     std::fs::create_dir_all(&state.blob_dir)?;
     tokio::spawn(run_janitor(state.clone()));
-    axum::serve(listener, app(state).into_make_service()).await?;
+    // `_with_connect_info` so the per-IP [`rate_limit`] layer can key a direct (un-proxied)
+    // connection by its socket peer when no `Fly-Client-IP`/`X-Forwarded-For` header is present.
+    axum::serve(listener, app(state).into_make_service_with_connect_info::<SocketAddr>()).await?;
     Ok(())
 }
 
@@ -450,8 +541,13 @@ async fn run_janitor(state: Arc<HubState>) {
 /// with a fresh window on the agent's next event — identical to the window rollover it would have had.
 fn prune_rate_windows(state: &HubState, now: i64) {
     const MAX_WINDOW_MS: i64 = 3_600_000; // the blob window (the longer of the two)
-    let mut map = state.rate.lock();
-    map.retain(|_, ar| now - ar.sends.start < MAX_WINDOW_MS || now - ar.blobs.start < MAX_WINDOW_MS);
+    {
+        let mut map = state.rate.lock();
+        map.retain(|_, ar| now - ar.sends.start < MAX_WINDOW_MS || now - ar.blobs.start < MAX_WINDOW_MS);
+    }
+    // Per-IP HTTP windows are 60s; drop any whose window has fully elapsed so the map stays sized to
+    // recently-active sources rather than every IP that ever hit the hub.
+    state.http_rate.lock().retain(|_, w| now - w.start < 60_000);
 }
 
 /// One synchronous janitor pass over the store; returns the content ids whose disk bytes to unlink.
@@ -1974,6 +2070,75 @@ mod tests {
         let map = state.rate.lock();
         assert!(map.contains_key("active"), "a recently active agent's counter is kept");
         assert!(!map.contains_key("idle"), "an agent idle past the longest window is dropped");
+    }
+
+    #[test]
+    fn http_rate_allows_enforces_per_ip_budget_and_rolls_the_window() {
+        let store = Store::open(None).unwrap();
+        let mut state = HubState::new(store, "parler://x".into(), "T".into(), HubMode::Public);
+        state.max_http_per_min = 2;
+        let a: IpAddr = "1.1.1.1".parse().unwrap();
+        let b: IpAddr = "2.2.2.2".parse().unwrap();
+        let now = 10_000_000i64;
+
+        // A's first two requests pass, the third in the same window is throttled.
+        assert!(state.http_rate_allows(a, now));
+        assert!(state.http_rate_allows(a, now));
+        assert!(!state.http_rate_allows(a, now), "over-budget request is refused");
+        // A different IP has its own independent budget.
+        assert!(state.http_rate_allows(b, now), "the limit is per-IP, not global");
+        // A new 60s window resets A's counter.
+        assert!(state.http_rate_allows(a, now + 60_000), "the window rolls after 60s");
+    }
+
+    #[test]
+    fn http_rate_limit_of_zero_is_disabled() {
+        let store = Store::open(None).unwrap();
+        let mut state = HubState::new(store, "parler://x".into(), "T".into(), HubMode::Public);
+        state.max_http_per_min = 0;
+        let ip: IpAddr = "9.9.9.9".parse().unwrap();
+        for _ in 0..1000 {
+            assert!(state.http_rate_allows(ip, 1), "a 0 budget never throttles");
+        }
+    }
+
+    #[test]
+    fn prune_rate_windows_drops_stale_http_ips() {
+        let store = Store::open(None).unwrap();
+        let mut state = HubState::new(store, "parler://x".into(), "T".into(), HubMode::Public);
+        state.max_http_per_min = 10;
+        let now = 10_000_000i64;
+        let fresh: IpAddr = "1.1.1.1".parse().unwrap();
+        let stale: IpAddr = "2.2.2.2".parse().unwrap();
+
+        state.http_rate_allows(fresh, now);
+        state.http_rate_allows(stale, now - 60_001); // window already fully elapsed
+        prune_rate_windows(&state, now);
+        let map = state.http_rate.lock();
+        assert!(map.contains_key(&fresh), "an IP inside its 60s window is kept");
+        assert!(!map.contains_key(&stale), "an IP past its window is dropped");
+    }
+
+    #[test]
+    fn client_ip_prefers_fly_then_xff_then_peer() {
+        let peer: IpAddr = "10.0.0.9".parse().unwrap();
+        let expect = |ip: &str| -> IpAddr { ip.parse().unwrap() };
+
+        // Fly's edge header wins over everything.
+        let mut h = HeaderMap::new();
+        h.insert("fly-client-ip", "203.0.113.7".parse().unwrap());
+        h.insert("x-forwarded-for", "198.51.100.4, 10.0.0.1".parse().unwrap());
+        assert_eq!(client_ip(&h, Some(peer)), Some(expect("203.0.113.7")));
+
+        // No Fly header: the leftmost X-Forwarded-For hop (the real client) is used.
+        let mut h = HeaderMap::new();
+        h.insert("x-forwarded-for", "198.51.100.4, 10.0.0.1".parse().unwrap());
+        assert_eq!(client_ip(&h, Some(peer)), Some(expect("198.51.100.4")));
+
+        // No forwarded headers: fall back to the socket peer (direct/local connection).
+        assert_eq!(client_ip(&HeaderMap::new(), Some(peer)), Some(peer));
+        // Nothing to key on at all: fail-open (None), so the caller lets the request through.
+        assert_eq!(client_ip(&HeaderMap::new(), None), None);
     }
 
     #[test]

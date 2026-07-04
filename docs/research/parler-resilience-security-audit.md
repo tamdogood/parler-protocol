@@ -31,11 +31,13 @@ issues the evidence re-prioritises.
    exploits.
 
 3. **The real new gaps are throttling- and contention-shaped, and both have precedented fixes:**
-   - **No rate limiting anywhere on the REST surface** (`/api/session`, `/api/directory`, `/join/:code`),
-     plus wide-open CORS (`Any/Any/Any`) — HIGH. The authenticated WebSocket has flood limits; the
-     HTTP side has none. `Redeem` (invite-code join, ~40-bit codes) is likewise unthrottled — MEDIUM.
-     The battle-tested answer is a per-IP token-bucket/GCRA layer (Rust: `governor`/`tower-governor`)
-     sized against RFC 8628's joint entropy×attempt-limit model.
+   - ~~**No rate limiting anywhere on the REST surface**~~ — **rate-limit half now shipped** (A1): a
+     per-IP fixed-window limiter guards the whole HTTP front door (REST/A2A + the `/ws` upgrade), so the
+     directory/session/`/join` routes and connection floods are throttled with `429 + Retry-After`. Wide-
+     open CORS (`Any/Any/Any`) is still open. `Redeem` (invite-code join, ~40-bit codes) is now covered
+     by the same per-IP HTTP budget, though a dedicated `RateKind::Redeem` (MEDIUM, A2) is still worth
+     adding. The limiter is an in-house fixed-window (matching the existing per-agent one) rather than
+     `governor`, keeping the dependency surface flat.
    - **The retention janitor shares the single writer mutex with all live traffic** — MAJOR (latency,
      not correctness). A large prune/GC/vacuum pass will stall `Send`/`Pull` for its duration once a
      hub carries real history. Fix pattern is `LIMIT`-batched deletes that yield the lock between
@@ -82,7 +84,7 @@ paper-cuts batch, PARLER_HOME expansion. The caveman/ponytail verdicts (round 1)
 
 | # | Finding | Severity | Confidence | Implication |
 |---|---------|----------|-----------|-------------|
-| A1 | No rate limiting / per-IP throttle on any REST route; CORS `Any/Any/Any` (`server.rs:340-364,343-346`) | HIGH | VERIFIED (code read) | Per-IP limiter (`governor`); scope CORS to known origins on `/api/session` |
+| A1 | No rate limiting / per-IP throttle on any REST route; CORS `Any/Any/Any` (`server.rs:340-364,343-346`) | HIGH | **RESOLVED (rate limit)** / open (CORS) | Rate-limit half shipped: a per-IP fixed-window `rate_limit` middleware now guards every route except `/health` (incl. the `/ws` upgrade), keyed by `Fly-Client-IP`→`X-Forwarded-For`→socket peer, `429 + Retry-After` over budget (default 600/min, `PARLER_HUB_MAX_HTTP_PER_MIN`). Built in-house to match the existing fixed-window limiter rather than adding `governor`. **Still open:** scope CORS to known origins on `/api/session` |
 | A2 | `Redeem` invite-code join has no dedicated rate limit; codes ~40 bits, registration open (`server.rs:1569-1578`, `RateKind` `:119-123`) | MEDIUM | VERIFIED | Add `RateKind::Redeem`; RFC 8628 joint entropy×attempts model |
 | A3 | Janitor prune/GC/vacuum holds the single writer mutex; blocks live Send/Pull for the pass (`store.rs:329-331`, `server.rs:387`) | MAJOR (latency) | VERIFIED path / MED magnitude | `LIMIT`-batched deletes yielding the lock between batches |
 | A4 | Watch/directory tokens up to 365 days, **no revocation API** (`server.rs:66-68,1514-1530`; none in `store.rs`) | LOW | VERIFIED | Add owner `revoke_watch_token`; the "expiring capability" pitch needs it |

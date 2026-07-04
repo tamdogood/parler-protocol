@@ -54,6 +54,11 @@ struct Args {
     #[arg(long, env = "PARLER_HUB_MAX_CONNECTIONS")]
     max_connections: Option<usize>,
 
+    /// Per-client-IP HTTP request budget per minute across the REST/A2A endpoints and the `/ws`
+    /// upgrade — the anti-abuse guard for the public front door (default 600). Pass `0` to disable.
+    #[arg(long, env = "PARLER_HUB_MAX_HTTP_PER_MIN")]
+    max_http_per_min: Option<u32>,
+
     /// Require this shared secret on connect (recommended for a private hub that is reachable over a
     /// public URL — without it, anyone who can reach the hub can join). Agents present it via
     /// `PARLER_JOIN_SECRET`.
@@ -118,6 +123,9 @@ async fn main() -> anyhow::Result<()> {
     }
     if let Some(max) = args.max_connections {
         state.max_connections = max;
+    }
+    if let Some(max) = args.max_http_per_min {
+        state.max_http_per_min = max;
     }
     state.join_secret = resolve_join_secret(
         args.join_secret,

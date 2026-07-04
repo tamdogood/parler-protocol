@@ -12,13 +12,23 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 /// Start an in-memory hub on an ephemeral port; return the bound address.
 async fn start_hub() -> SocketAddr {
+    start_hub_with_http_limit(0).await
+}
+
+/// Like [`start_hub`], but override the per-IP HTTP request budget (`0` keeps the default). Used by the
+/// rate-limit test to drive a low ceiling deterministically.
+async fn start_hub_with_http_limit(max_http_per_min: u32) -> SocketAddr {
     let store = parler_hub::Store::open(None).expect("open in-memory store");
-    let state = Arc::new(parler_hub::HubState::new(
+    let mut state = parler_hub::HubState::new(
         store,
         "parler://smoke".into(),
         "Smoke Hub".into(),
         parler_hub::HubMode::Private,
-    ));
+    );
+    if max_http_per_min > 0 {
+        state.max_http_per_min = max_http_per_min;
+    }
+    let state = Arc::new(state);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move {
@@ -115,6 +125,28 @@ async fn a2a_well_known_card_is_served() {
     assert!(body.contains("\"capabilities\""), "missing capabilities in {body}");
     // Points a crawler at the per-hub agent directory.
     assert!(body.contains("/a2a/directory"), "should advertise the directory in {body}");
+}
+
+#[tokio::test]
+async fn http_flood_is_rate_limited_and_health_is_exempt() {
+    // A tiny per-IP budget so a handful of requests trips it. All requests here come from 127.0.0.1
+    // (no proxy headers), so they share one bucket — exactly the flood shape we want to bound.
+    let addr = start_hub_with_http_limit(3).await;
+    await_health(addr).await;
+
+    // The budget applies to the public API: after 3 requests in the window, the next is refused.
+    let mut statuses = Vec::new();
+    for _ in 0..5 {
+        statuses.push(get(addr, "/api/hub").await.0);
+    }
+    assert!(statuses.contains(&429), "a flood past the budget must be throttled, got {statuses:?}");
+    assert_eq!(statuses.last(), Some(&429), "requests stay throttled once over budget: {statuses:?}");
+
+    // `/health` must never be throttled — Fly's liveness probe hits it every 15s and an over-budget
+    // client must not be able to knock the hub's health check offline.
+    let (status, body) = get(addr, "/health").await;
+    assert_eq!(status, 200, "/health is exempt from the rate limit even when the IP is over budget");
+    assert_eq!(body.trim(), "ok");
 }
 
 #[tokio::test]
