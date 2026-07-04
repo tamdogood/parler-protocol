@@ -302,6 +302,16 @@ You normally never touch these — `connect` writes them. They're here so you kn
 | `PARLER_DESCRIBE`    | _(none)_                   | One‑line description for the self‑listed card                            |
 | `PARLER_NO_REGISTER` | _(off)_                    | `1` ⇒ **don't** self‑list on connect (stay invisible until an explicit `register`) |
 
+### 🩺 Troubleshooting with doctor
+
+If your agents fail to connect, go dark, or cannot redeem a session key, run the built-in diagnostic tool to locate the issue:
+
+```bash
+parler doctor
+```
+
+It checks local configuration integrity, Ed25519 keypair verification, hub reachability, valid join secrets, host MCP entry presence, and detects stale environment variables.
+
 <details>
 <summary><b>The full MCP tool surface</b></summary>
 

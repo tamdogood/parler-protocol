@@ -514,7 +514,9 @@ async fn connect() -> Result<MeshAgent> {
             cfg.hub_url = hub;
         }
     }
-    MeshAgent::connect(&cfg).await
+    MeshAgent::connect(&cfg).await.map_err(|e| {
+        anyhow::anyhow!("{e} (run `parler doctor` to troubleshoot)")
+    })
 }
 
 async fn cmd_hub(a: HubArgs) -> Result<()> {
@@ -620,7 +622,7 @@ async fn probe_hubs(wired: &[connect::WiredAgent]) {
 }
 
 fn report_unreachable(hub: &str, err: &str) {
-    println!("  ⚠ hub not reachable yet — {hub}: {err}");
+    println!("  ⚠ hub not reachable yet — {hub}: {err} (run `parler doctor` to troubleshoot)");
     if hub.contains("127.0.0.1") || hub.contains("localhost") {
         println!("     start it and keep it running:  parler hub --local");
     } else {
@@ -650,7 +652,7 @@ async fn verify_dial_in(wired: Vec<connect::WiredAgent>, timeout: Duration) -> R
         let mut ag = match MeshAgent::connect(&cfg).await {
             Ok(ag) => ag,
             Err(e) => {
-                println!("  ✗ can't reach {hub}: {e}");
+                println!("  ✗ can't reach {hub}: {e} (run `parler doctor` to troubleshoot)");
                 if hub.contains("127.0.0.1") || hub.contains("localhost") {
                     println!("    (is your local hub running? start it with: parler hub --local)");
                 }
@@ -675,7 +677,7 @@ async fn verify_dial_in(wired: Vec<connect::WiredAgent>, timeout: Duration) -> R
             tokio::time::sleep(Duration::from_secs(2)).await;
         }
         for n in &names {
-            println!("  ⏳ {n} hasn't dialed in after {}s — restart it, then check with: parler connect --list", timeout.as_secs());
+            println!("  ⏳ {n} hasn't dialed in after {}s — restart it, run `parler doctor` to troubleshoot, or check later: parler connect --list", timeout.as_secs());
         }
     }
     Ok(())
@@ -1358,18 +1360,44 @@ pub fn clear_active_session() -> Result<()> {
     Ok(())
 }
 
+async fn check_session_key(cfg: &Config, key: &str, connected: bool) -> Result<String, String> {
+    if !connected {
+        return Err("hub offline".to_string());
+    }
+    match MeshAgent::connect(cfg).await {
+        Ok(mut test_agent) => {
+            match test_agent.redeem(key).await {
+                Ok(outcome) => {
+                    match outcome {
+                        parler_connector::JoinOutcome::Joined { room, .. } => {
+                            Ok(format!("✅ VALID (joined room '{room}')"))
+                        }
+                        parler_connector::JoinOutcome::Pending { room } => {
+                            Ok(format!("✅ VALID (pending approval for room '{room}')"))
+                        }
+                    }
+                }
+                Err(e) => {
+                    Err(format!("❌ STALE/CLOSED\n     PARLER_SESSION_KEY '{key}' is stale or closed.\n     Error: {e}"))
+                }
+            }
+        }
+        Err(_) => {
+            Err("could not connect to test key".to_string())
+        }
+    }
+}
+
 async fn cmd_doctor() -> Result<()> {
     println!("🩺 Running Parler System Diagnostics...");
     let mut clean = true;
 
-    // 1. Config & Keypair Check
+    // 1. Config Check
     print!("  • Checking local configuration... ");
-    let home = parler_connector::home_dir();
-    let cfg_path = home.join("config.json");
+    let mut loaded_cfg = None;
     if !Config::exists() {
         println!("❌ CONFIG NOT FOUND");
-        println!("     No Parler identity exists at {}.", cfg_path.display());
-        println!("     Run `parler init` or start MCP server to bootstrap.");
+        println!("     👉 Fix: parler init");
         clean = false;
     } else {
         match Config::load() {
@@ -1379,56 +1407,132 @@ async fn cmd_doctor() -> Result<()> {
                 println!("     Agent Name:   {}", cfg.name);
                 println!("     Agent Role:   {}", cfg.role.as_deref().unwrap_or("none"));
                 println!("     Agent ID:     {}", cfg.identity.id);
-                
-                print!("  • Verifying Ed25519 identity keypair... ");
-                let keypair_ok = (|| -> Result<()> {
-                    let kp = nkeys::KeyPair::from_seed(&cfg.identity.seed)?;
-                    if kp.public_key() != cfg.identity.id {
-                        bail!("identity mismatch: seed public key != config id");
-                    }
-                    let test_sig = kp.sign(b"parler_doctor_probe")?;
-                    if !parler_auth::verify(&cfg.identity.id, b"parler_doctor_probe", &data_encoding::BASE64.encode(&test_sig)) {
-                        bail!("keypair verification failed");
-                    }
-                    Ok(())
-                })();
-                match keypair_ok {
-                    Ok(_) => println!("✅ INTEGRITY OK"),
-                    Err(e) => {
-                        println!("❌ CORRUPTED ({e})");
-                        clean = false;
-                    }
-                }
-
-                // 2. Hub connectivity
-                print!("  • Testing connectivity to hub... ");
-                match MeshAgent::connect(&cfg).await {
-                    Ok(_) => println!("✅ CONNECTED & AUTHENTICATED"),
-                    Err(e) => {
-                        println!("❌ FAILED");
-                        println!("     Could not connect to {}: {}", cfg.hub_url, e);
-                        clean = false;
-                    }
-                }
+                loaded_cfg = Some(cfg);
             }
             Err(e) => {
                 println!("❌ PARSE ERROR ({e})");
+                println!("     👉 Fix: parler init --force");
                 clean = false;
             }
         }
     }
 
-    // 3. Database & sqlite-vec status (local in-memory test for client)
+    // 2. Keypair Check (only if config loaded successfully)
+    if let Some(ref cfg) = loaded_cfg {
+        print!("  • Verifying Ed25519 identity keypair... ");
+        let keypair_ok = (|| -> Result<()> {
+            let kp = nkeys::KeyPair::from_seed(&cfg.identity.seed)?;
+            if kp.public_key() != cfg.identity.id {
+                bail!("identity mismatch: seed public key != config id");
+            }
+            let test_sig = kp.sign(b"parler_doctor_probe")?;
+            if !parler_auth::verify(&cfg.identity.id, b"parler_doctor_probe", &data_encoding::BASE64.encode(&test_sig)) {
+                bail!("keypair verification failed");
+            }
+            Ok(())
+        })();
+        match keypair_ok {
+            Ok(_) => println!("✅ INTEGRITY OK"),
+            Err(e) => {
+                println!("❌ CORRUPTED ({e})");
+                println!("     👉 Fix: parler init --force");
+                clean = false;
+            }
+        }
+    }
+
+    // 3. Hub reachability & Join secret check
+    let mut connected = false;
+    if let Some(ref cfg) = loaded_cfg {
+        print!("  • Testing connectivity to hub... ");
+        match MeshAgent::connect(cfg).await {
+            Ok(_) => {
+                println!("✅ CONNECTED & AUTHENTICATED");
+                connected = true;
+            }
+            Err(e) => {
+                let err_str = e.to_string();
+                if err_str.contains("requires a join secret") || err_str.contains("authentication failed:") {
+                    println!("❌ JOIN SECRET INVALID");
+                    println!("     Could not authenticate to {}: {}", cfg.hub_url, e);
+                    println!("     👉 Fix: export PARLER_JOIN_SECRET=<secret>");
+                } else {
+                    println!("❌ FAILED");
+                    println!("     Could not connect to {}: {}", cfg.hub_url, e);
+                    println!("     👉 Fix: Start a local hub with 'parler hub --local' or check your network/URL.");
+                }
+                clean = false;
+            }
+        }
+    }
+
+    // 4. Stale/closed PARLER_SESSION_KEY detection
+    if let Some(ref cfg) = loaded_cfg {
+        if let Some(key) = std::env::var("PARLER_SESSION_KEY").ok().filter(|s| !s.is_empty()) {
+            print!("  • Checking PARLER_SESSION_KEY... ");
+            match check_session_key(cfg, &key, connected).await {
+                Ok(msg) => println!("{msg}"),
+                Err(ref e) => {
+                    if e.contains("❌ STALE/CLOSED") {
+                        println!("{e}");
+                        println!("     👉 Fix: unset PARLER_SESSION_KEY (stale key; remove it from your environment or configuration)");
+                        clean = false;
+                    } else if e == "hub offline" {
+                        println!("⚠️ SKIPPED (hub offline)");
+                    } else {
+                        println!("⚠️ SKIPPED ({e})");
+                    }
+                }
+            }
+        }
+    }
+
+    // 5. MCP entry present per host
+    print!("  • Checking MCP entries present per host... ");
+    let hosts = connect::registry();
+    let mut installed_hosts = Vec::new();
+    for host in &hosts {
+        if connect::is_installed(host) {
+            installed_hosts.push(host);
+        }
+    }
+    if installed_hosts.is_empty() {
+        println!("✅ NO INSTALLED HOSTS DETECTED");
+    } else {
+        let mut mcp_clean = true;
+        let mut details = Vec::new();
+        for host in installed_hosts {
+            if connect::is_configured(host) {
+                details.push(format!("     ✅ {} is configured", host.name));
+            } else {
+                details.push(format!("     ❌ {} is NOT configured", host.name));
+                details.push(format!("        👉 Fix: parler connect {}", host.id));
+                mcp_clean = false;
+                clean = false;
+            }
+        }
+        if mcp_clean {
+            println!("✅ OK");
+        } else {
+            println!("❌ MISSING CONFIGURATION");
+        }
+        for detail in details {
+            println!("{detail}");
+        }
+    }
+
+    // 6. Database Check
     print!("  • Checking sqlite-vec extension... ");
     match parler_hub::Store::open(None) {
         Ok(_) => println!("✅ AVAILABLE"),
         Err(e) => {
             println!("❌ UNAVAILABLE ({e})");
+            println!("     👉 Fix: Check sqlite-vec dependency or library load paths.");
             clean = false;
         }
     }
 
-    // 4. Git binary
+    // 7. Git Check
     print!("  • Checking git workspace... ");
     match git_in(None, &["--version"]) {
         Ok(v) => {
@@ -1440,11 +1544,12 @@ async fn cmd_doctor() -> Result<()> {
         }
         Err(e) => {
             println!("❌ NOT FOUND ({e})");
+            println!("     👉 Fix: Install git and ensure it is in your PATH.");
             clean = false;
         }
     }
 
-    // 5. Recent MCP activity — the breadcrumb `parler mcp` leaves each launch, so a user can see
+    // 8. Recent MCP activity — the breadcrumb `parler mcp` leaves each launch, so a user can see
     // whether an editor-launched agent actually connected (its stderr is invisible in a GUI host).
     print!("  • Recent MCP activity... ");
     match mcp::recent_log(5) {
@@ -1697,4 +1802,57 @@ fn run_curl_post_headers(url: &str, json_payload: &str, headers: &[(&str, &str)]
         bail!("curl request failed: {}", String::from_utf8_lossy(&out.stderr).trim());
     }
     Ok(String::from_utf8_lossy(&out.stdout).to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+
+    /// Boot an in-memory hub on an ephemeral port; return its ws:// URL.
+    async fn start_hub() -> String {
+        let store = parler_hub::Store::open(None).unwrap();
+        let state = Arc::new(parler_hub::HubState::new(
+            store,
+            "parler://test".into(),
+            "Test Hub".into(),
+            parler_hub::HubMode::Private,
+        ));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let _ = parler_hub::serve(listener, state).await;
+        });
+        format!("ws://{addr}")
+    }
+
+    #[tokio::test]
+    async fn test_stale_session_key_detection() {
+        let hub_url = start_hub().await;
+        
+        // Setup a temporary configuration directory
+        let temp_dir = tempfile::tempdir().unwrap();
+        let old_home = std::env::var("PARLER_HOME").ok();
+        std::env::set_var("PARLER_HOME", temp_dir.path());
+
+        // Create config pointing to our local hub
+        let cfg = Config::create(&hub_url, "doctor_test", None).unwrap();
+        cfg.save().unwrap();
+
+        // Testing check_session_key with a stale key
+        let stale_key = "INVALIDKEY";
+        let res = check_session_key(&cfg, stale_key, true).await;
+        
+        assert!(res.is_err());
+        let err_msg = res.unwrap_err();
+        assert!(err_msg.contains("❌ STALE/CLOSED"));
+        assert!(err_msg.contains(stale_key));
+        
+        // Clean up environment variables
+        if let Some(h) = old_home {
+            std::env::set_var("PARLER_HOME", h);
+        } else {
+            std::env::remove_var("PARLER_HOME");
+        }
+    }
 }

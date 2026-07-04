@@ -99,7 +99,7 @@ pub struct WiredAgent {
 /// How a given MCP host stores its server config — the knowledge that used to be scattered across
 /// docs and the Electron app, centralized so one code path serves the CLI *and* the desktop.
 #[derive(Debug, Clone)]
-enum Wiring {
+pub(crate) enum Wiring {
     /// Claude Code — driven through its own `claude mcp add` CLI (the supported API).
     ClaudeCli,
     /// A JSON file with a top-level `mcpServers` object (Cursor, Windsurf, Gemini, Claude Desktop).
@@ -108,12 +108,12 @@ enum Wiring {
     Toml(PathBuf),
 }
 
-struct HostDef {
-    id: &'static str,
-    name: &'static str,
-    wiring: Wiring,
+pub(crate) struct HostDef {
+    pub(crate) id: &'static str,
+    pub(crate) name: &'static str,
+    pub(crate) wiring: Wiring,
     /// If any of these paths exists, the host is considered installed.
-    hints: Vec<PathBuf>,
+    pub(crate) hints: Vec<PathBuf>,
 }
 
 /// The MCP server name we register under, in every host.
@@ -123,7 +123,7 @@ const SERVER_NAME: &str = "parler";
 // Registry
 // ---------------------------------------------------------------------------------------------
 
-fn registry() -> Vec<HostDef> {
+pub(crate) fn registry() -> Vec<HostDef> {
     let home = user_home();
     let claude_desktop_dir = if cfg!(target_os = "macos") {
         home.join("Library/Application Support/Claude")
@@ -201,7 +201,7 @@ fn canonical_id(token: &str) -> Option<&'static str> {
 // Detection
 // ---------------------------------------------------------------------------------------------
 
-fn is_installed(def: &HostDef) -> bool {
+pub(crate) fn is_installed(def: &HostDef) -> bool {
     match &def.wiring {
         Wiring::ClaudeCli => resolve_claude().is_some() || def.hints.iter().any(|p| p.exists()),
         _ => def.hints.iter().any(|p| p.exists()),
@@ -209,7 +209,7 @@ fn is_installed(def: &HostDef) -> bool {
 }
 
 /// Whether this host already has a `parler` server configured (so `--list` can say "connected").
-fn is_configured(def: &HostDef) -> bool {
+pub(crate) fn is_configured(def: &HostDef) -> bool {
     match &def.wiring {
         Wiring::ClaudeCli => resolve_claude()
             .map(|claude| {
@@ -857,6 +857,7 @@ fn emit_human(opts: &Options, hub_url: &str, secret: Option<&str>, reports: &[Re
         }
         println!("\nEach agent gets its own stable identity under {} (an agent you already set up keeps the one it has).", display_path(&parler_root().join("agents")));
         println!("Watch them come online:  parler connect --verify   (or check later: parler connect --list)");
+        println!("Troubleshoot setup:      parler doctor");
     }
 
     // The hub-run + teammate instructions, only where they apply.

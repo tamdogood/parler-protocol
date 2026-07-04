@@ -31,13 +31,19 @@ struct McpState {
 
 /// Connect to the hub, then serve the MCP JSON-RPC loop on stdin/stdout until EOF.
 pub async fn serve_stdio() -> Result<()> {
-    let cfg = load_or_bootstrap_config()?;
+    let cfg = match load_or_bootstrap_config() {
+        Ok(c) => c,
+        Err(e) => {
+            log_event(&format!("bootstrap FAILED: {e} (run `parler doctor` to troubleshoot)"));
+            return Err(e);
+        }
+    };
     let mut agent = match MeshAgent::connect(&cfg).await {
         Ok(a) => a,
         Err(e) => {
             // Leave a breadcrumb before we exit: a GUI host swallows stderr, so `parler doctor`
             // reading this log is often the only way a user learns *why* the agent went dark.
-            log_event(&format!("connect FAILED → {}: {e}", cfg.hub_url));
+            log_event(&format!("connect FAILED → {}: {e} (run `parler doctor` to troubleshoot)", cfg.hub_url));
             return Err(e);
         }
     };
@@ -58,8 +64,14 @@ pub async fn serve_stdio() -> Result<()> {
     // protocol channel) and carry on.
     if let Some(key) = std::env::var("PARLER_SESSION_KEY").ok().filter(|s| !s.is_empty()) {
         match join_session(&mut state, &key, Backlog::Recent).await {
-            Ok(msg) => eprintln!("parler: {msg}"),
-            Err(e) => eprintln!("parler: PARLER_SESSION_KEY join failed: {e}"),
+            Ok(msg) => {
+                eprintln!("parler: {msg}");
+                log_event(&format!("session join SUCCESS ({key}): {msg}"));
+            }
+            Err(e) => {
+                eprintln!("parler: PARLER_SESSION_KEY join failed: {e}");
+                log_event(&format!("session join FAILED ({key}): {e} (run `parler doctor` to troubleshoot)"));
+            }
         }
     }
 
