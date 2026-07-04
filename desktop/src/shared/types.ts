@@ -10,6 +10,12 @@ export interface Settings {
   autoStartHub: boolean;
   /** Local hub is world-readable (public directory) vs. token-gated private. Default private. */
   hubPublic: boolean;
+  /**
+   * Bind the hub on all interfaces (0.0.0.0) so teammates on your network can dial in, vs. loopback
+   * only (127.0.0.1, nothing leaves this Mac). A reachable *private* hub is the "team" rung — still
+   * gated by the join secret. Default off.
+   */
+  hubReachable: boolean;
   /** Display name for the local hub, shown in the directory/site. */
   hubName: string;
   /** TCP port the local hub binds on 127.0.0.1. */
@@ -115,6 +121,30 @@ export interface OpenedSession {
   watch: string | null;
 }
 
+/** A persisted session the app opened — remembered across restarts so it can be managed later. */
+export interface OpenedSessionRecord {
+  room: string;
+  key: string;
+  /** Read-only watch code minted at open time (null if minting failed). */
+  watch: string | null;
+  /** Optional short name given at open time. */
+  topic: string | null;
+  /** Whether joiners must be approved before they can read the conversation. */
+  approval: boolean;
+  /** The hub URL this session was opened on — scopes which sessions the active hub can manage. */
+  hub: string;
+  /** epoch ms the session was opened. */
+  createdAt: number;
+}
+
+/** One agent waiting for approval to join a session (mirrors the CLI's `session requests --json`). */
+export interface SessionJoinRequest {
+  agent: string;
+  name: string;
+  role: string | null;
+  requestedAt: number;
+}
+
 /** The app's own agent identity (used to open/watch sessions). */
 export interface Identity {
   id: string;
@@ -147,6 +177,8 @@ export interface ParlerApi {
     openDataFolder(): Promise<void>;
     /** epoch-ms → dialable URL for the currently active target. */
     urlFor(target: HubTarget): Promise<string>;
+    /** Best-effort LAN IPv4 of this machine (for the teammate connect line), or null. */
+    lanAddress(): Promise<string | null>;
     onStatus(cb: (s: HubStatus) => void): () => void;
     onLog(cb: (line: string) => void): () => void;
   };
@@ -162,6 +194,16 @@ export interface ParlerApi {
     open(input: { context?: string; topic?: string; noApproval?: boolean }): Promise<OpenedSession>;
     mintWatch(room: string): Promise<{ token: string; room: string }>;
     whoami(): Promise<Identity>;
+    /** The sessions this app has opened, most recent first (persisted across restarts). */
+    list(): Promise<OpenedSessionRecord[]>;
+    /** Forget a persisted session locally (does not end it on the hub). */
+    forget(room: string): Promise<OpenedSessionRecord[]>;
+    /** Agents waiting for approval to join a session opened on the active hub. */
+    requests(room: string): Promise<SessionJoinRequest[]>;
+    /** Admit a pending joiner — they can then read the conversation and participate. */
+    approve(room: string, agent: string): Promise<ActionResult>;
+    /** Turn away a pending joiner. */
+    deny(room: string, agent: string): Promise<ActionResult>;
   };
   clipboard: {
     write(text: string): Promise<void>;

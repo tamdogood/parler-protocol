@@ -12,31 +12,38 @@ import {
   Globe,
   Lock,
   Loader2,
-  ChevronLeft,
+  Users,
+  Activity,
+  MessagesSquare,
+  Coins,
+  PackageOpen,
 } from "lucide-react";
 import type { HubStatus, HubStorage, Settings } from "@shared/types";
 import { parler } from "@/lib/ipc";
-import { bytes, cn, uptime } from "@/lib/utils";
+import { useHubSummary } from "@/lib/hooks";
+import { bytes, cn, compactNumber, uptime } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { CodeBlock, CopyButton } from "@/components/copyable";
+
+/** The private → team → public ladder, mirroring the CLI. Derived from two settings booleans. */
+type HubMode = "private" | "team" | "public";
 
 export function LocalHubScreen({
   status,
   settings,
   onUpdateSettings,
-  onBack,
 }: {
   status: HubStatus | null;
   settings: Settings | null;
   onUpdateSettings: (patch: Partial<Settings>) => Promise<void>;
-  onBack: () => void;
 }) {
   const [storage, setStorage] = useState<HubStorage | null>(null);
   const [logs, setLogs] = useState<string[]>([]);
   const [secret, setSecret] = useState<string | null>(null);
   const [showSecret, setShowSecret] = useState(false);
   const [snippet, setSnippet] = useState<string | null>(null);
+  const [lanIp, setLanIp] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const logRef = useRef<HTMLDivElement>(null);
 
@@ -71,6 +78,11 @@ export function LocalHubScreen({
     parler.agents.snippet("local").then((s) => setSnippet(s.shell));
   }, [status?.phase, status?.mode]);
 
+  // The machine's LAN IP for the teammate connect line (team mode).
+  useEffect(() => {
+    parler.hub.lanAddress().then(setLanIp);
+  }, []);
+
   const run = useCallback(async (fn: () => Promise<HubStatus>) => {
     setBusy(true);
     try {
@@ -80,16 +92,17 @@ export function LocalHubScreen({
     }
   }, []);
 
-  const toggleMode = async (makePublic: boolean) => {
-    await onUpdateSettings({ hubPublic: makePublic });
+  const mode: HubMode = settings?.hubPublic ? "public" : settings?.hubReachable ? "team" : "private";
+  const setMode = async (next: HubMode) => {
+    await onUpdateSettings({ hubPublic: next === "public", hubReachable: next !== "private" });
     if (running || starting) await run(() => parler.hub.restart());
   };
+  const port = status?.url ? new URL(status.url).port : String(settings?.hubPort ?? 7071);
+  const teamConnect =
+    lanIp && secret ? `PARLER_HUB=ws://${lanIp}:${port} PARLER_JOIN_SECRET=${secret} parler connect` : null;
 
   return (
     <div className="mx-auto max-w-[900px] px-8 py-8">
-      <button onClick={onBack} className="no-drag mb-5 inline-flex items-center gap-1.5 text-[13px] text-steel transition-colors hover:text-frost">
-        <ChevronLeft className="size-4" /> Settings
-      </button>
       <div className="flex flex-wrap items-center justify-between gap-4">
         <div className="flex items-center gap-3">
           <span className="flex size-11 items-center justify-center rounded-[12px] border border-graphite-rail surface-lift">
@@ -134,33 +147,36 @@ export function LocalHubScreen({
         <Stat label="Blobs" value={storage ? bytes(storage.blobBytes) : "—"} icon={<Package className="size-3.5" />} />
       </div>
 
-      {/* URL + mode */}
-      <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-2">
-        <div className="rounded-[14px] border border-graphite-rail bg-void-black p-4">
-          <p className="text-[11px] uppercase tracking-wide text-steel">Hub URL</p>
-          <div className="mt-2 flex items-center gap-2">
-            <code className="min-w-0 flex-1 truncate rounded-[8px] border border-graphite-rail bg-black/40 px-2.5 py-1.5 font-mono text-[12.5px] text-mist" data-selectable>
-              {status?.url ?? `http://127.0.0.1:${settings?.hubPort ?? 7071}`}
-            </code>
-            {status?.url && <CopyButton value={status.url} label="" />}
-          </div>
-        </div>
+      {/* Live activity — the hub's own since-boot throughput counters, for monitoring. */}
+      {running && <LiveActivity url={status?.url ?? null} />}
 
-        <div className="rounded-[14px] border border-graphite-rail bg-void-black p-4">
-          <p className="text-[11px] uppercase tracking-wide text-steel">Visibility</p>
-          <div className="mt-2 flex rounded-[10px] border border-graphite-rail p-0.5">
-            <ModeTab active={!settings?.hubPublic} onClick={() => toggleMode(false)} icon={<Lock className="size-3.5" />} label="Private" />
-            <ModeTab active={!!settings?.hubPublic} onClick={() => toggleMode(true)} icon={<Globe className="size-3.5" />} label="Public" />
-          </div>
-          <p className="mt-2 text-[11.5px] leading-relaxed text-steel">
-            {settings?.hubPublic
-              ? "Directory is world-readable. No join secret required."
-              : "Token-gated directory + a join secret. Recommended."}
-          </p>
+      {/* URL */}
+      <div className="mt-4 rounded-[14px] border border-graphite-rail bg-void-black p-4">
+        <p className="text-[11px] uppercase tracking-wide text-steel">Hub URL</p>
+        <div className="mt-2 flex items-center gap-2">
+          <code className="min-w-0 flex-1 truncate rounded-[8px] border border-graphite-rail bg-black/40 px-2.5 py-1.5 font-mono text-[12.5px] text-mist" data-selectable>
+            {status?.url ?? `http://127.0.0.1:${settings?.hubPort ?? 7071}`}
+          </code>
+          {status?.url && <CopyButton value={status.url} label="" />}
         </div>
       </div>
 
-      {/* Join secret (private only) */}
+      {/* Access ladder — private → team → public, mirroring the CLI. */}
+      <div className="mt-3 rounded-[14px] border border-graphite-rail bg-void-black p-4">
+        <p className="text-[11px] uppercase tracking-wide text-steel">Access</p>
+        <div className="mt-2 flex rounded-[10px] border border-graphite-rail p-0.5">
+          <ModeTab active={mode === "private"} onClick={() => setMode("private")} icon={<Lock className="size-3.5" />} label="Private" />
+          <ModeTab active={mode === "team"} onClick={() => setMode("team")} icon={<Users className="size-3.5" />} label="Team" />
+          <ModeTab active={mode === "public"} onClick={() => setMode("public")} icon={<Globe className="size-3.5" />} label="Public" />
+        </div>
+        <p className="mt-2 text-[11.5px] leading-relaxed text-steel">
+          {mode === "private" && "Loopback only — nothing leaves this Mac. Token-gated directory + a join secret. Recommended."}
+          {mode === "team" && "Reachable by teammates on your network, gated by the join secret below. The directory stays token-gated."}
+          {mode === "public" && "World-readable directory, reachable on your network. No join secret — anyone who can reach this Mac can join."}
+        </p>
+      </div>
+
+      {/* Join secret (private + team) */}
       {!settings?.hubPublic && secret && (
         <div className="mt-3 rounded-[14px] border border-graphite-rail bg-void-black p-4">
           <div className="flex items-center justify-between">
@@ -176,6 +192,25 @@ export function LocalHubScreen({
             <CopyButton value={secret} label="" />
           </div>
           <p className="mt-2 text-[11.5px] text-steel">Agents present this via <code className="font-mono">PARLER_JOIN_SECRET</code>. Share it out-of-band.</p>
+        </div>
+      )}
+
+      {/* Team: the one-liner a teammate on your network runs to dial in. */}
+      {mode === "team" && (
+        <div className="mt-3 rounded-[14px] border border-electric-blue/30 bg-electric-blue/[0.04] p-4">
+          <p className="flex items-center gap-1.5 text-[12px] uppercase tracking-wide text-steel">
+            <Users className="size-3.5 text-electric-blue" /> Teammate connect
+          </p>
+          {teamConnect ? (
+            <>
+              <p className="mt-1.5 text-[11.5px] text-fog">A teammate on your network runs this to wire their agents to your hub:</p>
+              <CodeBlock className="mt-2" code={teamConnect} />
+            </>
+          ) : (
+            <p className="mt-1.5 text-[11.5px] text-steel">
+              {lanIp ? "Start the hub to reveal the join secret and connect line." : "No LAN address detected — connect to a network to share this hub."}
+            </p>
+          )}
         </div>
       )}
 
@@ -266,6 +301,38 @@ function AdvancedPort({
           </Button>
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * A restrained live-monitoring strip: the current connection gauge plus the hub's since-boot
+ * throughput (messages, estimated tokens relayed, code pushes). Polled from `/api/hub` every 5s.
+ */
+function LiveActivity({ url }: { url: string | null }) {
+  const summary = useHubSummary(url, true);
+  const s = summary?.stats;
+  return (
+    <div className="mt-4">
+      <div className="mb-2 flex items-center gap-2">
+        <p className="text-[12px] uppercase tracking-wide text-steel">Live activity</p>
+        <span className="relative inline-flex size-1.5">
+          <span className="absolute inline-flex size-full animate-ping rounded-full bg-delivered-green/60" />
+          <span className="relative inline-flex size-1.5 rounded-full bg-delivered-green" />
+        </span>
+      </div>
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <Stat
+          label="Live connections"
+          value={s ? String(s.liveConnections) : "—"}
+          accent={s && s.liveConnections > 0 ? "#3ad389" : undefined}
+          icon={<Activity className="size-3.5" />}
+        />
+        <Stat label="Messages" value={s ? compactNumber(s.messagesTotal) : "—"} icon={<MessagesSquare className="size-3.5" />} />
+        <Stat label="≈ Tokens relayed" value={s ? compactNumber(s.estimatedTokensTotal) : "—"} icon={<Coins className="size-3.5" />} />
+        <Stat label="Code pushes" value={s ? compactNumber(s.pushesTotal) : "—"} icon={<PackageOpen className="size-3.5" />} />
+      </div>
+      <p className="mt-1.5 text-[11px] text-steel">Totals since the hub last started. Token figures are estimated from message text.</p>
     </div>
   );
 }

@@ -115,12 +115,16 @@ export class HubSupervisor extends EventEmitter {
       this.setStatus({ phase: "error", error: (e as Error).message });
       return this.getStatus();
     }
+    // The app always *talks* to the hub over loopback (health, its own identity, directory token);
+    // binding all interfaces only additionally exposes it to the LAN for teammates. A 0.0.0.0 bind
+    // still answers on 127.0.0.1, so nothing loopback-based changes.
+    const bindHost = settings.hubReachable ? "0.0.0.0" : "127.0.0.1";
     const url = `http://127.0.0.1:${port}`;
     const mode = settings.hubPublic ? "public" : "private";
 
     const args = [
       "--addr",
-      `127.0.0.1:${port}`,
+      `${bindHost}:${port}`,
       "--db",
       hubDbPath(),
       "--name",

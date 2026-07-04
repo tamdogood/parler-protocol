@@ -34,12 +34,23 @@ export interface DirectoryEntry {
   lastSeen: number;
 }
 
+/** Cumulative-since-boot counters + live gauge the hub surfaces under `/api/hub` for monitoring. */
+export interface HubStats {
+  liveConnections: number;
+  connectionsTotal: number;
+  messagesTotal: number;
+  estimatedTokensTotal: number;
+  pushesTotal: number;
+}
+
 export interface HubSummary {
   name: string;
   mode: "public" | "private";
   agents: number;
   publicAgents: number;
   protocolVersion: string;
+  /** Optional so an older hub without the counters still renders. */
+  stats?: HubStats;
 }
 
 export type Scope = "public" | "hub";

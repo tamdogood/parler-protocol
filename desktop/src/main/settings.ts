@@ -17,6 +17,7 @@ function defaults(): Settings {
   return {
     autoStartHub: true,
     hubPublic: false,
+    hubReachable: false,
     hubName: `${who}'s Hub`,
     hubPort: DEFAULT_HUB_PORT,
     connectTarget: "local",

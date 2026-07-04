@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { userInfo } from "node:os";
-import type { Identity, OpenedSession } from "../shared/types";
+import type { Identity, OpenedSession, SessionJoinRequest } from "../shared/types";
 import { parlerBinary, appParlerHome } from "./paths";
 
 /** Which hub the app's own identity talks to, plus its join secret (private hubs). */
@@ -117,6 +117,38 @@ export async function mintDirectoryToken(ctx: HubContext, ttlSecs = 86400): Prom
     .find((l) => l.length >= 12 && !/\s/.test(l));
   if (!token) throw new Error("could not parse the directory token from parler output");
   return token;
+}
+
+/** List the agents waiting for approval to join a session this identity opened (structured JSON). */
+export async function sessionRequests(room: string, ctx: HubContext): Promise<SessionJoinRequest[]> {
+  await ensureIdentity(ctx);
+  const r = await run(["session", "requests", "--room", room, "--json"], ctx);
+  if (r.code !== 0) throw new Error(cleanErr(r.stderr || r.stdout) || "failed to read join requests");
+  try {
+    const parsed = JSON.parse(r.stdout.trim()) as { requests?: SessionJoinRequest[] };
+    return (parsed.requests ?? []).map((q) => ({
+      agent: q.agent,
+      name: q.name,
+      role: q.role ?? null,
+      requestedAt: q.requestedAt,
+    }));
+  } catch {
+    throw new Error("could not parse join requests from parler output");
+  }
+}
+
+/** Admit (`approve=true`) or turn away (`approve=false`) a pending joiner. */
+export async function resolveJoin(
+  room: string,
+  agent: string,
+  approve: boolean,
+  ctx: HubContext,
+): Promise<void> {
+  await ensureIdentity(ctx);
+  const r = await run(["session", approve ? "approve" : "deny", "--room", room, agent], ctx);
+  if (r.code !== 0) {
+    throw new Error(cleanErr(r.stderr || r.stdout) || `failed to ${approve ? "approve" : "deny"} the joiner`);
+  }
 }
 
 /** Mint a read-only watch code for a session this identity owns. */

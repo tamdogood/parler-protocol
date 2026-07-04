@@ -69,3 +69,8 @@ export function appParlerHome(): string {
 export function settingsPath(): string {
   return join(dataDir(), "settings.json");
 }
+
+/** sessions.json path — the sessions the app has opened (kept out of settings/preferences). */
+export function sessionsPath(): string {
+  return join(dataDir(), "sessions.json");
+}

@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { PUBLIC_HUB } from "@shared/types";
 import { parler } from "@/lib/ipc";
-import { useHubStatus, useHubUrl, useSettings } from "@/lib/hooks";
+import { useHubStatus, useHubUrl, usePendingJoinCount, useSettings } from "@/lib/hooks";
 import { TitleBar } from "@/components/titlebar";
 import { Sidebar, type Screen } from "@/components/sidebar";
 import { AgentsScreen } from "@/screens/agents-screen";
@@ -20,9 +20,23 @@ export function App() {
   const [screen, setScreen] = useState<Screen>("agents");
   const [version, setVersion] = useState("0.0.0");
   const [replayOnboarding, setReplayOnboarding] = useState(false);
+  const pendingJoins = usePendingJoinCount(status);
 
   useEffect(() => {
     parler.app.version().then(setVersion);
+  }, []);
+
+  // ⌘1–5 jump between screens — the native-app expectation.
+  useEffect(() => {
+    const nav: Record<string, Screen> = { "1": "agents", "2": "connect", "3": "sessions", "4": "hub", "5": "settings" };
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && nav[e.key]) {
+        e.preventDefault();
+        setScreen(nav[e.key]);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
   }, []);
 
   if (!settings) return <div className="h-screen w-screen bg-black" />;
@@ -33,7 +47,7 @@ export function App() {
     <div className="flex h-screen flex-col overflow-hidden bg-black text-frost">
       <TitleBar status={status} onOpenHub={() => setScreen("hub")} />
       <div className="flex min-h-0 flex-1">
-        <Sidebar active={screen} onNavigate={setScreen} status={status} />
+        <Sidebar active={screen} onNavigate={setScreen} status={status} pendingJoins={pendingJoins} />
         <main className="min-w-0 flex-1 overflow-y-auto">
           {screen === "agents" && <AgentsScreen localUrl={localUrl} status={status} onConnect={() => setScreen("connect")} />}
           {screen === "connect" && (
@@ -49,7 +63,7 @@ export function App() {
               onReplayOnboarding={() => setReplayOnboarding(true)}
             />
           )}
-          {screen === "hub" && <LocalHubScreen status={status} settings={settings} onUpdateSettings={update} onBack={() => setScreen("settings")} />}
+          {screen === "hub" && <LocalHubScreen status={status} settings={settings} onUpdateSettings={update} />}
         </main>
       </div>
 

@@ -1,4 +1,5 @@
 import { ipcMain, shell, clipboard, app } from "electron";
+import { networkInterfaces } from "node:os";
 import { PUBLIC_HUB, type HubTarget } from "../shared/types";
 import { CH } from "../shared/channels";
 import { HubSupervisor } from "./hub-supervisor";
@@ -6,9 +7,21 @@ import { loadSettings, saveSettings, syncLoginItem } from "./settings";
 import { parlerBinary, dataDir } from "./paths";
 import * as mcp from "./mcp";
 import * as cli from "./parler-cli";
+import { listSessions, saveSession, forgetSession } from "./session-store";
 
 function httpToWs(url: string): string {
   return url.replace(/^http/, "ws");
+}
+
+/** Best-effort private LAN IPv4 for the teammate connect line (skips loopback/link-local/internal). */
+function lanIp(): string | null {
+  const ifaces = networkInterfaces();
+  for (const addrs of Object.values(ifaces)) {
+    for (const a of addrs ?? []) {
+      if (a.family === "IPv4" && !a.internal && !a.address.startsWith("169.254.")) return a.address;
+    }
+  }
+  return null;
 }
 
 /** Build the app-facing IPC surface around a running supervisor. */
@@ -94,6 +107,7 @@ export function registerIpc(supervisor: HubSupervisor): void {
   });
   ipcMain.handle(CH.hubOpenDataFolder, () => shell.openPath(dataDir()));
   ipcMain.handle(CH.hubUrlFor, (_e, target: HubTarget) => urlFor(target));
+  ipcMain.handle(CH.hubLanAddress, () => lanIp());
 
   ipcMain.handle(CH.agentsDetect, () => mcp.detectHosts());
   ipcMain.handle(CH.agentsConnect, (_e, hostId: string, target: HubTarget) =>
@@ -103,9 +117,42 @@ export function registerIpc(supervisor: HubSupervisor): void {
   ipcMain.handle(CH.agentsDisconnect, (_e, hostId: string) => mcp.disconnect(hostId));
   ipcMain.handle(CH.agentsSnippet, (_e, target: HubTarget) => mcp.snippet(mcpContext(target)));
 
-  ipcMain.handle(CH.sessionOpen, (_e, input) => cli.openSession(input, hubContext()));
+  ipcMain.handle(CH.sessionOpen, async (_e, input) => {
+    const ctx = hubContext();
+    const opened = await cli.openSession(input, ctx);
+    // Remember it so the Sessions screen can manage it (re-copy, watch, approve joiners) later.
+    saveSession({
+      room: opened.room,
+      key: opened.key,
+      watch: opened.watch,
+      topic: input?.topic?.trim() || null,
+      approval: !input?.noApproval,
+      hub: ctx.url,
+      createdAt: Date.now(),
+    });
+    return opened;
+  });
   ipcMain.handle(CH.sessionMintWatch, (_e, room: string) => cli.mintWatch(room, hubContext()));
   ipcMain.handle(CH.sessionWhoami, () => cli.whoami(hubContext()));
+  ipcMain.handle(CH.sessionList, () => listSessions());
+  ipcMain.handle(CH.sessionForget, (_e, room: string) => forgetSession(room));
+  ipcMain.handle(CH.sessionRequests, (_e, room: string) => cli.sessionRequests(room, hubContext()));
+  ipcMain.handle(CH.sessionApprove, async (_e, room: string, agent: string) => {
+    try {
+      await cli.resolveJoin(room, agent, true, hubContext());
+      return { ok: true, message: `Approved ${agent}.` };
+    } catch (e) {
+      return { ok: false, message: e instanceof Error ? e.message : "Failed to approve." };
+    }
+  });
+  ipcMain.handle(CH.sessionDeny, async (_e, room: string, agent: string) => {
+    try {
+      await cli.resolveJoin(room, agent, false, hubContext());
+      return { ok: true, message: `Denied ${agent}.` };
+    } catch (e) {
+      return { ok: false, message: e instanceof Error ? e.message : "Failed to deny." };
+    }
+  });
 
   ipcMain.handle(CH.clipboardWrite, (_e, text: string) => clipboard.writeText(text));
   ipcMain.handle(CH.shellOpenExternal, (_e, url: string) => shell.openExternal(url));

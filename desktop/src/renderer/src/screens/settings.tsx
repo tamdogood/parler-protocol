@@ -41,7 +41,10 @@ export function SettingsScreen({
         <Row title="Start hub on launch" subtitle="Boot your private hub automatically when Parler opens.">
           <Switch on={settings.autoStartHub} onChange={(v) => onUpdate({ autoStartHub: v })} />
         </Row>
-        <Row title={settings.hubName} subtitle={`Port ${settings.hubPort} · ${settings.hubPublic ? "public" : "private"}`}>
+        <Row
+          title={settings.hubName}
+          subtitle={`Port ${settings.hubPort} · ${settings.hubPublic ? "public" : settings.hubReachable ? "team (LAN)" : "private"}`}
+        >
           <Button variant="outline" size="sm" onClick={() => onNavigate("hub")}>
             <Server className="size-3.5" /> Manage
           </Button>

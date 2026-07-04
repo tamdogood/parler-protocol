@@ -228,6 +228,9 @@ enum SessionCmd {
         /// The session room (defaults to your active session).
         #[arg(long)]
         room: Option<String>,
+        /// Emit machine-readable JSON (used by the Parler desktop app): `{room, requests:[…]}`.
+        #[arg(long)]
+        json: bool,
     },
     /// Approve a pending joiner into a session you opened — they can then read it and participate.
     Approve {
@@ -915,9 +918,18 @@ async fn cmd_session(c: SessionCmd) -> Result<()> {
             }
             println!("send with:  parler send --room {room} \"…\"    receive with:  parler recv --room {room}");
         }
-        SessionCmd::Requests { room } => {
+        SessionCmd::Requests { room, json } => {
             let room = session_room(room)?;
             let reqs = ag.join_requests(&room).await?;
+            if json {
+                // Stable machine-readable shape for the desktop app. `JoinRequest` already
+                // serializes as `{agent, name, role?, requestedAt}`.
+                println!(
+                    "{}",
+                    serde_json::json!({ "room": room, "requests": reqs })
+                );
+                return Ok(());
+            }
             if reqs.is_empty() {
                 println!("(no agents waiting to join '{room}')");
                 return Ok(());
