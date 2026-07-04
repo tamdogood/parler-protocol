@@ -493,11 +493,14 @@ async fn call_tool(agent: &mut MeshAgent, name: &str, args: &Value) -> Result<St
             };
             let r = agent.push(target, &bytes, meta, s("note")).await?;
             Ok(format!(
-                "pushed git bundle to '{}' (seq {}, {} bytes). tip: {} {summary}\nThe peer runs: parler apply {}",
+                "pushed git bundle to '{}' (seq {}, {} bytes). tip: {} {summary}\n\
+                 The peer runs (MCP): parler_apply blob={}\n\
+                 The peer runs (CLI): parler apply {}",
                 r.room,
                 r.seq,
                 bytes.len(),
                 tip,
+                r.blob_id,
                 r.blob_id,
             ))
         }
@@ -505,8 +508,52 @@ async fn call_tool(agent: &mut MeshAgent, name: &str, args: &Value) -> Result<St
             let id = s("id").ok_or_else(|| anyhow!("missing 'id'"))?;
             let bytes = agent.fetch_blob(&id).await?;
             let out = s("out").unwrap_or_else(|| format!("{}.bundle", &id[..id.len().min(12)]));
-            std::fs::write(&out, &bytes)?;
-            Ok(format!("wrote {} bytes to {out} (apply with: git bundle verify {out} && git fetch {out})", bytes.len()))
+            let out_path = std::path::PathBuf::from(out);
+            std::fs::write(&out_path, &bytes)?;
+            let abs_out = std::fs::canonicalize(&out_path).unwrap_or_else(|_| {
+                std::env::current_dir().unwrap_or_default().join(&out_path)
+            });
+            let abs_out_str = abs_out.to_string_lossy();
+            Ok(format!("wrote {} bytes to {} (apply with: git bundle verify {} && git fetch {})", bytes.len(), abs_out_str, abs_out_str, abs_out_str))
+        }
+        "parler_apply" => {
+            let blob = s("blob").ok_or_else(|| anyhow!("missing 'blob'"))?;
+            let path_val = s("path");
+            let resolved_dir = match path_val.as_deref() {
+                Some(d) => std::fs::canonicalize(std::path::Path::new(d))
+                    .map_err(|e| anyhow!("invalid path '{d}': {e}"))?,
+                None => std::env::current_dir()?,
+            };
+            let repo_str = resolved_dir.to_str().ok_or_else(|| anyhow!("non-UTF8 repo path"))?;
+            if crate::git_in(Some(repo_str), &["rev-parse", "--git-dir"]).is_err() {
+                bail!("not inside a git repository — run `parler_apply` from the repo you want to import into (path: {})", repo_str);
+            }
+            let bytes = agent.fetch_blob(&blob).await?;
+            let tmp = std::env::temp_dir().join(format!("parler-apply-{}.bundle", std::process::id()));
+            std::fs::write(&tmp, &bytes)?;
+            let refname = format!("refs/parler/{}", crate::short(&blob));
+            let result = (|| -> Result<String> {
+                let tmp_s = crate::path_str(&tmp)?;
+                if let Err(e) = crate::git_in(Some(repo_str), &["bundle", "verify", tmp_s]) {
+                    bail!("bundle verify failed (you may be missing the base commit it is thin against): {e}");
+                }
+                crate::git_in(Some(repo_str), &["fetch", tmp_s])?;
+                let heads = crate::git_in(Some(repo_str), &["bundle", "list-heads", tmp_s])?;
+                let tip_sha = heads.split_whitespace().next().unwrap_or_default().to_string();
+                if !tip_sha.is_empty() {
+                    crate::git_in(Some(repo_str), &["update-ref", &refname, &tip_sha])?;
+                }
+                Ok(heads)
+            })();
+            let _ = std::fs::remove_file(&tmp);
+            let heads = result?;
+            let abs_dir_str = resolved_dir.to_string_lossy();
+            Ok(format!(
+                "imported into {} in repository {} (working tree untouched).\nheads:\n{}",
+                refname,
+                abs_dir_str,
+                heads
+            ))
         }
         "parler_remember" => {
             let text = s("text").ok_or_else(|| anyhow!("missing 'text'"))?;
@@ -1333,7 +1380,7 @@ fn tool_specs() -> Vec<Value> {
         ),
         tool(
             "parler_remember",
-            "Save a durable fact to shared memory instead of re-reading history. With a key, re-saving overwrites (idempotent) — e.g. key=\"session-digest\" room=<room> keeps a rolling recap late joiners get cheaply. Optionally scope to a room; pass an embedding for hybrid semantic recall.",
+            "Save fact to shared memory. Re-saving with key overwrites (idempotent) — e.g. key=\"session-digest\" keeps rolling recap. Optionally scope to room or pass embedding.",
             json!({
                 "text": { "type": "string" },
                 "key": { "type": "string" },
@@ -1345,7 +1392,7 @@ fn tool_specs() -> Vec<Value> {
         ),
         tool(
             "parler_recall",
-            "Recall saved facts (BM25 full-text; hybrid BM25 + vector KNN when an embedding is given). Cheaper than re-reading history for durable state you saved with parler_remember.",
+            "Recall saved facts (BM25 full-text; hybrid BM25 + vector KNN when embedding is given). Cheaper than re-reading history for state saved with parler_remember.",
             json!({
                 "query": { "type": "string" },
                 "room": { "type": "string" },
@@ -1356,7 +1403,7 @@ fn tool_specs() -> Vec<Value> {
         ),
         tool(
             "parler_push",
-            "Hand off code: build a git bundle from the repo and push it to a room/peer/service (exactly one). With base, bundle only base..gitref (a thin patch series). The peer applies it with `parler apply <blob>`.",
+            "Build and push a git bundle from the repo to a target. With base, bundle only base..gitref (thin patch).",
             json!({
                 "room": { "type": "string" },
                 "to": { "type": "string" },
@@ -1371,12 +1418,21 @@ fn tool_specs() -> Vec<Value> {
         ),
         tool(
             "parler_fetch",
-            "Download a pushed bundle's bytes by blob id (from a com.parler.bundle message) to a file. Does NOT apply — verify/fetch with git yourself.",
+            "Download a pushed bundle's bytes by blob id to a file. Does NOT apply.",
             json!({
                 "id": { "type": "string" },
                 "out": { "type": "string", "description": "output file (default: <blob>.bundle)" }
             }),
             &["id"],
+        ),
+        tool(
+            "parler_apply",
+            "Download a pushed bundle and apply the git bundle to the target repo.",
+            json!({
+                "blob": { "type": "string" },
+                "path": { "type": "string", "description": "repository directory path (default: current directory)" }
+            }),
+            &["blob"],
         ),
         tool("parler_rooms", "List the rooms you belong to, with unread counts.", json!({}), &[]),
         tool(
@@ -1396,7 +1452,7 @@ fn tool_specs() -> Vec<Value> {
         ),
         tool(
             "parler_register",
-            "Publish your discovery card. visibility: private (default, same-hub) or public (anyone). Signed with your key, so it's tamper-evident.",
+            "Publish your discovery card. visibility: private (default, same-hub) or public (anyone). Signed with your key.",
             json!({
                 "visibility": { "type": "string", "enum": ["public", "private"] },
                 "tags": { "type": "array", "items": { "type": "string" }, "description": "capability tags" },
@@ -1407,7 +1463,7 @@ fn tool_specs() -> Vec<Value> {
         ),
         tool(
             "parler_discover",
-            "Discover agents. scope: hub (default) or public. Filter by query/tag/skill/status. Results are compact (no ids) and capped by default — you can parler_send to=<name> / parler_card <name> directly; pass detail:true for ids or raise limit for more.",
+            "Discover agents on hub (default) or public. Filter by query/tag/skill/status. Results are compact; pass detail:true for ids.",
             json!({
                 "scope": { "type": "string", "enum": ["hub", "public"] },
                 "query": { "type": "string" },
@@ -2209,4 +2265,153 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    #[tokio::test]
+    async fn test_mcp_push_handoff_apply_e2e() {
+        let hub = start_hub().await;
+        let mut alice = state(&hub, "alice").await;
+        let mut bob = state(&hub, "bob").await;
+
+        let inv = alice.agent.invite(RoomKind::Channel, Some("dev".into()), None, None).await.unwrap();
+        bob.agent.join(&inv.code).await.unwrap();
+
+        // Set up temporary directories for repositories
+        let alice_dir = tempfile::tempdir().unwrap();
+        let bob_dir = tempfile::tempdir().unwrap();
+
+        let init_git_repo = |path: &std::path::Path| {
+            let run = |args: &[&str]| {
+                let status = std::process::Command::new("git")
+                    .current_dir(path)
+                    .args(args)
+                    .status()
+                    .unwrap();
+                assert!(status.success());
+            };
+            run(&["init", "--initial-branch=main"]);
+            run(&["config", "user.name", "Test User"]);
+            run(&["config", "user.email", "test@example.com"]);
+        };
+
+        init_git_repo(alice_dir.path());
+        init_git_repo(bob_dir.path());
+
+        // Create a commit in Alice's repo
+        std::fs::write(alice_dir.path().join("file.txt"), "hello").unwrap();
+        let commit_sha = {
+            let run = |args: &[&str]| {
+                let out = std::process::Command::new("git")
+                    .current_dir(alice_dir.path())
+                    .args(args)
+                    .output()
+                    .unwrap();
+                assert!(out.status.success());
+                out
+            };
+            run(&["add", "file.txt"]);
+            run(&["commit", "-m", "first commit"]);
+            let sha_out = run(&["rev-parse", "HEAD"]);
+            String::from_utf8(sha_out.stdout).unwrap().trim().to_string()
+        };
+
+        // Alice pushes the git bundle via MCP tool
+        let push_args = json!({
+            "room": inv.room,
+            "repo": alice_dir.path().to_str().unwrap(),
+            "gitref": "HEAD",
+        });
+        let push_res = call_tool(&mut alice.agent, "parler_push", &push_args).await.unwrap();
+        assert!(push_res.contains("pushed git bundle"));
+
+        // Extract blob ID from response
+        let blob_idx = push_res.find("blob=").unwrap() + 5;
+        let rest = &push_res[blob_idx..];
+        let end_idx = rest.find(|c: char| !c.is_ascii_alphanumeric()).unwrap_or(rest.len());
+        let blob_id = &rest[..end_idx];
+
+        // Bob fetches the bundle via parler_fetch
+        let bundle_out = bob_dir.path().join("fetched.bundle");
+        let fetch_args = json!({
+            "id": blob_id,
+            "out": bundle_out.to_str().unwrap(),
+        });
+        let fetch_res = call_tool(&mut bob.agent, "parler_fetch", &fetch_args).await.unwrap();
+        assert!(fetch_res.contains("wrote"));
+        assert!(bundle_out.exists());
+
+        // Bob applies the git bundle via parler_apply
+        let apply_args = json!({
+            "blob": blob_id,
+            "path": bob_dir.path().to_str().unwrap(),
+        });
+        let apply_res = call_tool(&mut bob.agent, "parler_apply", &apply_args).await.unwrap();
+        assert!(apply_res.contains("imported into refs/parler/"));
+
+        // Verify Bob's repo tip matches Alice's commit SHA
+        let refname = format!("refs/parler/{}", crate::short(blob_id));
+        let verify_out = std::process::Command::new("git")
+            .current_dir(bob_dir.path())
+            .args(&["rev-parse", &refname])
+            .output()
+            .unwrap();
+        assert!(verify_out.status.success());
+        let bob_sha = String::from_utf8(verify_out.stdout).unwrap().trim().to_string();
+        assert_eq!(bob_sha, commit_sha);
+    }
+
+    #[test]
+    fn test_no_phantom_tool_references() {
+        let specs = tool_specs();
+        let mut valid_tools: std::collections::HashSet<String> = specs
+            .iter()
+            .map(|t| t.get("name").unwrap().as_str().unwrap().to_string())
+            .collect();
+        
+        valid_tools.insert("parler_open_session".to_string());
+        valid_tools.insert("parler_join_session".to_string());
+        valid_tools.insert("parler_close_session".to_string());
+        valid_tools.insert("parler_join_requests".to_string());
+        valid_tools.insert("parler_approve_join".to_string());
+        valid_tools.insert("parler_deny_join".to_string());
+        valid_tools.insert("parler_watch_session".to_string());
+        valid_tools.insert("parler_session_handoff".to_string());
+        valid_tools.insert("parler_consolidate_session".to_string());
+        
+        let mcp_src = std::fs::read_to_string("src/mcp.rs").unwrap_or_else(|_| std::fs::read_to_string("crates/parler-cli/src/mcp.rs").unwrap());
+        let lib_src = std::fs::read_to_string("src/lib.rs").unwrap_or_else(|_| std::fs::read_to_string("crates/parler-cli/src/lib.rs").unwrap());
+        
+        let mut references = std::collections::HashSet::new();
+        for src in &[mcp_src, lib_src] {
+            let mut s = src.as_str();
+            while let Some(idx) = s.find("parler_") {
+                let s_sub = &s[idx..];
+                let len = s_sub.chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '_').count();
+                let tool_ref = &s_sub[..len];
+                if tool_ref.len() > 7 {
+                    references.insert(tool_ref.to_string());
+                }
+                s = &s_sub[len.max(1)..];
+            }
+        }
+        
+        let mut invalid = Vec::new();
+        for r in &references {
+            if r == "parler_auth" || r == "parler_connector" || r == "parler_protocol" || r == "parler_hub" {
+                continue;
+            }
+            if r == "parler_doctor_probe" {
+                continue;
+            }
+            if !valid_tools.contains(r) {
+                invalid.push(r.clone());
+            }
+        }
+        
+        assert!(
+            invalid.is_empty(),
+            "Found references to parler_* tools/names that are not in the valid tools list: {:?}",
+            invalid
+        );
+    }
 }
+

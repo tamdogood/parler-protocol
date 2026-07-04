@@ -1257,7 +1257,7 @@ pub fn render_parts(parts: &[Part]) -> String {
 // ---- git helpers (code handoff) ----
 
 /// Run `git` (optionally inside `repo` via `-C`), returning trimmed stdout or an error with stderr.
-fn git_in(repo: Option<&str>, args: &[&str]) -> Result<String> {
+pub(crate) fn git_in(repo: Option<&str>, args: &[&str]) -> Result<String> {
     let mut cmd = std::process::Command::new("git");
     if let Some(r) = repo {
         cmd.arg("-C").arg(r);
@@ -1272,12 +1272,12 @@ fn git_in(repo: Option<&str>, args: &[&str]) -> Result<String> {
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
-fn path_str(p: &Path) -> Result<&str> {
+pub(crate) fn path_str(p: &Path) -> Result<&str> {
     p.to_str().ok_or_else(|| anyhow::anyhow!("non-UTF8 path: {}", p.display()))
 }
 
 /// First 12 chars of a content id (for display / ref names).
-fn short(id: &str) -> &str {
+pub(crate) fn short(id: &str) -> &str {
     &id[..id.len().min(12)]
 }
 
