@@ -12,10 +12,12 @@ import { AgentMemory2026 } from "@/components/blog/ai-agent-memory-in-2026";
 import { ShareAgentContextWithTeam } from "@/components/blog/share-your-agent-context-with-your-team";
 import { HowAgentsHandOffCode } from "@/components/blog/how-agents-hand-off-code";
 import { HowToConnectYourAgents } from "@/components/blog/how-to-connect-your-ai-agents";
+import { WhyNotPutYourAgentsInSlack } from "@/components/blog/why-not-put-your-ai-agents-in-slack";
 import { SITE_URL, SITE_NAME, ALT_RSS } from "@/lib/seo";
 
 /** slug → fully-rendered article body. Add a line here when you add a post. */
 const BODIES: Record<string, React.ReactNode> = {
+  "why-not-put-your-ai-agents-in-slack": <WhyNotPutYourAgentsInSlack />,
   "how-to-connect-your-ai-agents": <HowToConnectYourAgents />,
   "how-agents-hand-off-code": <HowAgentsHandOffCode />,
   "share-your-agent-context-with-your-team": <ShareAgentContextWithTeam />,
