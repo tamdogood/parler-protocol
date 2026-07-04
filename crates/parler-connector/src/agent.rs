@@ -13,7 +13,25 @@ use parler_protocol::{
     MessageSig, Part, RecallHit, RoomInfo, RoomKind, RosterEntry, ServerFrame, StoredMessage, Target,
     Visibility,
 };
-use std::time::Duration;
+use std::time::{Duration, Instant};
+
+/// How long a long-poll chunk parks server-side before the client sends the next liveness `Ping`. A
+/// half-open transport is therefore detected within one interval. Sized under typical Fly/Caddy proxy
+/// idle windows (~60s) so a chunk + its ping always completes before an intermediary would cull the
+/// socket, with jitter added per-agent so a fleet doesn't beat in lockstep.
+const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(25);
+
+/// How long to wait for the `Pong` before declaring the connection zombied and reconnecting. Short
+/// relative to [`HEARTBEAT_INTERVAL`]: a live hub answers a `Ping` in well under a second.
+const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Upper bound on the random jitter shaved off a heartbeat chunk (0–5s), so a fleet that all start
+/// long-polling at once don't beat in lockstep against a shared proxy. Cheap source: a fresh v4 UUID
+/// byte (no extra `rand` dependency), which is uniform enough for de-synchronizing timers.
+fn heartbeat_jitter() -> Duration {
+    let b = uuid::Uuid::new_v4().as_bytes()[0]; // 0..=255
+    Duration::from_millis((b as u64) * 5000 / 255) // → 0..=5000 ms
+}
 
 /// A freshly minted invite — the code/link the human pastes to another agent.
 pub struct Invite {
@@ -95,6 +113,29 @@ impl MeshAgent {
         MeshAgent { transport, id, name, role, hub_url, identity: None, subscribed: false }
     }
 
+    /// Like [`MeshAgent::with_transport`], but carries a real `identity` + `hub_url`, so the
+    /// transparent-reconnect path (idle-timeout drop, half-open heartbeat) is exercisable: on a lost
+    /// connection this agent rebuilds a fresh [`HubClient`] against `hub_url`, exactly as
+    /// [`MeshAgent::connect`] would. Used by liveness tests that wrap a real client in a fault-injecting
+    /// transport and then verify the agent heals itself.
+    pub fn with_transport_and_identity(
+        transport: Box<dyn MeshTransport>,
+        identity: Identity,
+        name: String,
+        role: Option<String>,
+        hub_url: String,
+    ) -> MeshAgent {
+        MeshAgent {
+            transport,
+            id: identity.id.clone(),
+            name,
+            role,
+            hub_url,
+            identity: Some(identity),
+            subscribed: false,
+        }
+    }
+
     /// Run one request/reply, transparently reconnecting and retrying **once** if the connection was
     /// lost (an idle-timeout drop, a network blip). Room membership and read cursors are durable on
     /// the hub, so the resumed connection is already in the same rooms — no re-join, no re-approval.
@@ -130,9 +171,12 @@ impl MeshAgent {
         let client =
             HubClient::connect(&self.hub_url, identity, &self.name, self.role.as_deref()).await?;
         self.transport = Box::new(client);
-        // Best-effort: if re-subscribe fails we simply fall back to pull-based reads.
+        // Restore the push subscription on the fresh socket, and keep `subscribed` honest: if the
+        // re-subscribe fails, push is *not* live on the new connection, so record that (the MCP layer
+        // queries `push_active()` and must not believe a dead subscription is up). Server-side wait
+        // still works without push, so falling back to `subscribed = false` is safe, not degrading.
         if self.subscribed {
-            let _ = self.transport.subscribe().await;
+            self.subscribed = self.transport.subscribe().await.unwrap_or(false);
         }
         Ok(())
     }
@@ -336,11 +380,110 @@ impl MeshAgent {
         limit: Option<u32>,
     ) -> Result<(Vec<StoredMessage>, i64)> {
         match self
-            .request(ClientFrame::Pull { room: room.to_string(), since, limit })
+            .request(ClientFrame::Pull { room: room.to_string(), since, limit, wait_secs: None })
             .await?
         {
             ServerFrame::Pulled { messages, cursor, .. } => Ok((messages, cursor)),
             other => bail!("unexpected reply to pull: {other:?}"),
+        }
+    }
+
+    /// **Long-poll** for new messages in `room`: like [`MeshAgent::pull`], but if the backlog is empty
+    /// the *hub* parks the request (server-side wait, see `Pull { wait_secs }`) and replies the moment
+    /// a peer message lands or the wait window closes — so this works with **zero push machinery**
+    /// (even on a connection whose `Subscribe` failed). Returns `(messages, cursor, waited)`; `waited`
+    /// is `true` when a server-side wait actually occurred (the hub honored `wait_secs`), `false` when
+    /// the first pull already had messages or the hub is too old to park (so the caller can honestly
+    /// report a genuinely-degraded poll).
+    ///
+    /// Liveness during the wait: the total budget is split into heartbeat-sized chunks, and a `Ping`
+    /// is sent before each chunk. A half-open/dead transport is caught when that ping times out (or the
+    /// parked pull errors) and is transparently reconnected via the existing retry path — the caller
+    /// sees no error, and the next chunk runs on the fresh connection. Cursor semantics are the plain
+    /// [`MeshAgent::pull`]'s: the cursor advances only through the returned batch.
+    pub async fn pull_wait(
+        &mut self,
+        room: &str,
+        limit: Option<u32>,
+        wait_secs: u64,
+    ) -> Result<(Vec<StoredMessage>, i64, bool)> {
+        let deadline = Instant::now() + Duration::from_secs(wait_secs);
+        let mut waited = false;
+        loop {
+            let now = Instant::now();
+            let remaining = deadline.saturating_duration_since(now);
+            // Heartbeat: prove the socket is alive (and force a reconnect if it's half-open) *before*
+            // asking the hub to hold the request open for a chunk. On the very first iteration this
+            // also front-runs the pull, so a dead connection is healed before we even wait.
+            self.heartbeat().await;
+            let (msgs, cursor) = self.pull(room, None, limit).await?;
+            if !msgs.is_empty() {
+                return Ok((msgs, cursor, waited));
+            }
+            if remaining.is_zero() {
+                return Ok((msgs, cursor, waited)); // budget exhausted — an honest empty result
+            }
+            // Park server-side for up to one heartbeat chunk (bounded by the remaining budget). An old
+            // hub ignores `wait_secs` and replies immediately with an empty batch — detected as a pull
+            // that returns instantly, so we don't spin: fall back to a client sleep for the chunk.
+            // Jitter the chunk per-iteration so a fleet of agents doesn't ping the proxy in lockstep.
+            let chunk = remaining.min(HEARTBEAT_INTERVAL.saturating_sub(heartbeat_jitter()));
+            let before = Instant::now();
+            let (m, c) = self.pull_parked(room, limit, chunk.as_secs().max(1)).await?;
+            if !m.is_empty() {
+                return Ok((m, c, true));
+            }
+            // The hub parked (it held the request roughly the whole chunk) ⇒ server-side wait works.
+            // If it returned near-instantly on an empty room, it's an old hub that ignored the field —
+            // sleep out the chunk client-side so we still respect the budget without a busy loop.
+            if before.elapsed() >= chunk / 2 {
+                waited = true;
+            } else {
+                tokio::time::sleep(chunk).await;
+            }
+        }
+    }
+
+    /// One parked `Pull { wait_secs }` round-trip (server-side wait). Split out so [`MeshAgent::pull_wait`]
+    /// can time it (to tell a real park from an old hub's instant empty reply).
+    async fn pull_parked(
+        &mut self,
+        room: &str,
+        limit: Option<u32>,
+        wait_secs: u64,
+    ) -> Result<(Vec<StoredMessage>, i64)> {
+        match self
+            .request(ClientFrame::Pull {
+                room: room.to_string(),
+                since: None,
+                limit,
+                wait_secs: Some(wait_secs),
+            })
+            .await?
+        {
+            ServerFrame::Pulled { messages, cursor, .. } => Ok((messages, cursor)),
+            other => bail!("unexpected reply to parked pull: {other:?}"),
+        }
+    }
+
+    /// A liveness heartbeat: send a protocol `Ping` and expect a `Pong` within the heartbeat timeout.
+    /// A missed pong means the transport is half-open (a proxy silently dropped it) — we mark the
+    /// connection lost and reconnect, so the *next* op runs on a fresh socket. Best-effort and
+    /// self-healing: the caller never sees an error (a genuinely-unreachable hub surfaces on the next
+    /// real request instead). No-op success against a transport with no identity to reconnect with.
+    pub async fn heartbeat(&mut self) {
+        match tokio::time::timeout(HEARTBEAT_TIMEOUT, self.transport.request(ClientFrame::Ping)).await {
+            // Got a reply in time (a `Pong`, or any frame) — the socket is alive.
+            Ok(Ok(_)) => {}
+            // The ping errored (socket already gone) — reconnect if we can; ignore the outcome, the
+            // caller's next request will retry on whatever connection we end up with.
+            Ok(Err(_)) => {
+                let _ = self.reconnect().await;
+            }
+            // No pong before the deadline: the connection is zombied (half-open). Force a fresh one.
+            Err(_) => {
+                let _ = self.reconnect().await;
+            }
         }
     }
 
@@ -352,6 +495,26 @@ impl MeshAgent {
         let ok = self.transport.subscribe().await?;
         self.subscribed = ok;
         Ok(ok)
+    }
+
+    /// Whether this connection currently holds a live push subscription — the authoritative,
+    /// *live* answer (updated by [`MeshAgent::subscribe`] and on reconnect), so callers query
+    /// this instead of caching a boolean at startup (a startup cache goes stale after a reconnect that
+    /// re-subscribed, or after a retried subscribe that finally succeeded).
+    pub fn push_active(&self) -> bool {
+        self.subscribed
+    }
+
+    /// If we're not currently subscribed, try once to (re)subscribe — for the case where the initial
+    /// `Subscribe` failed (an old hub, or a transient error) but a later attempt could succeed. Cheap
+    /// and best-effort: on success `push_active()` flips to `true` and pushes start flowing; on failure
+    /// the state is unchanged and the caller falls back to server-side wait / polling. Returns the
+    /// resulting push state.
+    pub async fn resubscribe_if_needed(&mut self) -> bool {
+        if !self.subscribed {
+            let _ = self.subscribe().await;
+        }
+        self.subscribed
     }
 
     /// Block up to `max_wait` for the next pushed message (a peer's, never your own); `None` on

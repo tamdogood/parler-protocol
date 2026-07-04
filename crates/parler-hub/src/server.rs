@@ -31,7 +31,7 @@ use parking_lot::Mutex;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Notify};
 use tower_http::cors::{Any, CorsLayer};
 
 /// How many undelivered pushes a single subscribed connection may queue before the hub starts
@@ -66,6 +66,12 @@ pub const DEFAULT_IDLE_TIMEOUT_SECS: u64 = 1800;
 /// Hard ceiling on any client-supplied TTL (invites, directory tokens): 365 days. Prevents an
 /// attacker-supplied `ttl_secs` from overflowing the millisecond expiry math.
 const MAX_TTL_SECS: u64 = 365 * 24 * 3600;
+
+/// Hard ceiling on a client-supplied `Pull { wait_secs }` (and `join_session` wait). A parked
+/// long-poll never sleeps longer than this, so a bug or a hostile client can't hold a connection
+/// past a bound the hub controls. Kept under the idle timeout so a parked wait counts as activity
+/// without ever outliving the connection's own liveness window.
+const MAX_WAIT_SECS: u64 = 60;
 
 /// Per-agent flood limits (fixed-window). `0` disables a limit. State is in-memory and resets on
 /// hub restart — a deliberately simple posture for a low-ops bus.
@@ -205,6 +211,14 @@ pub struct HubState {
     /// and best-effort: the durable cursor remains the source of truth, so this is purely a latency
     /// optimization that resets cleanly on restart.
     subscribers: Mutex<HashMap<String, Vec<Subscriber>>>,
+    /// Per-room wakeups for **parked long-polls** (`Pull { wait_secs }` / `join_session` wait). A
+    /// waiter that finds the backlog empty parks on the room's [`Notify`]; a message append or a
+    /// membership change (`resolve_join`) on that room calls `notify_waiters`, waking every parked
+    /// request to re-check. Pure in-memory and independent of the durable cursor — a waiter always
+    /// resolves through a normal `Pull`, so a missed notify is harmless (the timer still fires and the
+    /// next `Pull` returns anything that landed). Created lazily; an entry is never removed (bounded by
+    /// the room count, and rooms are long-lived), so a wake never races a concurrent removal.
+    notifiers: Mutex<HashMap<String, Arc<Notify>>>,
     /// Hands out a unique id per connection, so a subscription can be removed precisely on disconnect
     /// (one agent may hold several connections).
     next_conn: AtomicU64,
@@ -242,6 +256,7 @@ impl HubState {
             rate: Mutex::new(HashMap::new()),
             conn_count: AtomicUsize::new(0),
             subscribers: Mutex::new(HashMap::new()),
+            notifiers: Mutex::new(HashMap::new()),
             next_conn: AtomicU64::new(1),
             metrics: Metrics::default(),
         }
@@ -272,10 +287,27 @@ impl HubState {
         }
     }
 
+    /// The wakeup handle for `room`'s parked long-polls, created on first use. Cloned out under the
+    /// lock so a waiter can `notified().await` without holding it.
+    fn room_notify(&self, room: &str) -> Arc<Notify> {
+        self.notifiers.lock().entry(room.to_string()).or_default().clone()
+    }
+
+    /// Wake every request parked on `room` (a message landed or a membership changed), so each
+    /// re-runs its `Pull`/redeem and completes if it now has a result. A no-op if nobody is parked.
+    fn notify_room(&self, room: &str) {
+        if let Some(n) = self.notifiers.lock().get(room) {
+            n.notify_waiters();
+        }
+    }
+
     /// Best-effort live fan-out of a just-appended message to subscribed room members. Never blocks
     /// the sender: a full channel drops the push (the subscriber recovers it via its durable cursor),
     /// and a closed channel prunes that dead subscription. The author is never pushed its own message.
     fn fanout(&self, room: &str, author: &str, msg: StoredMessage) {
+        // Wake any parked long-poll on this room first — server-side wait works with zero push
+        // machinery, so a parked `Pull { wait_secs }` completes even when nobody `Subscribe`d.
+        self.notify_room(room);
         // Only touch the registry if anyone is subscribed at all (the common case is nobody).
         if self.subscribers.lock().is_empty() {
             return;
@@ -1195,6 +1227,17 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<HubState>) {
                 match msg {
                     WsMessage::Text(txt) => {
                         let reply = match serde_json::from_str::<ClientFrame>(&txt) {
+                            // A `Pull { wait_secs }` on an authenticated connection is a **long-poll**:
+                            // park it (in-memory, no store lock held across the await) until a message
+                            // lands in the room or the bounded timer fires. Any other frame — including
+                            // a `Pull` without `wait_secs` — takes the synchronous `dispatch` path
+                            // unchanged, so old clients are byte-for-byte unaffected.
+                            Ok(ClientFrame::Pull { room, since, limit, wait_secs: Some(secs) })
+                                if conn.authed.is_some() =>
+                            {
+                                let authed = conn.authed.clone().expect("guarded by is_some");
+                                waited_pull(&state, &authed, room, since, limit, secs).await
+                            }
                             Ok(frame) => dispatch(&state, &mut conn, frame),
                             Err(e) => Reply::Frame(ServerFrame::Error {
                                 message: format!("malformed frame: {e}"),
@@ -1323,6 +1366,74 @@ fn dispatch(state: &HubState, conn: &mut ConnState, frame: ClientFrame) -> Reply
         other => handle_authed(state, &authed, other).map(Reply::Frame),
     };
     result.unwrap_or_else(|e| Reply::Frame(ServerFrame::Error { message: e.to_string() }))
+}
+
+/// Serve a **long-poll** `Pull { wait_secs }`: reply as soon as the room has new messages past the
+/// caller's cursor, or when the bounded timer fires (whichever comes first). Absent-`wait_secs` pulls
+/// never reach here — they take the synchronous `dispatch` path — so this only adds the wait, never
+/// changes plain-pull behavior.
+///
+/// The wait resolves through the *same* `store.pull` as an ordinary pull, so it advances the cursor
+/// only through the batch it returns (invariant: a wait never advances the cursor except through the
+/// returned batch). The park is pure in-memory: it never holds the store lock or a writer across the
+/// await — each iteration re-runs a quick synchronous `store.pull` and, if still empty, sleeps on the
+/// room's [`Notify`] (woken by a peer's `Send`/`fanout`). A missed notify is harmless: the timer still
+/// bounds the wait and the next pull returns anything that landed. `wait_secs` is clamped to
+/// [`MAX_WAIT_SECS`] so a hostile client can't hold the connection open indefinitely; the whole wait
+/// counts as connection activity (a frame is being served), which keeps the idle timer from firing
+/// under it.
+async fn waited_pull(
+    state: &HubState,
+    me: &Authed,
+    room: String,
+    since: Option<i64>,
+    limit: Option<u32>,
+    wait_secs: u64,
+) -> Reply {
+    match store_waited_pull(state, me, &room, since, limit, wait_secs).await {
+        Ok((messages, cursor)) => Reply::Frame(ServerFrame::Pulled { room, messages, cursor }),
+        Err(e) => Reply::Frame(ServerFrame::Error { message: e.to_string() }),
+    }
+}
+
+/// The store-facing half of [`waited_pull`], split out so the `Result` is easy to test in isolation.
+async fn store_waited_pull(
+    state: &HubState,
+    me: &Authed,
+    room: &str,
+    since: Option<i64>,
+    limit: Option<u32>,
+    wait_secs: u64,
+) -> anyhow::Result<(Vec<StoredMessage>, i64)> {
+    let store = &state.store;
+    if !store.is_member(room, &me.id)? {
+        anyhow::bail!("not a member of '{room}'");
+    }
+    // A history re-read (`since` set) is a full-detail range read, not a live tail — never wait on it
+    // (it also must not advance the cursor). Serve it immediately, exactly like a plain pull.
+    let first = store.pull(room, &me.id, since, limit)?;
+    if since.is_some() || !first.0.is_empty() {
+        return Ok(first);
+    }
+    let notify = state.room_notify(room);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(wait_secs.min(MAX_WAIT_SECS));
+    loop {
+        // Register interest *before* re-checking the store, so a `Send` that lands between the pull
+        // and the await can't be lost — the already-armed `notified()` future fires immediately.
+        let notified = notify.notified();
+        let (messages, cursor) = store.pull(room, &me.id, None, limit)?;
+        if !messages.is_empty() {
+            return Ok((messages, cursor));
+        }
+        let now = tokio::time::Instant::now();
+        if now >= deadline {
+            return Ok((messages, cursor)); // timed out — an empty batch, cursor unchanged
+        }
+        tokio::select! {
+            _ = notified => {}                                    // a peer message landed — re-pull
+            _ = tokio::time::sleep_until(deadline) => {}          // the wait window closed
+        }
+    }
 }
 
 /// Accept a `PutBlob`: enforce the size cap + blob rate limit, resolve the target to a room (which
@@ -1585,6 +1696,9 @@ fn handle_authed(state: &HubState, me: &Authed, frame: ClientFrame) -> anyhow::R
 
         ClientFrame::ResolveJoin { room, agent, approve } => {
             let approved = store.resolve_join(&room, &me.id, &agent, approve, now_ms())?;
+            // Wake any joiner parked on this room's approval so it re-checks and completes in the same
+            // tool call (approve ⇒ joined; deny ⇒ its next redeem bails). Harmless if none is parked.
+            state.notify_room(&room);
             Ok(ServerFrame::JoinResolved { room, agent, approved })
         }
 
@@ -1629,7 +1743,10 @@ fn handle_authed(state: &HubState, me: &Authed, frame: ClientFrame) -> anyhow::R
             Ok(ServerFrame::Sent { id, seq, room })
         }
 
-        ClientFrame::Pull { room, since, limit } => {
+        // A `Pull` with `wait_secs` on an authed connection is intercepted upstream (`waited_pull`);
+        // reaching here means no wait was requested (or an edge that can't park), so serve it as an
+        // immediate pull. `wait_secs` is deliberately ignored on this synchronous path.
+        ClientFrame::Pull { room, since, limit, wait_secs: _ } => {
             if !store.is_member(&room, &me.id)? {
                 anyhow::bail!("not a member of '{room}'");
             }
@@ -2067,5 +2184,92 @@ mod tests {
         // No Host header → fall back to the configured public_url, as http(s) rather than ws(s).
         let empty = HeaderMap::new();
         assert_eq!(request_base_url(&empty, "parler://127.0.0.1:7070"), "http://127.0.0.1:7070");
+    }
+
+    // ---- server-side Pull wait (issue #90) -------------------------------------------------------
+
+    /// A member of a fresh room `r` in a new hub state, ready to drive `store_waited_pull` directly.
+    fn wait_test_state(room: &str, agent: &str) -> HubState {
+        let store = Store::open(None).unwrap();
+        store.ensure_room(room, RoomKind::Channel, None, 0).unwrap();
+        store.add_member(room, agent, 0).unwrap();
+        HubState::new(store, "parler://x".into(), "T".into(), HubMode::Private)
+    }
+
+    /// Append + notify, mirroring what the real `Send` handler does (`store.append_message` then
+    /// `fanout`, which calls `notify_room`). A parked `store_waited_pull` wakes on the notify.
+    fn append(state: &HubState, room: &str, author: &str, text: &str) {
+        let from = EndpointRef { id: author.into(), name: author.into(), role: None };
+        state.store.append_message(room, &from, &[Part::text(text)], None, None, now_ms()).unwrap();
+        state.notify_room(room);
+    }
+
+    #[tokio::test]
+    async fn waited_pull_returns_immediately_when_backlog_present() {
+        // A wait with messages already waiting returns them at once (no parking) — the wait only kicks
+        // in on an *empty* backlog.
+        let me = Authed { id: "UME".into(), name: "me".into(), role: None };
+        let state = wait_test_state("r", &me.id);
+        append(&state, "r", "UPEER", "already here");
+        let started = tokio::time::Instant::now();
+        let (msgs, _cursor) = store_waited_pull(&state, &me, "r", None, None, 30).await.unwrap();
+        assert_eq!(msgs.len(), 1);
+        assert!(started.elapsed() < Duration::from_millis(500), "no parking when backlog is non-empty");
+    }
+
+    #[tokio::test]
+    async fn waited_pull_wakes_on_a_message_landing_mid_wait() {
+        // The park completes the instant a peer's message lands (via the room notify), not at timeout.
+        let me = Authed { id: "UME".into(), name: "me".into(), role: None };
+        let state = std::sync::Arc::new(wait_test_state("r", &me.id));
+
+        let writer = {
+            let state = state.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(150)).await;
+                append(&state, "r", "UPEER", "woke you");
+            })
+        };
+        let started = tokio::time::Instant::now();
+        let (msgs, _c) = store_waited_pull(&state, &me, "r", None, None, 30).await.unwrap();
+        writer.await.unwrap();
+        assert_eq!(msgs.len(), 1, "the parked pull returned the just-landed message");
+        assert!(started.elapsed() < Duration::from_secs(5), "woke on the message, not the timeout");
+    }
+
+    #[tokio::test]
+    async fn waited_pull_times_out_empty_without_advancing_the_cursor() {
+        // On an empty room the wait returns an empty batch at the deadline, and — crucially — the
+        // cursor is untouched, so a message sent afterward is still delivered by the next pull.
+        let me = Authed { id: "UME".into(), name: "me".into(), role: None };
+        let state = wait_test_state("r", &me.id);
+        let started = tokio::time::Instant::now();
+        let (msgs, _c) = store_waited_pull(&state, &me, "r", None, None, 1).await.unwrap();
+        assert!(msgs.is_empty());
+        assert!(started.elapsed() >= Duration::from_secs(1), "waited out the window");
+        // Cursor untouched: a plain pull now sees a subsequently-sent message.
+        append(&state, "r", "UPEER", "after");
+        let (after, _c) = state.store.pull("r", &me.id, None, None).unwrap();
+        assert_eq!(after.len(), 1, "the empty wait left the cursor in place");
+    }
+
+    #[tokio::test]
+    async fn waited_pull_refuses_a_non_member() {
+        // Authorization is unchanged: a non-member's waited pull errors immediately (no parking).
+        let me = Authed { id: "UME".into(), name: "me".into(), role: None };
+        let state = wait_test_state("r", "USOMEONE_ELSE"); // `me` is not added
+        assert!(store_waited_pull(&state, &me, "r", None, None, 30).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn waited_pull_ignores_wait_for_an_explicit_since_reread() {
+        // A `since` re-read is a full-detail history read, never a live tail: it must return
+        // immediately (empty if the range is empty), not park.
+        let me = Authed { id: "UME".into(), name: "me".into(), role: None };
+        let state = wait_test_state("r", &me.id);
+        let started = tokio::time::Instant::now();
+        let (msgs, _c) = store_waited_pull(&state, &me, "r", Some(0), None, 30).await.unwrap();
+        assert!(msgs.is_empty());
+        assert!(started.elapsed() < Duration::from_millis(500), "a since re-read never waits");
     }
 }

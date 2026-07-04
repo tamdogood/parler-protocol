@@ -4,7 +4,9 @@
 use parler_connector::{
     verify_message, BundleMeta, Config, HubClient, JoinOutcome, MeshAgent, MeshTransport, SigStatus,
 };
-use parler_protocol::{BundleRef, ClientFrame, EndpointRef, Part, RoomKind, StoredMessage, Target};
+use parler_protocol::{
+    BundleRef, ClientFrame, EndpointRef, Part, RoomKind, ServerFrame, StoredMessage, Target,
+};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -42,6 +44,44 @@ async fn start_hub_with_idle(idle: Option<Duration>) -> String {
         let _ = parler_hub::serve(listener, state).await;
     });
     format!("ws://{addr}")
+}
+
+/// A transport decorator that simulates a **half-open** socket on demand: while `armed` is set, the
+/// *next* `request` hangs forever (as a real half-open read would), then disarms. `MeshAgent`'s
+/// heartbeat times out on the hang and forces a reconnect — which rebuilds a fresh real client past
+/// this decorator — so the caller heals transparently. Start disarmed so setup (join) runs normally;
+/// arm it right before the long-poll that must survive the drop.
+struct FlakyTransport {
+    inner: Box<dyn MeshTransport>,
+    armed: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl FlakyTransport {
+    fn new(inner: Box<dyn MeshTransport>) -> (Self, std::sync::Arc<std::sync::atomic::AtomicBool>) {
+        let armed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        (FlakyTransport { inner, armed: armed.clone() }, armed)
+    }
+}
+
+#[async_trait::async_trait]
+impl MeshTransport for FlakyTransport {
+    async fn request(&mut self, frame: ClientFrame) -> anyhow::Result<ServerFrame> {
+        if self.armed.swap(false, std::sync::atomic::Ordering::SeqCst) {
+            // A half-open read never completes; block past the heartbeat timeout so the heartbeat
+            // gives up on this connection and reconnects. (This future is dropped when the heartbeat's
+            // `timeout` elapses and `reconnect` replaces the whole transport.)
+            std::future::pending::<()>().await;
+        }
+        self.inner.request(frame).await
+    }
+
+    async fn subscribe(&mut self) -> anyhow::Result<bool> {
+        self.inner.subscribe().await
+    }
+
+    async fn next_delivery(&mut self, max_wait: Duration) -> anyhow::Result<Option<StoredMessage>> {
+        self.inner.next_delivery(max_wait).await
+    }
 }
 
 fn cfg(hub: &str, name: &str, role: Option<&str>) -> Config {
@@ -791,6 +831,161 @@ async fn a_pushed_delivery_is_also_verifiable() {
         .expect("a pushed delivery within the window");
     assert_eq!(status(&pushed), SigStatus::Valid);
     assert_eq!(texts(std::slice::from_ref(&pushed)), vec!["live ping"]);
+}
+
+// ---- server-side Pull wait + client heartbeat (issues #90 / #87) ----
+
+#[tokio::test]
+async fn pull_wait_returns_early_when_a_peer_message_lands() {
+    // #90 core: `pull_wait` parks on the hub and completes the moment a peer sends — not after the
+    // full window. The connection is healthy either way.
+    let hub = start_hub().await;
+    let mut alice = agent(&hub, "alice", None).await;
+    let mut bob = agent(&hub, "bob", None).await;
+    let inv = alice.invite(RoomKind::Channel, Some("wait".into()), None, None).await.unwrap();
+    bob.join(&inv.code).await.unwrap();
+
+    // Bob long-polls up to 10s; alice sends after 150ms. Bob must wake well before the window.
+    let send = async {
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        alice.send_text(Target::Room { room: inv.room.clone() }, "woke you").await.unwrap();
+    };
+    let recv = async {
+        let started = std::time::Instant::now();
+        let (msgs, _cursor, waited) = bob.pull_wait(&inv.room, None, 10).await.unwrap();
+        (msgs, waited, started.elapsed())
+    };
+    let (_s, (msgs, waited, elapsed)) = tokio::join!(send, recv);
+    assert_eq!(texts(&msgs), vec!["woke you"], "the parked pull returns the peer message");
+    assert!(waited, "a real server-side wait occurred (the hub parked the request)");
+    assert!(elapsed < Duration::from_secs(5), "woke on the message, not at the timeout: {elapsed:?}");
+}
+
+#[tokio::test]
+async fn pull_wait_is_empty_at_timeout_and_connection_stays_healthy() {
+    // #90: an empty room returns an empty batch at the deadline (no hang, no error), and the same
+    // connection keeps working afterward.
+    let hub = start_hub().await;
+    let mut alice = agent(&hub, "alice", None).await;
+    let mut bob = agent(&hub, "bob", None).await;
+    let inv = alice.invite(RoomKind::Channel, Some("quiet".into()), None, None).await.unwrap();
+    bob.join(&inv.code).await.unwrap();
+
+    let started = std::time::Instant::now();
+    let (msgs, _cursor, _waited) = bob.pull_wait(&inv.room, None, 1).await.unwrap();
+    assert!(msgs.is_empty(), "nothing sent → empty at timeout");
+    assert!(started.elapsed() >= Duration::from_secs(1), "it waited out the window");
+
+    // The connection is still healthy: an ordinary send + pull works right after the wait.
+    alice.send_text(Target::Room { room: inv.room.clone() }, "after wait").await.unwrap();
+    let (after, _) = bob.pull(&inv.room, None, None).await.unwrap();
+    assert_eq!(texts(&after), vec!["after wait"]);
+}
+
+#[tokio::test]
+async fn pull_wait_works_without_a_push_subscription() {
+    // #90 / #87: the previously-degraded mode. Bob NEVER subscribes, yet the server-side wait still
+    // delivers a peer's message early — long-poll no longer depends on push machinery.
+    let hub = start_hub().await;
+    let mut alice = agent(&hub, "alice", None).await;
+    let mut bob = agent(&hub, "bob", None).await;
+    assert!(!bob.push_active(), "bob holds no push subscription");
+    let inv = alice.invite(RoomKind::Channel, Some("nopush".into()), None, None).await.unwrap();
+    bob.join(&inv.code).await.unwrap();
+
+    let send = async {
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        alice.send_text(Target::Room { room: inv.room.clone() }, "no push needed").await.unwrap();
+    };
+    let recv = async {
+        let started = std::time::Instant::now();
+        let (msgs, _c, waited) = bob.pull_wait(&inv.room, None, 10).await.unwrap();
+        (msgs, waited, started.elapsed())
+    };
+    let (_s, (msgs, waited, elapsed)) = tokio::join!(send, recv);
+    assert!(!bob.push_active(), "still no subscription — the wait was purely server-side");
+    assert_eq!(texts(&msgs), vec!["no push needed"]);
+    assert!(waited, "the hub parked the request even with no subscription");
+    assert!(elapsed < Duration::from_secs(5), "woke on the message: {elapsed:?}");
+}
+
+#[tokio::test]
+async fn pull_wait_never_advances_the_cursor_past_the_returned_batch() {
+    // The load-bearing invariant: a server-side wait resolves through normal Pull/cursor semantics —
+    // it advances the cursor only through the batch it returns. A wait that times out empty must not
+    // move the cursor, so a message sent *after* it is still delivered by the next pull.
+    let hub = start_hub().await;
+    let mut alice = agent(&hub, "alice", None).await;
+    let mut bob = agent(&hub, "bob", None).await;
+    let inv = alice.invite(RoomKind::Channel, Some("cursor".into()), None, None).await.unwrap();
+    bob.join(&inv.code).await.unwrap();
+
+    // An empty wait: cursor must stay put.
+    let (empty, _c, _w) = bob.pull_wait(&inv.room, None, 1).await.unwrap();
+    assert!(empty.is_empty());
+    // Now alice sends two; a plain pull returns BOTH (proof the empty wait didn't skip the cursor
+    // ahead of them).
+    alice.send_text(Target::Room { room: inv.room.clone() }, "one").await.unwrap();
+    alice.send_text(Target::Room { room: inv.room.clone() }, "two").await.unwrap();
+    let (got, _) = bob.pull(&inv.room, None, None).await.unwrap();
+    assert_eq!(texts(&got), vec!["one", "two"], "the empty wait left the cursor untouched");
+}
+
+#[tokio::test]
+async fn plain_pull_without_wait_is_unchanged() {
+    // Backward-compat: a `Pull` with no `wait_secs` behaves exactly as before — immediate reply,
+    // empty when the room is empty, no parking.
+    let hub = start_hub().await;
+    let mut alice = agent(&hub, "alice", None).await;
+    let mut bob = agent(&hub, "bob", None).await;
+    let inv = alice.invite(RoomKind::Channel, Some("plain".into()), None, None).await.unwrap();
+    bob.join(&inv.code).await.unwrap();
+
+    let started = std::time::Instant::now();
+    let (msgs, _c) = bob.pull(&inv.room, None, None).await.unwrap();
+    assert!(msgs.is_empty());
+    assert!(started.elapsed() < Duration::from_millis(500), "a plain pull returns immediately");
+}
+
+#[tokio::test]
+async fn heartbeat_reconnects_a_half_open_transport_during_a_long_poll() {
+    // #87: a half-open transport (the proxy silently dropped the socket; reads never complete) is
+    // detected within the heartbeat window and transparently reconnected — no error to the caller,
+    // and the next recv works. We simulate half-open with a transport whose FIRST request hangs
+    // forever; the heartbeat times out on it, forces a reconnect (which rebuilds a live client), and
+    // the resumed pull succeeds.
+    let hub = start_hub().await;
+    // Alice sets up a room and leaves a message waiting, so the resumed connection has something to
+    // pull once bob heals.
+    let mut alice = agent(&hub, "alice", None).await;
+    let inv = alice.invite(RoomKind::Channel, Some("halfopen".into()), None, None).await.unwrap();
+
+    // Build bob over a real client wrapped in an (initially disarmed) fault-injecting transport.
+    let bob_cfg = cfg(&hub, "bob", None);
+    let real = HubClient::connect(&bob_cfg.hub_url, &bob_cfg.identity, &bob_cfg.name, None)
+        .await
+        .unwrap();
+    let (flaky, armed) = FlakyTransport::new(Box::new(real));
+    let mut bob = MeshAgent::with_transport_and_identity(
+        Box::new(flaky),
+        bob_cfg.identity.clone(),
+        bob_cfg.name.clone(),
+        None,
+        bob_cfg.hub_url.clone(),
+    );
+    bob.join(&inv.code).await.unwrap(); // setup runs on a healthy transport
+    alice.send_text(Target::Room { room: inv.room.clone() }, "survived the drop").await.unwrap();
+
+    // Now go half-open right before the long-poll: the next request (the heartbeat's ping) hangs.
+    armed.store(true, std::sync::atomic::Ordering::SeqCst);
+
+    // The long-poll's heartbeat times out on the half-open socket, reconnects transparently, and the
+    // resumed pull returns the waiting message — the caller sees no error. (Bounded well under the
+    // wait window: the 5s heartbeat timeout + a fresh dial.)
+    let started = std::time::Instant::now();
+    let (msgs, _c, _w) = bob.pull_wait(&inv.room, None, 30).await.unwrap();
+    assert_eq!(texts(&msgs), vec!["survived the drop"], "the half-open drop was healed transparently");
+    assert!(started.elapsed() < Duration::from_secs(20), "healed within the heartbeat window");
 }
 
 #[tokio::test]

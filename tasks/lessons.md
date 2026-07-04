@@ -172,6 +172,40 @@ Format: `- **<short trigger>:** <the rule>. <why, in a clause>`
   `scripts/verify.sh --rust-only` (which runs clippy on `--all-targets`) after adding *test* code, not
   just the one test — new test helpers get linted too. (2026-07-03 P0.4/P1.1.)
 
+- **Server-side long-poll parks in `handle_socket`, not `dispatch` — and the notify-then-check order is
+  load-bearing.** `dispatch` is synchronous (the store never blocks across an await), so a parked
+  `Pull { wait_secs }` is intercepted *before* `dispatch` in the WS text-frame arm and served by an async
+  `waited_pull` that re-runs the plain synchronous `store.pull` on each wakeup — the store lock is never
+  held across the await (a `parking_lot::Mutex` guard held across `.await` would deadlock the runtime).
+  The park loop must **arm `notify.notified()` first, then re-check the store, then await**, or a `Send`
+  that lands between the check and the await is a lost wakeup (the timer would still bound it, but the
+  point is early completion). The test writer must call `state.notify_room()` itself — appending straight
+  to the store bypasses the real `Send`→`fanout`→`notify_room` path, so a parked waiter never wakes and
+  the test hangs to timeout. An empty `store.pull` never advances the cursor (`new_cursor > cur` guard),
+  so repeated empty re-checks are harmless and the wait resolves through normal Pull/cursor semantics.
+  (2026-07-04 #90.)
+
+- **A client heartbeat during a long-poll must be timeout-wrapped and bypass the reconnect wrapper.** The
+  heartbeat pings via `self.transport.request(Ping)` *directly* inside a `tokio::time::timeout`, not via
+  `MeshAgent::request` (whose own reconnect would double-handle). A half-open socket doesn't error — the
+  read just never completes — so only the `timeout` elapsing catches it; on elapse (or an outright error)
+  the heartbeat calls `reconnect()` to rebuild the transport, and the caller's next op runs on the fresh
+  one. The long-poll is chunked into heartbeat-sized parked pulls so the ping runs between chunks. **Test
+  the half-open path with a fault-injecting transport that's *armed after setup*, not on its first
+  request** — arming the very first request hangs `join()` (a plain `request` with no heartbeat), which
+  has no timeout and hangs the whole test. Needs a `with_transport_and_identity` constructor so
+  `reconnect()` (which requires an identity) actually fires. (2026-07-04 #87.)
+
+- **Query live subscription state; never cache a startup boolean.** `McpState.push` set once at connect
+  goes stale after any reconnect that re-subscribed (or failed to). Drop the cached bool; expose
+  `MeshAgent::push_active()` (reads the connector's live `subscribed`) and make `reconnect()` write the
+  *actual* re-subscribe result back into `subscribed` (don't `let _ =` it — a failed re-subscribe must
+  flip the flag to false). The honest-degraded-mode note is a pure decision (`degraded_wait(empty, waited,
+  push)`), unit-tested without a hub; with server-side wait it's `false` against any current hub (the note
+  is reserved for a genuinely-old, no-push hub). Watch the `TOOL_DESC`/`TOOL_SPECS` byte budgets when
+  documenting a new tool arg — 25 B of schema prose failed `tool_specs_stay_lean`; trim the description to
+  fit. (2026-07-04 #87.)
+
 - **A capped MCP render is lossless *because* a limited `Pull` advances the cursor only through its
   returned batch** (`store.rs`: `new_cursor = raws.last().seq`, updated only when `since.is_none()`).
   So `parler_recv` default-limit 30 / auto-pull 10 lose nothing — the remainder stays unread for the

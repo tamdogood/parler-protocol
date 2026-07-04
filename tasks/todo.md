@@ -1067,3 +1067,41 @@ Shortened the wordy result strings, keeping every actionable artifact + test-pin
 
 Test: `open_then_join_shares_context_and_sets_active_session` now also asserts `link:`, `session-digest`,
 `parler_watch_session` survive and that the result is under `OPEN_RESULT_BUDGET`. Gate green.
+
+## Reliability: server-side Pull wait + client heartbeat (#90 + #87, DONE)
+
+Two tightly-coupled reliability issues, done together (both rework `parler_recv wait_secs` + push/subscription state).
+
+### #90 — server-side wait on Pull + join-approval wait
+- Protocol: added optional `wait_secs` to the `Pull` frame (`#[serde(skip_serializing_if)]`, camelCase
+  `waitSecs`). A `Pull` with no `wait_secs` is **byte-identical on the wire** (proven by
+  `pull_without_wait_secs_is_byte_identical_on_the_wire`).
+- Hub: a `Pull { wait_secs }` on an authed connection is intercepted in `handle_socket` (before the
+  synchronous `dispatch`) and served by `waited_pull`/`store_waited_pull` — parks on a per-room
+  `tokio::sync::Notify` (new `HubState.notifiers`), woken by `fanout`/`resolve_join`. No store lock held
+  across the await; bounded by `MAX_WAIT_SECS=60`; resolves through normal `store.pull` (cursor advances
+  only through the returned batch).
+- Connector: `MeshAgent::pull_wait` splits the wait into heartbeat-sized parked `Pull`s (server-side wait
+  works with zero push machinery). `parler_recv wait_secs` now prefers it unconditionally; push kept as a
+  latency optimization.
+- Join-approval: `parler_join_session wait_secs` + `wait_for_approval` re-redeem (idempotent poll) with
+  heartbeats, spanning one tool call instead of N retries.
+
+### #87 — connection liveness
+- `MeshAgent::heartbeat`: timeout-wrapped `Ping` during a long-poll; a missed pong ⇒ reconnect (half-open
+  detection). `reconnect()` now writes the actual re-subscribe result back into `subscribed`.
+- Live subscription state: dropped the cached `McpState.push` bool; the MCP layer queries
+  `MeshAgent::push_active()`; `resubscribe_if_needed()` retries a failed initial subscribe on `recv`.
+- Honest degraded mode: `degraded_wait(empty, waited, push)` (pure, unit-tested) — the "long-poll
+  unavailable; polling instead" note appears ONLY against a genuinely-old, no-push hub; never otherwise.
+
+### Tests (all green under `CI_SKIP_WEB=1 make ci`)
+protocol: `pull_without_wait_secs_is_byte_identical_on_the_wire`, `pull_with_wait_secs_uses_camel_case_key`.
+hub: `waited_pull_{returns_immediately_when_backlog_present, wakes_on_a_message_landing_mid_wait,
+times_out_empty_without_advancing_the_cursor, refuses_a_non_member, ignores_wait_for_an_explicit_since_reread}`.
+connector e2e: `pull_wait_{returns_early_when_a_peer_message_lands, is_empty_at_timeout_and_connection_stays_healthy,
+works_without_a_push_subscription, never_advances_the_cursor_past_the_returned_batch}`, `plain_pull_without_wait_is_unchanged`,
+`heartbeat_reconnects_a_half_open_transport_during_a_long_poll`.
+cli/mcp: `recv_wait_secs_long_polls_without_a_push_subscription`, `recv_wait_secs_shows_no_degraded_note_against_a_current_hub`,
+`degraded_wait_note_only_when_the_wait_truly_could_not_happen`, `join_session_wait_secs_{resolves_when_host_approves_in_window,
+returns_pending_if_host_never_decides}`.
