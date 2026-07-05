@@ -20,6 +20,7 @@ __pycache__/
 /web/out/
 /web/next-env.d.ts
 /web/*.tsbuildinfo
+/web/.verify-tmp/
 
 # Architect-loop runtime state (worktrees, research findings, dispatch blocks)
 .architect/

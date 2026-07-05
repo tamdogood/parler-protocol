@@ -21,6 +21,10 @@ import {
   MessageSquare,
   Clock,
   Gauge,
+  Sparkles,
+  Share2,
+  Check,
+  Loader2,
 } from "lucide-react";
 import type {
   SessionAgent,
@@ -34,6 +38,13 @@ import { cn } from "@/lib/utils";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { StatusDot, statusMeta } from "@/components/status-dot";
+import {
+  Dialog,
+  DialogModalContent,
+  DialogTitle,
+  DialogDescription,
+} from "@/components/ui/dialog";
+import { WrappedShare } from "@/components/session-wrapped";
 
 const POLL_MS = 4000;
 
@@ -51,6 +62,15 @@ export function SessionViewer() {
   const [error, setError] = useState<string | null>(null);
   const [unauthorized, setUnauthorized] = useState(false);
   const cursor = useRef(0);
+
+  // Wrapped scorecard modal — lifted to the viewer root so it's reachable both from the connected
+  // header and straight from the paste-a-code entry (generate a card without entering the live viewer).
+  const [wrapped, setWrapped] = useState<{
+    view: SessionView;
+    token: string;
+    messages?: SessionMessage[];
+  } | null>(null);
+  const [wrappedBusy, setWrappedBusy] = useState(false);
 
   // A deliberately-crafted /hub#sessions&k=<token> link prefills the box and automatically connects.
   useEffect(() => {
@@ -119,6 +139,25 @@ export function SessionViewer() {
     }
   };
 
+  // Generate the Wrapped card straight from a pasted code — a one-shot fetch that opens the modal
+  // without entering the live viewer (leaves `token` and polling untouched).
+  const openWrapped = async (code: string) => {
+    const t = code.trim();
+    if (!t || wrappedBusy) return;
+    setWrappedBusy(true);
+    setUnauthorized(false);
+    setError(null);
+    try {
+      const v = await fetchSession(t);
+      setWrapped({ view: v, token: t });
+    } catch (e) {
+      if (e instanceof HubError && e.status === 401) setUnauthorized(true);
+      else setError(e instanceof Error ? e.message : "Failed to reach the hub.");
+    } finally {
+      setWrappedBusy(false);
+    }
+  };
+
   const connected = !!view && !unauthorized;
 
   return (
@@ -156,6 +195,14 @@ export function SessionViewer() {
               <Eye className="size-4" />
               Watch session
             </Button>
+            <Button variant="outline" onClick={() => openWrapped(draft)} disabled={wrappedBusy}>
+              {wrappedBusy ? (
+                <Loader2 className="size-4 animate-spin" />
+              ) : (
+                <Sparkles className="size-4" />
+              )}
+              Wrapped
+            </Button>
           </div>
 
           {unauthorized && (
@@ -176,8 +223,35 @@ export function SessionViewer() {
       )}
 
       {connected && view && (
-        <ConnectedView view={view} messages={messages} error={error} onDisconnect={reset} />
+        <ConnectedView
+          view={view}
+          messages={messages}
+          token={token}
+          error={error}
+          onDisconnect={reset}
+          onWrapped={() => setWrapped({ view, token, messages })}
+        />
       )}
+
+      <Dialog open={!!wrapped} onOpenChange={(open) => !open && setWrapped(null)}>
+        <DialogModalContent className="max-h-[92vh] max-w-[440px] overflow-y-auto">
+          <div className="flex items-center gap-2.5">
+            <span className="flex size-9 items-center justify-center rounded-[10px] border border-graphite-rail surface-lift">
+              <Sparkles className="size-4 text-electric-blue" />
+            </span>
+            <DialogTitle>Session Wrapped</DialogTitle>
+          </div>
+          <DialogDescription className="mt-2">
+            Your agents&apos; session as a shareable card. Save it for Instagram or Facebook, or share
+            the link.
+          </DialogDescription>
+          {wrapped && (
+            <div className="mt-6">
+              <WrappedShare view={wrapped.view} messages={wrapped.messages} token={wrapped.token} />
+            </div>
+          )}
+        </DialogModalContent>
+      </Dialog>
     </section>
   );
 }
@@ -185,16 +259,35 @@ export function SessionViewer() {
 function ConnectedView({
   view,
   messages,
+  token,
   error,
   onDisconnect,
+  onWrapped,
 }: {
   view: SessionView;
   messages: SessionMessage[];
+  token: string;
   error: string | null;
   onDisconnect: () => void;
+  onWrapped: () => void;
 }) {
   const endRef = useRef<HTMLDivElement>(null);
   const listContainerRef = useRef<HTMLDivElement>(null);
+
+  // Copy-the-viewer-link affordance for this live session (the Wrapped modal is lifted to the parent).
+  const [copiedViewer, setCopiedViewer] = useState(false);
+
+  const shareViewer = useCallback(async () => {
+    const origin = typeof window !== "undefined" ? window.location.origin : "";
+    const url = `${origin}/hub#sessions&k=${encodeURIComponent(token)}`;
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopiedViewer(true);
+      setTimeout(() => setCopiedViewer(false), 1400);
+    } catch {
+      /* clipboard blocked */
+    }
+  }, [token]);
 
   // Replay timeline states
   const [viewMode, setViewMode] = useState<"chat" | "timeline">("chat");
@@ -278,6 +371,18 @@ function ConnectedView({
             <span className="text-steel">·</span>
             <span className="text-delivered-green">{view.onlineCount} online</span>
           </span>
+          <Button variant="primary" size="sm" onClick={onWrapped}>
+            <Sparkles className="size-4" />
+            Wrapped
+          </Button>
+          <Button variant="outline" size="sm" onClick={shareViewer}>
+            {copiedViewer ? (
+              <Check className="size-4 text-delivered-green" />
+            ) : (
+              <Share2 className="size-4" />
+            )}
+            {copiedViewer ? "Copied" : "Share"}
+          </Button>
           <Button variant="outline" size="sm" onClick={onDisconnect}>
             Disconnect
           </Button>
