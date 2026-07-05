@@ -58,6 +58,8 @@ compromised hub can't forge a listing or impersonate anyone.
 
 | Topic | Doc |
 |-------|-----|
+| **The engineering contract — how every change is written** (hard gates, invariants, definition of done) | [`docs/engineering-guidelines.md`](docs/engineering-guidelines.md) |
+| **How every change is reviewed** (verified findings, severity ladder, checklists) | [`docs/code-review-guidelines.md`](docs/code-review-guidelines.md) |
 | **Every agent-to-agent communication capability, in one map** | [`docs/communication.md`](docs/communication.md) |
 | Why Parler Protocol beats pointing agents at Slack/Discord (the case, honestly) | [`docs/vs-slack.md`](docs/vs-slack.md) |
 | Multi-agent sessions, channels, DMs, service queues | [`docs/agent-mesh.md`](docs/agent-mesh.md) |
@@ -97,6 +99,10 @@ CI logic lives in `scripts/ci/*.sh` wrapped by thin GitHub workflows. The autono
 
 ## Working agreements (specs & guidelines)
 
+The full contract is [`docs/engineering-guidelines.md`](docs/engineering-guidelines.md) (authoring)
+and [`docs/code-review-guidelines.md`](docs/code-review-guidelines.md) (reviewing) — read them once
+per session, whatever tool you are. The bullets below are the load-bearing summary.
+
 - **Hand-formatted repo — never run `cargo fmt`.** There is intentionally no rustfmt gate; a
   repo-wide format reflows every file. Match the surrounding style by hand.
 - **Clippy is a hard gate** — `cargo clippy --workspace -- -D warnings` must pass.
@@ -104,6 +110,10 @@ CI logic lives in `scripts/ci/*.sh` wrapped by thin GitHub workflows. The autono
   necessary. Senior-engineer standard (see [`CONTRIBUTING.md`](CONTRIBUTING.md)).
 - **Add tests with behavior.** E2E lives in `crates/parler-connector/tests/`, MCP/unit alongside
   the code. Run `make ci` until green before declaring done.
+- **Review before landing.** Self-review your diff against
+  [`docs/code-review-guidelines.md`](docs/code-review-guidelines.md). In Claude Code the
+  `parler-review` skill or the `code-reviewer` agent (`.claude/agents/code-reviewer.md`) runs it;
+  other tools follow the doc by hand.
 - **Protocol is a contract.** Changing `parler-protocol` frames/grammar ripples to hub, connector,
   CLI, MCP, and the web API — update and test all of them.
 - **Security invariants:** the seed never leaves the device; cards are self-signed and re-verifiable

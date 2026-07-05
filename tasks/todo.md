@@ -93,3 +93,22 @@ Desktop `npm run typecheck` + `npm run build` green (main + preload + renderer).
 **Follow-ups (not blocking):** the Sessions screen and the sidebar badge both poll requests when
 you're on that screen (bounded double-poll, few sessions); could unify later. `agents` roll-up + a
 global toast remain available if wanted.
+
+---
+
+## 2026-07-04 — Cross-model engineering contract + review agent (branch los-angeles)
+
+**What:** made the guidelines tool-agnostic and enforceable for any agent (Claude, Codex, OpenCode).
+Canonical docs: `docs/engineering-guidelines.md` (authoring contract: workflow, hard gates,
+invariants promoted from lessons.md, Rust quality bar, token discipline, definition of done) and
+`docs/code-review-guidelines.md` (review contract: verify-before-report, severity ladder, report
+format, checklists, what-not-to-flag). Claude wrappers: `.claude/skills/code-standards/` (change
+workflow), `.claude/skills/parler-review/` (review runbook), `.claude/agents/code-reviewer.md`
+(spawnable read-only review agent). Pointers wired into `AGENTS.md` (docs index + working
+agreements — the file Codex/OpenCode auto-read), `CLAUDE.md`, `CONTRIBUTING.md`.
+
+**Design:** single source of truth in `docs/`, skills/agents are thin runbooks over it; layering
+note in the guidelines makes `tasks/lessons.md` upstream (lessons land there, durable rules get
+promoted). **Verified:** every path/symbol cited by the new docs exists (`write_private_file`,
+`TOTAL_CACHE_KIB`, `verify.sh --rust-only`, `CI_SKIP_WEB`); both skills registered. Docs-only
+change — no code gates to run.

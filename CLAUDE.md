@@ -17,6 +17,10 @@ shared onboarding map (what Parler Protocol is, the crate/architecture layout, b
 
 ## How to work here
 
+- **Follow the contract.** [`docs/engineering-guidelines.md`](docs/engineering-guidelines.md)
+  governs every change — the `code-standards` skill walks it step by step. Review diffs with the
+  `parler-review` skill or the `code-reviewer` agent (`.claude/agents/code-reviewer.md`); both
+  execute [`docs/code-review-guidelines.md`](docs/code-review-guidelines.md).
 - **Plan first** for any non-trivial task (3+ steps); write the plan to `tasks/todo.md`. If it goes
   sideways, stop and re-plan rather than pushing through.
 - **Use subagents** for research, exploration, and parallel analysis to keep this context clean —

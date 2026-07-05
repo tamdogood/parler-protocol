@@ -37,6 +37,10 @@ everything in one pass. To skip the (slow, network-heavy) website build while it
 
 ## House rules
 
+The full contract — workflow, invariants, definition of done — is
+[`docs/engineering-guidelines.md`](docs/engineering-guidelines.md); reviews follow
+[`docs/code-review-guidelines.md`](docs/code-review-guidelines.md). The essentials:
+
 - **Keep `cargo test --workspace` green.** New behavior comes with a test. Tests live in each crate's
   `src/*.rs` (`#[cfg(test)]` units) and `crates/*/tests/` (integration / e2e). The HTTP contract is
   pinned by [`crates/parler-hub/tests/smoke.rs`](crates/parler-hub/tests/smoke.rs).
