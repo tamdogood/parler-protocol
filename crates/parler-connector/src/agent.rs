@@ -603,7 +603,33 @@ impl MeshAgent {
         embedding: Option<Vec<f32>>,
     ) -> Result<Vec<RecallHit>> {
         match self
-            .request(ClientFrame::Recall { query: query.to_string(), room, limit, embedding })
+            .request(ClientFrame::Recall { query: query.to_string(), room, limit, embedding, key: None })
+            .await?
+        {
+            ServerFrame::Recalled { hits } => Ok(hits),
+            other => bail!("unexpected reply to recall: {other:?}"),
+        }
+    }
+
+    /// Deterministic keyed fact fetch (#91): the exact fact stored under `key`, skipping BM25 on a
+    /// current hub. `fallback_query` is sent as the ordinary BM25 `query` so an **older** hub — which
+    /// ignores the unknown `key` field — degrades to a full-text search instead of failing; the caller
+    /// verifies the returned hit is genuinely the keyed fact (guarding that fallback's false positives).
+    pub async fn recall_keyed(
+        &mut self,
+        key: &str,
+        fallback_query: &str,
+        room: Option<String>,
+        limit: Option<u32>,
+    ) -> Result<Vec<RecallHit>> {
+        match self
+            .request(ClientFrame::Recall {
+                query: fallback_query.to_string(),
+                room,
+                limit,
+                embedding: None,
+                key: Some(key.to_string()),
+            })
             .await?
         {
             ServerFrame::Recalled { hits } => Ok(hits),

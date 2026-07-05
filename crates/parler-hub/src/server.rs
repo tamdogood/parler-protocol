@@ -1887,13 +1887,17 @@ fn handle_authed(state: &HubState, me: &Authed, frame: ClientFrame) -> anyhow::R
             Ok(ServerFrame::Remembered { ok: true })
         }
 
-        ClientFrame::Recall { query, room, limit, embedding } => {
+        ClientFrame::Recall { query, room, limit, embedding, key } => {
             if let Some(room) = &room {
                 if !store.is_member(room, &me.id)? {
                     anyhow::bail!("not a member of '{room}'");
                 }
             }
-            let hits = store.recall(&me.id, &query, room.as_deref(), limit, embedding.as_deref())?;
+            // A `key` is a deterministic keyed fetch (#91) — exact fact under that key, no BM25.
+            let hits = match key.as_deref().filter(|k| !k.is_empty()) {
+                Some(key) => store.recall_by_key(&me.id, key, room.as_deref(), limit)?,
+                None => store.recall(&me.id, &query, room.as_deref(), limit, embedding.as_deref())?,
+            };
             Ok(ServerFrame::Recalled { hits })
         }
 

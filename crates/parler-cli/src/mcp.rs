@@ -1409,8 +1409,11 @@ fn pending_output(room: &str) -> String {
 /// positive matching the query words. `None` (silent) when there's no digest or the recall fails.
 /// A deterministic fetch-by-key (no BM25) is the P2.1 upgrade.
 async fn session_digest(agent: &mut MeshAgent, room: &str) -> Option<String> {
+    // Deterministic keyed fetch (#91): ask for the fact stored under the digest key directly, so FTS
+    // ranking can't bury it. Against an older hub the `key` is ignored and this degrades to the old
+    // BM25-by-sentinel behavior — the verification below still guards that fallback's false positives.
     let hits = agent
-        .recall(SESSION_DIGEST_SENTINEL, Some(room.to_string()), Some(1), None)
+        .recall_keyed(SESSION_DIGEST_KEY, SESSION_DIGEST_SENTINEL, Some(room.to_string()), Some(1))
         .await
         .ok()?;
     let hit = hits.into_iter().next()?;
@@ -2015,6 +2018,28 @@ mod tests {
         let joined = join_session(&mut bob, &key, Backlog::Recent, None).await.unwrap();
         assert!(joined.contains("session digest"), "the digest header is shown:\n{joined}");
         assert!(joined.contains("auth done, next is billing"), "the recap text is surfaced:\n{joined}");
+    }
+
+    #[tokio::test]
+    async fn join_surfaces_digest_via_keyed_fetch_past_bm25_decoys() {
+        // #91: the digest is fetched by key, so it surfaces even when BM25 would rank a decoy above it
+        // at limit 1 — the failure mode of the old sentinel-query heuristic.
+        let hub = start_hub().await;
+        let mut alice = state(&hub, "alice").await;
+        let opened = open_session(&mut alice, Some("seed"), Some("plan".into()), None, None, false).await.unwrap();
+        let room = alice.active_session.clone().unwrap();
+        let key = key_of(&opened);
+        // The real digest (keyed, long body) plus short unkeyed decoys that out-rank it under BM25.
+        let digest_text = format!("SESSION DIGEST: {}", "auth done, next is billing. ".repeat(20));
+        alice.agent.remember(&digest_text, Some(SESSION_DIGEST_KEY.into()), Some(room.clone()), None, None).await.unwrap();
+        for _ in 0..3 {
+            alice.agent.remember("SESSION DIGEST", None, Some(room.clone()), None, None).await.unwrap();
+        }
+
+        let mut bob = state(&hub, "bob").await;
+        let joined = join_session(&mut bob, &key, Backlog::Recent, None).await.unwrap();
+        assert!(joined.contains("session digest"), "digest header shown despite decoys:\n{joined}");
+        assert!(joined.contains("next is billing"), "the keyed recap text surfaces, not a decoy:\n{joined}");
     }
 
     #[tokio::test]

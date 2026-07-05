@@ -1293,6 +1293,61 @@ impl Store {
         Ok(rrf_fuse(&fts_hits, &vec_hits, lim as usize))
     }
 
+    /// Deterministic keyed fact fetch (#91): return the fact(s) stored under `key` (`fkey`),
+    /// **independent of BM25** — an exact lookup, newest first. Scoped exactly like [`Self::recall`]: a
+    /// given `room` restricts to that room; without one, the agent's rooms plus its own unroomed facts.
+    /// Membership on an explicit `room` is enforced by the caller (as in the BM25 path).
+    pub fn recall_by_key(
+        &self,
+        agent: &str,
+        key: &str,
+        room: Option<&str>,
+        limit: Option<u32>,
+    ) -> Result<Vec<RecallHit>> {
+        let lim = limit.unwrap_or(8).min(50) as i64;
+        let conn = self.r();
+        // Exact keyed hit: no ranking, so score is a fixed 0.0 (best possible, unused by callers).
+        let map = |r: &rusqlite::Row| {
+            Ok(RecallHit {
+                text: r.get(0)?,
+                key: r.get(1)?,
+                room: r.get(2)?,
+                author: r.get(3)?,
+                ts: r.get(4)?,
+                score: 0.0,
+            })
+        };
+        let hits = match room {
+            Some(room) => {
+                let mut stmt = conn.prepare(
+                    "SELECT f.text, f.fkey, f.room, f.author, f.ts
+                       FROM facts f
+                      WHERE f.fkey = ?1 AND f.room = ?2
+                      ORDER BY f.ts DESC LIMIT ?3",
+                )?;
+                let v = stmt
+                    .query_map(params![key, room, lim], map)?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                v
+            }
+            None => {
+                let mut stmt = conn.prepare(
+                    "SELECT f.text, f.fkey, f.room, f.author, f.ts
+                       FROM facts f
+                      WHERE f.fkey = ?1
+                        AND ((f.room IS NULL AND f.author = ?2)
+                          OR f.room IN (SELECT room FROM members WHERE agent = ?2))
+                      ORDER BY f.ts DESC LIMIT ?3",
+                )?;
+                let v = stmt
+                    .query_map(params![key, agent, lim], map)?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                v
+            }
+        };
+        Ok(hits)
+    }
+
     fn recall_fts(
         &self,
         agent: &str,
@@ -2001,6 +2056,36 @@ mod tests {
         let db = s.recall("U_A", "postgres", None, None, None).unwrap();
         assert_eq!(db.len(), 1);
         assert!(db[0].text.contains("16"));
+    }
+
+    #[test]
+    fn recall_by_key_is_exact_and_beats_bm25_ranking() {
+        // #91: a keyed fetch returns exactly the keyed fact, independent of FTS ranking — even in a
+        // room where BM25 ranks a decoy above the real (longer) digest.
+        let s = Store::open(None).unwrap();
+        // The real digest under its key, with a long body (BM25 length-normalizes it downward).
+        let digest = format!("SESSION DIGEST: {}", "auth done, next is billing. ".repeat(20));
+        s.remember("U_A", &Fact { key: Some("session-digest".into()), text: digest, room: Some("team".into()) }, 1, None, None).unwrap();
+        // Short, unkeyed decoys that match the sentinel query strongly.
+        for i in 0..3 {
+            s.remember("U_B", &Fact { key: None, text: "SESSION DIGEST".into(), room: Some("team".into()) }, 2 + i, None, None).unwrap();
+        }
+
+        // BM25 for the sentinel (limit 1) surfaces a decoy, not the keyed digest — the old heuristic's
+        // fragility.
+        let bm25 = s.recall("U_A", "SESSION DIGEST", Some("team"), Some(1), None).unwrap();
+        assert_eq!(bm25.len(), 1);
+        assert_ne!(bm25[0].key.as_deref(), Some("session-digest"), "BM25 top hit is a decoy");
+
+        // Keyed fetch returns exactly the digest regardless of ranking.
+        let keyed = s.recall_by_key("U_A", "session-digest", Some("team"), Some(1)).unwrap();
+        assert_eq!(keyed.len(), 1);
+        assert_eq!(keyed[0].key.as_deref(), Some("session-digest"));
+        assert!(keyed[0].text.starts_with("SESSION DIGEST: auth done"));
+
+        // An unknown key is empty (deterministic, not a fuzzy match), and the room scopes it.
+        assert!(s.recall_by_key("U_A", "nonexistent", Some("team"), None).unwrap().is_empty());
+        assert!(s.recall_by_key("U_A", "session-digest", Some("other-room"), None).unwrap().is_empty());
     }
 
     #[test]

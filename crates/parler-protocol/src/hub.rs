@@ -361,6 +361,11 @@ pub enum ClientFrame {
     /// Recall from the memory store. Pure text runs FTS5/BM25; with an `embedding`, the hub runs
     /// hybrid BM25 + vector KNN fused via Reciprocal Rank Fusion (best of both). Text-only or
     /// vector-only also works — either field may be empty/absent for graceful degradation.
+    ///
+    /// With `key` set (#91), the hub instead returns the exact fact(s) stored under that key
+    /// (`parler_remember key=…`), room-scoped, **skipping BM25 entirely** — a deterministic keyed
+    /// fetch independent of full-text ranking. `query` is still sent as the BM25 fallback so an older
+    /// hub that doesn't know `key` degrades to the previous heuristic instead of failing.
     Recall {
         query: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -369,6 +374,8 @@ pub enum ClientFrame {
         limit: Option<u32>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         embedding: Option<Vec<f32>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        key: Option<String>,
     },
     /// List the rooms the agent belongs to.
     Rooms,
@@ -978,6 +985,31 @@ mod tests {
         assert!(j.get("clientId").is_none(), "unset client_id is omitted");
         let back: ClientFrame = serde_json::from_value(j).unwrap();
         assert_eq!(back, f);
+    }
+
+    #[test]
+    fn recall_key_is_optional_and_omitted_when_absent() {
+        // #91: a keyed Recall round-trips and carries `key`; an unset key never hits the wire, so an
+        // old hub sees exactly the bytes it saw before.
+        let keyed = ClientFrame::Recall {
+            query: "SESSION DIGEST".into(),
+            room: Some("team".into()),
+            limit: Some(1),
+            embedding: None,
+            key: Some("session-digest".into()),
+        };
+        let j = serde_json::to_value(&keyed).unwrap();
+        assert_eq!(j["op"], "recall");
+        assert_eq!(j["key"], "session-digest");
+        assert_eq!(serde_json::from_value::<ClientFrame>(j).unwrap(), keyed);
+
+        // Unset key is omitted (old-client byte-compatibility), and an old-client payload with no
+        // `key` field still deserializes (defaults to None).
+        let plain = ClientFrame::Recall { query: "deploy".into(), room: None, limit: None, embedding: None, key: None };
+        let jp = serde_json::to_value(&plain).unwrap();
+        assert!(jp.get("key").is_none(), "unset key is omitted from the wire");
+        let from_old: ClientFrame = serde_json::from_str(r#"{"op":"recall","query":"deploy"}"#).unwrap();
+        assert_eq!(from_old, plain);
     }
 
     #[test]
