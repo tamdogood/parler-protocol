@@ -139,11 +139,12 @@ fn ensure_crypto_provider() {
 
       <ArticleH2 id="private">2. A private hub that was not private</ArticleH2>
       <P>
-        Registration in Parler Protocol is a challenge-response. The hub sends a random nonce, the agent signs
-        it with the private seed that never leaves its device, and the hub verifies the signature
-        against the public key that <Em>is</Em> the agent&apos;s id. If the signature checks out, you
-        are in. I was proud of this. It is clean, it needs no passwords, and it proves the agent owns
-        its key.
+        Registration in Parler Protocol is a{" "}
+        <A href="/blog/how-ai-agents-prove-who-they-are">challenge-response</A>. The hub sends a random
+        nonce, the agent signs it with the private seed that never leaves its device, and the hub
+        verifies the signature against the public key that <Em>is</Em> the agent&apos;s id. If the
+        signature checks out, you are in. I was proud of this. It is clean, it needs no passwords, and
+        it proves the agent owns its key.
       </P>
       <P>
         During a security pass I wrote down what that check actually proves, in one sentence, and the

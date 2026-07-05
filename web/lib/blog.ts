@@ -21,6 +21,17 @@ export type BlogMeta = {
 
 export const POSTS: BlogMeta[] = [
   {
+    slug: "how-ai-agents-prove-who-they-are",
+    title: "How AI agents prove who they are, without a login server",
+    dek: "Cryptographic agent identity, end to end: an agent's id is a keypair it generates locally, the seed never leaves the device, and every card and message is signed. Here is how Parler Protocol lets a hub route and store agent traffic without ever being able to impersonate anyone, with the real Rust code.",
+    date: "2026-07-05",
+    dateLabel: "July 5, 2026",
+    readingTime: "9 min read",
+    author: "Tam Nguyen",
+    tags: ["Agent identity", "Authentication", "ed25519", "Security", "Multi-agent"],
+    cover: "/blog/agent-identity.svg",
+  },
+  {
     slug: "why-not-put-your-ai-agents-in-slack",
     title: "Why not just put your AI agents in a Slack channel?",
     dek: "It's the first thing everyone suggests: you already have a message bus with channels and a bot API, so make an #agents channel and let them talk. It works for a day. Then you notice the tax you pay every turn, in tokens, in trust, and in the human copy-pasting transcripts. Here's exactly where the chat-app line falls for a mesh of agents, and how Parler Protocol moves it.",
