@@ -208,12 +208,17 @@ async fn reconnect_resumes_from_durable_cursor() {
         bob.join(&inv.code).await.unwrap();
         alice.send_text(Target::Room { room: room.clone() }, "first").await.unwrap();
         let (m, _) = bob.pull(&room, None, None).await.unwrap();
-        assert_eq!(texts(&m), vec!["first"]); // cursor now advanced past "first"
-    } // bob disconnects
+        assert_eq!(texts(&m), vec!["first"]);
+        // Deferred-ack model (#85): a pull no longer commits the cursor immediately — it's acked on
+        // the NEXT pull, so a batch whose reply is lost is re-read rather than skipped. Bob's second
+        // pull (empty) carries that ack, durably committing the cursor past "first".
+        let (empty, _) = bob.pull(&room, None, None).await.unwrap();
+        assert!(empty.is_empty());
+    } // bob disconnects, having acked "first"
 
     alice.send_text(Target::Room { room: room.clone() }, "second").await.unwrap();
 
-    // A fresh connection for the same identity resumes from the durable cursor.
+    // A fresh connection for the same identity resumes from the durable (acked) cursor.
     let mut bob2 = MeshAgent::connect(&bob_cfg).await.unwrap();
     let (m2, _) = bob2.pull(&room, None, None).await.unwrap();
     assert_eq!(texts(&m2), vec!["second"]);

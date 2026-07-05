@@ -328,6 +328,13 @@ pub enum ClientFrame {
     /// wait resolves through normal Pull/cursor semantics: it never advances the cursor except through
     /// the returned batch. (Older hubs ignore the unknown field and reply immediately, which a client
     /// treats as "server-side wait unsupported" and falls back to short polling.)
+    ///
+    /// `ack` is a deferred/piggybacked acknowledgement (#85): "I have durably received everything up
+    /// to seq X." The hub advances the member cursor to `ack` **first** (monotonic, never backward),
+    /// then reads `seq > cursor` — but with `ack` present it does **not** advance the cursor past the
+    /// returned batch (the *next* pull acks it). This closes the pull-loss window: a batch whose reply
+    /// is lost on a drop is re-read on the retry instead of skipped, since its cursor never moved.
+    /// Absent ⇒ today's advance-on-read (old clients unaffected; older hubs ignore the field).
     Pull {
         room: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -336,6 +343,8 @@ pub enum ClientFrame {
         limit: Option<u32>,
         #[serde(default, rename = "waitSecs", skip_serializing_if = "Option::is_none")]
         wait_secs: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ack: Option<i64>,
     },
     /// Write a fact to the memory store.
     Remember {
@@ -1239,13 +1248,15 @@ mod tests {
         // Backward-compat guarantee: a `Pull` with no `wait_secs` serializes exactly as before the
         // field existed — the `waitSecs` key is omitted entirely, so an old hub/client sees the same
         // bytes. (The field is `skip_serializing_if = "Option::is_none"`.)
-        let old_shape = ClientFrame::Pull { room: "r".into(), since: None, limit: Some(30), wait_secs: None };
+        let old_shape =
+            ClientFrame::Pull { room: "r".into(), since: None, limit: Some(30), wait_secs: None, ack: None };
         let j = serde_json::to_value(&old_shape).unwrap();
         assert_eq!(j["op"], "pull");
         assert_eq!(j["room"], "r");
         assert_eq!(j["limit"], 30);
         assert!(j.get("waitSecs").is_none(), "wait_secs=None must not appear on the wire");
         assert!(j.get("since").is_none(), "since=None still omitted as before");
+        assert!(j.get("ack").is_none(), "ack=None must not appear on the wire (old-hub compat, #85)");
         // A frame from before the field existed (no `waitSecs` key) deserializes with `wait_secs: None`.
         let legacy = serde_json::json!({ "op": "pull", "room": "r", "limit": 30 });
         let back: ClientFrame = serde_json::from_value(legacy).unwrap();
@@ -1256,7 +1267,8 @@ mod tests {
     fn pull_with_wait_secs_uses_camel_case_key() {
         // The new long-poll field is present + camelCased only when set (matching the crate's wire
         // convention, e.g. `replyTo`/`ttlSecs`).
-        let waited = ClientFrame::Pull { room: "r".into(), since: None, limit: None, wait_secs: Some(30) };
+        let waited =
+            ClientFrame::Pull { room: "r".into(), since: None, limit: None, wait_secs: Some(30), ack: None };
         let j = serde_json::to_value(&waited).unwrap();
         assert_eq!(j["waitSecs"], 30);
         let back: ClientFrame = serde_json::from_value(j).unwrap();

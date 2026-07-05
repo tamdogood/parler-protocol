@@ -530,6 +530,7 @@ impl Store {
     /// Append a message and return `(id, seq, tokens)` — `tokens` is the stored estimate of this
     /// message's communication cost (see [`estimate_message_tokens`]), returned so the caller can also
     /// bump the hub's cumulative counter from the same computation.
+    #[allow(clippy::too_many_arguments)]
     pub fn append_message(
         &self,
         room: &str,
@@ -596,15 +597,36 @@ impl Store {
         agent: &str,
         since: Option<i64>,
         limit: Option<u32>,
+        ack: Option<i64>,
     ) -> Result<(Vec<StoredMessage>, i64)> {
         let lim = limit.unwrap_or(200).min(1000) as i64;
+        // Resolve the read floor. For a cursor read, apply a deferred ack first (#85): advance the
+        // stored cursor to `ack` (monotonic — never backward) *before* reading, so acknowledged
+        // messages are never re-read. When `ack` is present we then read from that floor but do NOT
+        // advance past the returned batch below (the next pull acks it), so a batch whose reply is
+        // lost on a drop is re-read on retry rather than skipped. A `since` re-read is a pure read.
+        let cur = match since {
+            Some(s) => s,
+            None => {
+                let stored = {
+                    let conn = self.r();
+                    Self::get_cursor(&conn, room, agent)?
+                };
+                match ack {
+                    Some(a) if a > stored => {
+                        self.w().execute(
+                            "UPDATE members SET cursor = ?1 WHERE room = ?2 AND agent = ?3",
+                            params![a, room, agent],
+                        )?;
+                        a
+                    }
+                    _ => stored,
+                }
+            }
+        };
         // Read the backlog on a pooled read-only connection (the hot, expensive part); the only write
         // is the tiny cursor advance below, which goes to the writer.
         let conn = self.r();
-        let cur = match since {
-            Some(s) => s,
-            None => Self::get_cursor(&conn, room, agent)?,
-        };
         let raws = {
             let mut stmt = conn.prepare(
                 "SELECT seq, id, room, author, author_name, author_role, parts, mentions, reply_to, ts
@@ -630,7 +652,9 @@ impl Store {
         };
         drop(conn); // release the read connection before taking the writer
         let new_cursor = raws.last().map(|r| r.seq).unwrap_or(cur);
-        if since.is_none() && new_cursor > cur {
+        // Advance-on-read ONLY for old (ack-less) clients. An ack-aware client (`ack` present) leaves
+        // the cursor at the ack floor — it commits this batch on its next pull's `ack` (#85).
+        if since.is_none() && ack.is_none() && new_cursor > cur {
             self.w().execute(
                 "UPDATE members SET cursor = ?1 WHERE room = ?2 AND agent = ?3",
                 params![new_cursor, room, agent],
@@ -1837,10 +1861,10 @@ mod tests {
             assert_eq!(s.find_dm_room("U_A", "U_B").unwrap(), None); // a channel, not a dm
 
             // `pull` reads on the pool but advances the cursor on the writer.
-            let (msgs, cur) = s.pull("team", "U_B", None, None).unwrap();
+            let (msgs, cur) = s.pull("team", "U_B", None, None, None).unwrap();
             assert_eq!(msgs.len(), 1);
             assert_eq!(cur, 1);
-            let (again, _) = s.pull("team", "U_B", None, None).unwrap();
+            let (again, _) = s.pull("team", "U_B", None, None, None).unwrap();
             assert!(again.is_empty(), "cursor advanced through the writer");
 
             // Read-then-write op, then confirm the new membership through the pool.
@@ -1903,15 +1927,63 @@ mod tests {
         s.append_message("team", &eref("U_A", "alice"), &[Part::text("two")], None, None, None, 11).unwrap();
 
         // Bob pulls: sees both, cursor now at 2.
-        let (msgs, cursor) = s.pull("team", "U_B", None, None).unwrap();
+        let (msgs, cursor) = s.pull("team", "U_B", None, None, None).unwrap();
         assert_eq!(msgs.len(), 2);
         assert_eq!(cursor, 2);
         // A second pull (cursor-based) is empty — no re-reading history.
-        let (msgs2, _) = s.pull("team", "U_B", None, None).unwrap();
+        let (msgs2, _) = s.pull("team", "U_B", None, None, None).unwrap();
         assert!(msgs2.is_empty());
         // An explicit `since` re-reads without moving the cursor.
-        let (again, _) = s.pull("team", "U_B", Some(0), None).unwrap();
+        let (again, _) = s.pull("team", "U_B", Some(0), None, None).unwrap();
         assert_eq!(again.len(), 2);
+    }
+
+    #[test]
+    fn ack_pull_defers_the_commit_and_closes_the_loss_window() {
+        // #85: an ack-aware pull reads the batch but does NOT commit past it — so a batch whose reply
+        // is lost on a drop is RE-READ on retry instead of silently skipped (the old advance-on-read
+        // loss window). Write the failing assertion first: the ack-less pull below proves the skip.
+        let s = Store::open(None).unwrap();
+        s.ensure_room("team", RoomKind::Channel, None, 1).unwrap();
+        s.upsert_agent("U_A", "alice", None, 1).unwrap();
+        s.upsert_agent("U_B", "bob", None, 1).unwrap();
+        s.add_member("team", "U_A", 1).unwrap();
+        s.add_member("team", "U_B", 1).unwrap();
+        for i in 1..=3 {
+            s.append_message("team", &eref("U_A", "alice"), &[Part::text("m")], None, None, None, i).unwrap();
+        }
+
+        // Ack-aware pull (ack floor 0): returns all three, cursor tail is 3, but the commit is deferred.
+        let (batch, cursor) = s.pull("team", "U_B", None, None, Some(0)).unwrap();
+        assert_eq!(batch.len(), 3);
+        assert_eq!(cursor, 3, "returned cursor is the batch tail");
+
+        // The reply was "lost" (bob never acked). A retry with the SAME ack re-delivers the batch —
+        // an advance-on-read pull would have skipped it. This is the loss-window fix.
+        let (redelivered, _c) = s.pull("team", "U_B", None, None, Some(0)).unwrap();
+        assert_eq!(redelivered.len(), 3, "un-acked batch is re-delivered, not skipped");
+
+        // Once bob acks up to 3, those messages are committed and never re-read.
+        let (after_ack, _c) = s.pull("team", "U_B", None, None, Some(3)).unwrap();
+        assert!(after_ack.is_empty(), "acked messages are committed");
+    }
+
+    #[test]
+    fn ack_less_pull_advances_on_read_exactly_as_before() {
+        // Old-client compatibility (#85): a Pull without ack commits on read, so a second pull is
+        // empty — byte-for-byte the prior behavior (and the loss window the ack path closes).
+        let s = Store::open(None).unwrap();
+        s.ensure_room("team", RoomKind::Channel, None, 1).unwrap();
+        s.upsert_agent("U_B", "bob", None, 1).unwrap();
+        s.add_member("team", "U_B", 1).unwrap();
+        s.append_message("team", &eref("U_B", "bob"), &[Part::text("m")], None, None, None, 1).unwrap();
+        s.append_message("team", &eref("U_B", "bob"), &[Part::text("m")], None, None, None, 2).unwrap();
+
+        let (b1, cur) = s.pull("team", "U_B", None, None, None).unwrap();
+        assert_eq!(b1.len(), 2);
+        assert_eq!(cur, 2);
+        let (b2, _c) = s.pull("team", "U_B", None, None, None).unwrap();
+        assert!(b2.is_empty(), "ack-less pull advances on read, as before");
     }
 
     #[test]
@@ -2027,14 +2099,14 @@ mod tests {
         }
         // now=10_000, retain 1s ⇒ all five (ts 100..104) are "expired", but keep the newest 2.
         assert_eq!(s.prune_messages(1_000, 2, 10_000).unwrap(), 3);
-        let (msgs, _) = s.pull("team", "U_A", Some(0), None).unwrap();
+        let (msgs, _) = s.pull("team", "U_A", Some(0), None, None).unwrap();
         assert_eq!(msgs.len(), 2);
         // Idempotent: a second pass removes nothing (only the keep floor remains).
         assert_eq!(s.prune_messages(1_000, 2, 20_000).unwrap(), 0);
         // A recent message is never pruned, even with keep=0.
         s.append_message("team", &eref("U_A", "a"), &[Part::text("fresh")], None, None, None, 19_900).unwrap();
         assert_eq!(s.prune_messages(1_000, 0, 20_000).unwrap(), 2); // the two old survivors go
-        let (after, _) = s.pull("team", "U_A", Some(0), None).unwrap();
+        let (after, _) = s.pull("team", "U_A", Some(0), None, None).unwrap();
         assert_eq!(after.len(), 1);
     }
 
@@ -2214,7 +2286,7 @@ mod tests {
         assert_eq!(tail.len(), 1);
         assert_eq!(tail[0].seq, 2);
         // The viewer is not a member, so its read must leave the member's pull cursor untouched.
-        let (pulled, _cursor) = s.pull("room.s", "U_A", None, None).unwrap();
+        let (pulled, _cursor) = s.pull("room.s", "U_A", None, None, None).unwrap();
         assert_eq!(pulled.len(), 2, "member still sees the full backlog — room_messages didn't advance it");
     }
 

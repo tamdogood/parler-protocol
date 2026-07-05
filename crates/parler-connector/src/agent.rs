@@ -83,6 +83,11 @@ pub struct MeshAgent {
     /// Whether the current transport holds a live push subscription, so [`MeshAgent::reconnect`] can
     /// restore it after a dropped connection.
     subscribed: bool,
+    /// Deferred-ack high-water per room (#85): the highest cursor the hub reported for a room, sent
+    /// as the `ack` on this room's next pull so the hub commits the previous batch only after we've
+    /// durably received it. Persists across a transparent reconnect (it's client state), so a resumed
+    /// connection acks correctly; a fresh process starts empty and re-reads at most the last batch.
+    pending_ack: std::collections::HashMap<String, i64>,
 }
 
 impl MeshAgent {
@@ -98,6 +103,7 @@ impl MeshAgent {
             hub_url: cfg.hub_url.clone(),
             identity: Some(cfg.identity.clone()),
             subscribed: false,
+            pending_ack: std::collections::HashMap::new(),
         })
     }
 
@@ -110,7 +116,7 @@ impl MeshAgent {
         role: Option<String>,
         hub_url: String,
     ) -> MeshAgent {
-        MeshAgent { transport, id, name, role, hub_url, identity: None, subscribed: false }
+        MeshAgent { transport, id, name, role, hub_url, identity: None, subscribed: false, pending_ack: std::collections::HashMap::new() }
     }
 
     /// Like [`MeshAgent::with_transport`], but carries a real `identity` + `hub_url`, so the
@@ -133,6 +139,7 @@ impl MeshAgent {
             hub_url,
             identity: Some(identity),
             subscribed: false,
+            pending_ack: std::collections::HashMap::new(),
         }
     }
 
@@ -384,13 +391,34 @@ impl MeshAgent {
         since: Option<i64>,
         limit: Option<u32>,
     ) -> Result<(Vec<StoredMessage>, i64)> {
+        // Cursor reads carry a deferred ack (#85); a `since` re-read is a pure read and never acks.
+        let ack = if since.is_none() { self.ack_for(room) } else { None };
         match self
-            .request(ClientFrame::Pull { room: room.to_string(), since, limit, wait_secs: None })
+            .request(ClientFrame::Pull { room: room.to_string(), since, limit, wait_secs: None, ack })
             .await?
         {
-            ServerFrame::Pulled { messages, cursor, .. } => Ok((messages, cursor)),
+            ServerFrame::Pulled { messages, cursor, .. } => {
+                if since.is_none() {
+                    self.record_ack(room, cursor);
+                }
+                Ok((messages, cursor))
+            }
             other => bail!("unexpected reply to pull: {other:?}"),
         }
+    }
+
+    /// The deferred ack to send on the next cursor pull of `room` (#85): the highest cursor the hub
+    /// has reported for it (0 until the first batch). Always `Some` — this client is ack-aware, so the
+    /// hub commits a batch only once we've acked it; a bare `Some(0)` on the first pull is a no-op
+    /// advance (monotonic max) that still opts into no-advance-on-read.
+    fn ack_for(&self, room: &str) -> Option<i64> {
+        Some(self.pending_ack.get(room).copied().unwrap_or(0))
+    }
+
+    /// Record the cursor the hub reported for `room`, so the next pull acks up to it. On an empty pull
+    /// the hub echoes the same cursor, so this is a no-op then.
+    fn record_ack(&mut self, room: &str, cursor: i64) {
+        self.pending_ack.insert(room.to_string(), cursor);
     }
 
     /// **Long-poll** for new messages in `room`: like [`MeshAgent::pull`], but if the backlog is empty
@@ -457,16 +485,21 @@ impl MeshAgent {
         limit: Option<u32>,
         wait_secs: u64,
     ) -> Result<(Vec<StoredMessage>, i64)> {
+        let ack = self.ack_for(room);
         match self
             .request(ClientFrame::Pull {
                 room: room.to_string(),
                 since: None,
                 limit,
                 wait_secs: Some(wait_secs),
+                ack,
             })
             .await?
         {
-            ServerFrame::Pulled { messages, cursor, .. } => Ok((messages, cursor)),
+            ServerFrame::Pulled { messages, cursor, .. } => {
+                self.record_ack(room, cursor);
+                Ok((messages, cursor))
+            }
             other => bail!("unexpected reply to parked pull: {other:?}"),
         }
     }
@@ -902,5 +935,54 @@ mod tests {
             .collect();
         assert_eq!(deploys.len(), 1, "retry after a lost reply must not double-post");
         assert_eq!(deploys[0].id, id, "the caller's success carries the original message id");
+    }
+
+    #[tokio::test]
+    async fn pull_retry_after_lost_reply_redelivers_instead_of_skipping() {
+        // #85: the reply to a Pull is lost after the hub read the batch. With advance-on-read the
+        // batch would be skipped forever; with the ack model the cursor didn't commit, so the
+        // transparent retry re-reads it and the caller still sees every message.
+        let hub = start_hub().await;
+
+        let mut alice = MeshAgent::connect(&Config {
+            hub_url: hub.clone(),
+            identity: parler_auth::new_identity().unwrap(),
+            name: "alice".into(),
+            role: None,
+        })
+        .await
+        .unwrap();
+        let inv = alice.invite(parler_protocol::RoomKind::Channel, Some("room".into()), None, None).await.unwrap();
+        let room = inv.room.clone();
+
+        let bob_id = parler_auth::new_identity().unwrap();
+        let inner = crate::client::HubClient::connect(&hub, &bob_id, "bob", None).await.unwrap();
+        let armed = Arc::new(AtomicBool::new(false));
+        let flaky = ReplyLostOnce { inner: Box::new(inner), armed: armed.clone() };
+        let mut bob =
+            MeshAgent::with_transport_and_identity(Box::new(flaky), bob_id, "bob".into(), None, hub.clone());
+        bob.join(&inv.code).await.unwrap();
+
+        // Alice posts two messages while bob is idle.
+        alice.send_text(Target::Room { room: room.clone() }, "first").await.unwrap();
+        alice.send_text(Target::Room { room: room.clone() }, "second").await.unwrap();
+
+        // Arm the drop, then pull: attempt 1 reaches the hub (reads the batch) but its reply is lost;
+        // the transparent retry re-pulls and returns the batch — nothing is skipped.
+        armed.store(true, AtomicOrdering::SeqCst);
+        let (msgs, _cursor) = bob.pull(&room, None, None).await.unwrap();
+        let texts: Vec<_> = msgs
+            .iter()
+            .flat_map(|m| m.parts.iter().filter_map(|p| match p {
+                Part::Text(t) => Some(t.clone()),
+                _ => None,
+            }))
+            .collect();
+        assert!(texts.contains(&"first".to_string()) && texts.contains(&"second".to_string()),
+            "the lost-reply pull re-delivered the batch: {texts:?}");
+
+        // A subsequent pull acks the batch and returns nothing new (no perpetual redelivery).
+        let (next, _c) = bob.pull(&room, None, None).await.unwrap();
+        assert!(next.is_empty(), "the acked batch is committed on the next pull");
     }
 }
