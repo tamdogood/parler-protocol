@@ -112,3 +112,51 @@ note in the guidelines makes `tasks/lessons.md` upstream (lessons land there, du
 promoted). **Verified:** every path/symbol cited by the new docs exists (`write_private_file`,
 `TOTAL_CACHE_KIB`, `verify.sh --rust-only`, `CI_SKIP_WEB`); both skills registered. Docs-only
 change — no code gates to run.
+
+---
+
+## 2026-07-05 — Session Wrapped: shareable viewer URL + viral scorecard (branch session-share-scorecard)
+
+**What:** a "Spotify Wrapped for a session" — a modern, screenshot-ready scorecard the user can post
+to Instagram / Facebook / X, plus a first-class share affordance for the live viewer URL. Web-only;
+no Rust/protocol change (the `/api/session` payload already carries stats + messages).
+
+**Shipped (all in `web/`):**
+- `lib/wrapped.ts` — pure `buildWrapped(view, messages)` → `{ totalTokens, totalMessages, agentCount,
+  durationMs, toolCalls, tokensPerMessage, topAgents[], mvp, vibe, … }`; headline numbers from the
+  whole-room `stats` aggregate, tool-call flavor counted from loaded messages, a derived "session
+  vibe" badge. Plus `fmtCompact/fmtDuration/fmtPercent` helpers.
+- `lib/wrapped-canvas.ts` — dependency-free `drawWrapped(canvas, wrapped)` renders a 1080×1920 (IG-
+  story) card straight to a `<canvas>` (gradient blooms, orbit mark, hero token number, 2×2 stat
+  grid, "who did the talking" leaderboard with bars, footer). Canvas = the download source, so WYSIWYG
+  and crisp; no DOM-rasterization/font-embed pitfalls, and **no new npm dependency**.
+- `components/session-wrapped.tsx` — `WrappedShare`: the canvas card + share rail (Download PNG,
+  native Share incl. sharing the **image file** to the OS sheet on mobile, Copy link, Post to X,
+  Facebook). Reused by the modal and the standalone page.
+- `components/session-viewer.tsx` — threaded the watch token into `ConnectedView`; added a
+  **"Wrapped"** button (opens a modal with `WrappedShare`) and a **"Share"** button (copies the live
+  `/hub#sessions&k=<token>` viewer link).
+- `app/wrapped/{page,layout,opengraph-image}.tsx` — a standalone, shareable `/wrapped#k=<token>` page
+  (reads the token from the hash — never sent to the server, mirroring the viewer's security model —
+  fetches once, renders the card + share rail; loading / notoken / unauthorized / error states),
+  noindex, with a branded static OG link-preview card.
+
+**Security:** unchanged model. The card is a static image with **no watch code baked in**; the share
+links carry the existing read-only, room-scoped, expiring watch token exactly as the viewer already
+does. `/wrapped` is noindex; the token stays in the URL hash.
+
+**Verification — BLOCKED by the environment, not the code.** This sandbox's temp/output area is
+capped (writes to `/private/tmp/claude-…` and npm's TMPDIR staging hit `ENOSPC` though `/` has ~60 GiB
+free), and `web/node_modules/typescript` is missing its bundled `lib.*.d.ts` (a pre-existing broken
+install), so `tsc`/`next build`/`next lint` can't run here. Did a careful manual review instead (types,
+imports, no-unescaped-entities, hook deps) — including confirming every cross-module import resolves
+and every `SessionView`/`SessionStats`/`SessionAgentStat`/`SessionMessage` field read matches
+`lib/types.ts`. **To verify:** `cd web && npm ci && npm run build` (and `npm run lint`). No dependency
+was added, so it should build clean.
+
+**Follow-up (same branch):** added a **Wrapped** entry point on the paste-a-code card in
+`SessionViewer` — paste a watch code → one-shot `fetchSession` → card, *without* entering the live
+viewer — and **lifted the Wrapped modal to the `SessionViewer` root** so the connected-header button
+and the paste-card button share one modal (`wrapped` state `= { view, token, messages? }`). There is
+no persisted session list to hang a row off of: watch tokens are memory-only by design (never
+localStorage), which is the correct security posture, so the pre-viewer entry lives on the code entry.
