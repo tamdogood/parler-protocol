@@ -51,6 +51,10 @@ keywords:
 - `reference/angles.md` (in this skill folder) for how to pick an angle that doesn't
   collide, plus the topics still untapped.
 - `reference/voice.md` for the house voice and the anti-AI checklist, self-contained.
+- `reference/craft.md` for the writing craft: leads that win the click, spine structure,
+  and which creative-writing skill to reach for at each stage.
+- `reference/seo.md` for on-page keyword placement, internal linking, verifying the
+  machine-readable SEO, and the post-ship distribution loop that earns the first backlinks.
 
 ### 2. Pick and pitch the angle
 
@@ -63,7 +67,9 @@ existing post, say so and propose the adjacent-but-distinct angle instead.
 
 ### 3. Outline
 
-A Parler Protocol post has a spine, not a listicle. Structure:
+A Parler Protocol post has a spine, not a listicle. Read `reference/craft.md` before you
+outline; the lead and the H2-spine are 80% of whether the post gets finished and ranked.
+Structure:
 
 - **A lead (dek + opening) that names a concrete, specific problem** the reader has. Not
   "AI agents are transforming collaboration." Something like "Two agents can talk about a
@@ -79,8 +85,10 @@ A Parler Protocol post has a spine, not a listicle. Structure:
 ### 4. Draft
 
 Write the prose in `docs/blog/<slug>.md` first (plain markdown, the repo's source of
-truth). Follow `reference/voice.md` as you write, so there's less to fix later. Keep it
-honest, concrete, and grounded in repo code. Vary sentence length. Have an opinion.
+truth). Follow `reference/voice.md` and `reference/craft.md` as you write, so there's less
+to fix later. Keep it honest, concrete, and grounded in repo code. Vary sentence length.
+Have an opinion. Run `/direct-response-copy` on the title, dek, and closing CTA (only those
+three surfaces, not the body).
 
 ### 5. Humanize (mandatory)
 
@@ -99,8 +107,9 @@ Follow `reference/wiring.md` exactly. In short: add the `POSTS` entry in `web/li
 create the body component `web/components/blog/<slug>.tsx` using the prose primitives from
 `components/blog/prose.tsx`, and register `slug` to `<Component />` in
 `web/app/blog/[slug]/page.tsx`'s `BODIES` map. Sitemap, RSS, OG/Twitter cards, and
-JSON-LD auto-derive from `POSTS`, so there's no extra wiring. Add internal links to 1-2
-related posts (helps SEO and keeps readers on-site).
+JSON-LD auto-derive from `POSTS`, so there's no extra wiring. For keyword placement
+(title/dek/first-H2/tags), internal-link count, and anchor-text rules, follow
+`reference/seo.md`. Add a reciprocal inbound link from the most related existing post.
 
 ### 7. Verify before done
 
@@ -111,8 +120,18 @@ npm run build          # must be green
 ```
 
 Then smoke it: `next start` and confirm the post page, the cover image, the `/blog` index,
-`/sitemap.xml`, and `/rss.xml` all return 200 and the new slug appears. Re-run
-`bash check.sh` on the final markdown. Only then is it done.
+`/sitemap.xml`, and `/rss.xml` all return 200 and the new slug appears. View source on the
+post and confirm the meta description, OG/Twitter tags, and `BlogPosting` JSON-LD actually
+emitted with the right values (`reference/seo.md` lists what to check). Re-run `bash
+check.sh` on the final markdown. Only then is the post itself done.
+
+### 8. Distribute (this is what earns the traction)
+
+A correct post with no inbound links does not rank. After it ships, seed the first signal:
+run `/x-tweet` on the post's core insight for a thread that teaches the idea and links the
+post, cross-link the post from the relevant `docs/*.md`, and answer the real question it
+solves where people are already asking it. See the distribution loop in `reference/seo.md`.
+Always link the production URL (www.parlerprotocol.com/blog/<slug>), never the fly.dev host.
 
 ## Guardrails
 
