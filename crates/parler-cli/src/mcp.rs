@@ -385,6 +385,19 @@ fn env_flag(key: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Record a tool call to the append-only usage log named by `PARLER_TOOL_METRICS`, if set. One tool
+/// name per line — read the tally with `sort "$PARLER_TOOL_METRICS" | uniq -c | sort -rn`. This is the
+/// evidence that lets us choose the `core` profile's membership (and later retire/merge tools) from
+/// data instead of taste. Best-effort: a write failure never disturbs the call.
+fn record_tool_use(name: &str) {
+    if let Some(path) = std::env::var("PARLER_TOOL_METRICS").ok().filter(|p| !p.is_empty()) {
+        use std::io::Write;
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+            let _ = writeln!(f, "{name}");
+        }
+    }
+}
+
 /// Split a comma/whitespace-separated env var into trimmed, non-empty tokens.
 fn env_list(key: &str) -> Vec<String> {
     std::env::var(key)
@@ -411,13 +424,16 @@ async fn handle(state: &mut McpState, method: &str, params: Value) -> Result<Val
             },
             "serverInfo": { "name": "parler", "version": env!("CARGO_PKG_VERSION") }
         })),
-        "tools/list" => Ok(json!({ "tools": tool_specs() })),
+        "tools/list" => Ok(json!({ "tools": tool_specs_for(ToolProfile::from_env()) })),
         "tools/call" => {
             let name = params.get("name").and_then(Value::as_str).unwrap_or_default().to_string();
             let args = params.get("arguments").cloned().unwrap_or_else(|| json!({}));
+            record_tool_use(&name);
             // Session tools (and the session-aware send/recv) need the active-session state; every
-            // other tool only touches the agent.
+            // other tool only touches the agent. `parler_more` is the core-profile escape hatch and
+            // touches neither.
             let result = match name.as_str() {
+                "parler_more" => Ok(more_catalog()),
                 "parler_open_session" | "parler_join_session" | "parler_close_session"
                 | "parler_join" | "parler_send" | "parler_recv" | "parler_handoff"
                 | "parler_join_requests" | "parler_approve_join" | "parler_deny_join"
@@ -1040,6 +1056,10 @@ async fn call_session_tool(state: &mut McpState, name: &str, args: &Value) -> Re
             if let Some(notice) = pending_join_notice(state, &room).await {
                 out.push_str(&notice);
             }
+            // Size nudge (never blocks): a large paste is re-read by every member — steer to a bundle.
+            if let Some(nudge) = send_size_nudge(&text) {
+                out.push_str(&nudge);
+            }
             Ok(out)
         }
         "parler_handoff" => {
@@ -1106,11 +1126,19 @@ async fn call_session_tool(state: &mut McpState, name: &str, args: &Value) -> Re
             } else {
                 let refs: Vec<&_> = msgs.iter().collect();
                 // Re-reads (explicit `since`) render in full; cursor-mode reads budget long bodies.
-                let body = msgs
-                    .iter()
-                    .map(|m| if re_read { crate::render_message(m) } else { render_message_budgeted(m) })
-                    .collect::<Vec<_>>()
-                    .join("\n");
+                // `focus:"mentions"` is a cursor-mode render tier: expand only messages addressed to
+                // this agent, collapse the rest to previews (lossless — same batch, same cursor).
+                let focus_mentions = s("focus").as_deref() == Some("mentions");
+                let body = if re_read {
+                    msgs.iter().map(crate::render_message).collect::<Vec<_>>().join("\n")
+                } else if focus_mentions {
+                    match render_focused(&msgs, &state.agent.name, state.agent.role.as_deref()) {
+                        Some(b) => b,
+                        None => msgs.iter().map(render_message_budgeted).collect::<Vec<_>>().join("\n"),
+                    }
+                } else {
+                    msgs.iter().map(render_message_budgeted).collect::<Vec<_>>().join("\n")
+                };
                 let more = if batch_full { "\n— more waiting: call parler_recv again —" } else { "" };
                 match handoff_banner(state, &refs) {
                     Some(banner) => format!("{banner}\n\n{body}\n— cursor at {cursor} —{more}"),
@@ -1241,6 +1269,86 @@ fn render_message_budgeted(m: &StoredMessage) -> String {
     let dropped = full.chars().count() - MSG_MAX_CHARS;
     // since = seq-1 so `parler_recv since=<seq-1> limit=1` returns exactly this message, in full.
     format!("{kept}…[+{dropped} chars — parler_recv since={} limit=1 for full]", m.seq - 1)
+}
+
+/// Preview length (chars) for a collapsed non-mention line in the `focus:"mentions"` render.
+const COLLAPSE_PREVIEW_CHARS: usize = 80;
+
+/// Whether a message addresses `name`/`role` — its normalized `mentions` list (lowercased names,
+/// how `@`-addressing and handoff `for` land on the wire) contains this agent's name or role. A
+/// handoff aimed at you shows up here too, since a handoff sets `mentions`.
+fn message_targets(m: &StoredMessage, name: &str, role: Option<&str>) -> bool {
+    m.mentions.as_ref().is_some_and(|ms| {
+        ms.iter().any(|x| x.eq_ignore_ascii_case(name) || role.is_some_and(|r| x.eq_ignore_ascii_case(r)))
+    })
+}
+
+/// One-line collapse of a message the focused render isn't expanding: `[seq] who: preview…`. The seq
+/// is kept so the message stays individually re-readable in full (`parler_recv since=<seq-1> limit=1`)
+/// — nothing is skipped, only rendered smaller (same losslessness as [`render_message_budgeted`]).
+fn render_message_collapsed(m: &StoredMessage) -> String {
+    let who = m
+        .from
+        .role
+        .as_deref()
+        .map(|r| format!("{} ({r})", m.from.name))
+        .unwrap_or_else(|| m.from.name.clone());
+    let body = crate::render_parts(&m.parts);
+    let one_line = body.split_whitespace().collect::<Vec<_>>().join(" ");
+    let preview: String = one_line.chars().take(COLLAPSE_PREVIEW_CHARS).collect();
+    let ell = if one_line.chars().count() > COLLAPSE_PREVIEW_CHARS { "…" } else { "" };
+    format!("[{}] {who}: {preview}{ell}", m.seq)
+}
+
+/// `focus:"mentions"` render: expand in full only the messages that target this agent (mention or
+/// handoff), collapsing the rest to a one-line preview. Purely a rendering choice — the caller pulls
+/// the same batch and advances the same cursor, so it is lossless (the collapsed lines carry their
+/// seq for a full re-read). Returns `None` when nothing in the batch targets the agent, so the caller
+/// can fall back to the ordinary budgeted render rather than collapse everything to previews.
+fn render_focused(msgs: &[StoredMessage], name: &str, role: Option<&str>) -> Option<String> {
+    if !msgs.iter().any(|m| message_targets(m, name, role)) {
+        return None;
+    }
+    let body = msgs
+        .iter()
+        .map(|m| {
+            if message_targets(m, name, role) {
+                render_message_budgeted(m)
+            } else {
+                render_message_collapsed(m)
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    Some(body)
+}
+
+/// Default token threshold above which a `parler_send` result carries a size nudge. Ordinary chat is
+/// well under it; a pasted file or transcript trips it. Tunable via `PARLER_SEND_NUDGE_TOKENS` (set to
+/// `0` to disable the nudge entirely).
+const SEND_NUDGE_DEFAULT_TOKENS: u64 = 800;
+
+/// The size nudge appended to an over-threshold `parler_send` result — pure so the boundary is
+/// testable without touching the process env. Never blocks or alters the send; `threshold == 0`
+/// disables it. Every room member re-reads the message, so a large paste is paid many times over —
+/// the nudge steers the sender toward `parler_push` (send a bundle ref, not the bytes).
+fn size_nudge(est_tokens: u64, threshold: u64) -> Option<String> {
+    (threshold > 0 && est_tokens > threshold).then(|| {
+        format!(
+            "\nnote: this message ≈{est_tokens} tokens — every room member pays that to read it; \
+             for code/files prefer parler_push (hand off the bundle ref, not the paste)."
+        )
+    })
+}
+
+/// The size nudge for `text`, using the env-tunable threshold. Returns `None` below threshold or when
+/// the nudge is disabled (`PARLER_SEND_NUDGE_TOKENS=0`).
+fn send_size_nudge(text: &str) -> Option<String> {
+    let threshold = std::env::var("PARLER_SEND_NUDGE_TOKENS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(SEND_NUDGE_DEFAULT_TOKENS);
+    size_nudge(parler_protocol::estimate_tokens(text), threshold)
 }
 
 /// True when the caller wants uncapped output — the global escape hatch (`PARLER_MCP_VERBOSE=1`).
@@ -1569,7 +1677,7 @@ fn tool_specs() -> Vec<Value> {
     vec![
         tool(
             "parler_open_session",
-            "Open a shared live session; returns a KEY to hand another agent so it joins your conversation already caught up. `context` is posted as the first message — recap the task, decisions, files, state. Joiners need YOUR approval by default (you're shown an accept/reject prompt; confirm with the user). Becomes your active session (parler_send/parler_recv then need no room). Keep a durable recap current with parler_remember key=\"session-digest\" so late joiners get it cheaply.",
+            "Open a shared live session; returns a KEY to hand another agent so it joins your conversation already caught up. `context` is posted as the first message — recap the task, decisions, files, state. Joiners need YOUR approval by default (you're shown an accept/reject prompt; confirm with the user). Becomes your active session (parler_send/parler_recv then need no room).",
             json!({
                 "context": { "type": "string", "description": "summary of the conversation/state used to catch up whoever joins" },
                 "topic": { "type": "string", "description": "optional short name for the session" },
@@ -1655,7 +1763,7 @@ fn tool_specs() -> Vec<Value> {
         ),
         tool(
             "parler_send",
-            "Send a message and get back replies already waiting in the room (read-after-write). Defaults to your active session; else give exactly one of room (channel), to (peer agent id or name, DM), service (queue). For a reply not landed yet, don't poll — parler_recv wait_secs long-polls for it.",
+            "Send a message and get back replies already waiting in the room (read-after-write). Prefer a reference over a big paste: code/files → parler_push a bundle and send the ref; saved state → parler_recall. Defaults to your active session; else give exactly one of room (channel), to (peer agent id or name, DM), service (queue). For a reply not landed yet, don't poll — parler_recv wait_secs long-polls for it.",
             json!({
                 "room": { "type": "string" },
                 "to": { "type": "string", "description": "a peer agent id or a directory name (resolved to a unique id)" },
@@ -1666,18 +1774,19 @@ fn tool_specs() -> Vec<Value> {
         ),
         tool(
             "parler_recv",
-            "Pull new messages since your cursor (advances it). Defaults to active session; pass room for another. wait_secs long-polls that many seconds for a pushed reply instead of returning empty (cheaper than repeated calls). Long bodies are truncated with a refetch hint; since+limit re-reads that range in FULL (never truncated). Default batch is bounded — a 'more waiting' line means call again.",
+            "Pull new messages since your cursor (advances it). Defaults to active session; pass room for another. wait_secs long-polls that many seconds for a pushed reply instead of returning empty (cheaper than repeated calls). Long bodies are truncated with a refetch hint; since+limit re-reads that range in FULL (never truncated). Default batch is bounded — a 'more waiting' line means call again. focus:\"mentions\" expands only messages addressed to you.",
             json!({
                 "room": { "type": "string" },
                 "since": { "type": "integer", "description": "read-only replay from seq in full (no cursor advance); default limit applies unless you pass limit" },
                 "limit": { "type": "integer", "description": "max messages this call (default bounded; raise to read more at once)" },
-                "wait_secs": { "type": "integer", "description": "block up to this many seconds for a pushed message when nothing is waiting (sub-second wake; max 60)" }
+                "wait_secs": { "type": "integer", "description": "block up to this many seconds for a pushed message when nothing is waiting (sub-second wake; max 60)" },
+                "focus": { "type": "string", "enum": ["mentions"], "description": "full-render only messages targeting you; preview the rest (lossless)" }
             }),
             &[],
         ),
         tool(
             "parler_handoff",
-            "Hand the turn to another agent: posts a 'HANDOFF TO YOU' banner they see on their next parler_recv (instant if long-polling with wait_secs), so they continue without a human re-prompting. Use it when you finish your part. Defaults to active session; or target room/to/service. `for`: address by agent name or role (omit = anyone). `bundle`: attach a code blob id from parler_push.",
+            "Hand the turn to another agent: posts a 'HANDOFF TO YOU' banner they see on their next parler_recv, so they continue without a human re-prompting. Defaults to active session; or target room/to/service. `for`: address by agent name or role (omit = anyone). `bundle`: attach a code blob id from parler_push.",
             json!({
                 "next": { "type": "string", "description": "what the next agent should do — the instruction to act on" },
                 "summary": { "type": "string", "description": "recap of what you just finished / current state, for the next agent's context" },
@@ -1793,6 +1902,90 @@ fn tool_specs() -> Vec<Value> {
             &["id"],
         ),
     ]
+}
+
+/// Which slice of the tool catalog `tools/list` exposes. Every tool spec lands verbatim in each
+/// agent's context every session, so a smaller list is a permanent token saving. `Full` (default)
+/// shows everything; `Core` shows the live-session essentials plus `parler_more`. Opt in with
+/// `PARLER_TOOLS=core`; the default stays `Full` until usage evidence (`PARLER_TOOL_METRICS`)
+/// justifies flipping it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum ToolProfile {
+    Core,
+    Full,
+}
+
+impl ToolProfile {
+    fn from_env() -> Self {
+        Self::parse(std::env::var("PARLER_TOOLS").ok().as_deref())
+    }
+
+    /// Pure mapping (so it's testable without the process env): `core` selects the lean profile;
+    /// anything else — including unset — is `Full`, the safe default.
+    fn parse(v: Option<&str>) -> Self {
+        match v.map(str::trim) {
+            Some(s) if s.eq_ignore_ascii_case("core") => ToolProfile::Core,
+            _ => ToolProfile::Full,
+        }
+    }
+}
+
+/// The tools exposed in the `Core` profile: the live-session conversation essentials — open/join/leave
+/// a session, send/recv/handoff, shared memory, and the room list. Everything else (the owner's
+/// approval trio, discovery, code push/fetch/apply, invites, presence, cards, watch) is one
+/// `parler_more` call — or `PARLER_TOOLS=full` — away.
+const CORE_TOOLS: &[&str] = &[
+    "parler_open_session",
+    "parler_join_session",
+    "parler_close_session",
+    "parler_send",
+    "parler_recv",
+    "parler_handoff",
+    "parler_remember",
+    "parler_recall",
+    "parler_rooms",
+];
+
+/// The `tools/list` payload for `profile`. `Full` is the whole catalog (unchanged); `Core` is the
+/// [`CORE_TOOLS`] subset plus the tiny `parler_more` escape hatch.
+fn tool_specs_for(profile: ToolProfile) -> Vec<Value> {
+    let all = tool_specs();
+    match profile {
+        ToolProfile::Full => all,
+        ToolProfile::Core => {
+            let mut core: Vec<Value> = all
+                .into_iter()
+                .filter(|t| t.get("name").and_then(Value::as_str).is_some_and(|n| CORE_TOOLS.contains(&n)))
+                .collect();
+            core.push(json!({
+                "name": "parler_more",
+                "description": "List the Parler tools not loaded in this session's lean 'core' profile (discovery, code push/fetch/apply, invites, presence, cards, watch). Call it to see them, then set PARLER_TOOLS=full and restart the MCP server to load their full specs.",
+                "inputSchema": { "type": "object", "properties": {}, "required": [] }
+            }));
+            core
+        }
+    }
+}
+
+/// The `parler_more` response: a one-line-per-tool index of everything outside [`CORE_TOOLS`], so a
+/// `core`-profile agent can discover the long tail without paying its full specs up front.
+fn more_catalog() -> String {
+    let lines: Vec<String> = tool_specs()
+        .iter()
+        .filter_map(|t| {
+            let name = t.get("name").and_then(Value::as_str)?;
+            if CORE_TOOLS.contains(&name) {
+                return None;
+            }
+            let desc = t.get("description").and_then(Value::as_str).unwrap_or("");
+            let first = desc.split(['.', ';']).next().unwrap_or(desc).trim();
+            Some(format!("- {name}: {first}"))
+        })
+        .collect();
+    format!(
+        "Tools beyond the core profile — set PARLER_TOOLS=full and restart the MCP server to load their full specs:\n{}",
+        lines.join("\n")
+    )
 }
 
 #[cfg(test)]
@@ -1920,6 +2113,48 @@ mod tests {
             desc_bytes <= TOOL_DESC_BUDGET,
             "tool descriptions {desc_bytes} B exceed budget {TOOL_DESC_BUDGET} B — keep them tight"
         );
+    }
+
+    /// The `core` profile's `tools/list` must be *much* smaller than full — that's the whole point of
+    /// progressive disclosure (#89). Measured ~6,442 B for 10 tools vs ~11,960 B full — a ~46% cut on
+    /// the permanent per-session tax. (The issue's ~4-5 KB estimate predates #92/#94, which enriched
+    /// send/recv — both *core* tools — so core carries their weight; the win is still large.) Ceiling
+    /// with headroom.
+    const CORE_SPECS_BUDGET: usize = 6_800;
+
+    #[tokio::test]
+    async fn core_profile_is_much_smaller_and_keeps_the_escape_hatch() {
+        let core = tool_specs_for(ToolProfile::Core);
+        let full = tool_specs_for(ToolProfile::Full);
+        let core_bytes = serde_json::to_string(&json!({ "tools": core })).unwrap().len();
+        let full_bytes = serde_json::to_string(&json!({ "tools": full })).unwrap().len();
+        println!("[budget] core tool_specs: {} tools, {core_bytes} B (full: {full_bytes} B)", core.len());
+        assert!(
+            core_bytes <= CORE_SPECS_BUDGET,
+            "core tool specs {core_bytes} B exceed budget {CORE_SPECS_BUDGET} B"
+        );
+        // A meaningful cut: core is at least 40% smaller than full.
+        assert!(core_bytes * 100 < full_bytes * 60, "core ({core_bytes} B) should be ≥40% smaller than full ({full_bytes} B)");
+        let names: Vec<&str> = core.iter().filter_map(|t| t.get("name").and_then(Value::as_str)).collect();
+        assert!(names.contains(&"parler_more"), "core exposes the parler_more escape hatch");
+        assert!(names.contains(&"parler_send") && names.contains(&"parler_recv"), "core keeps the essentials");
+        assert!(!names.contains(&"parler_discover"), "the long tail is excluded from core");
+        // Full profile is unchanged — same catalog the default serves.
+        assert_eq!(full.len(), tool_specs().len(), "full profile == the whole catalog");
+    }
+
+    #[test]
+    fn tool_profile_defaults_to_full_and_reads_core() {
+        assert_eq!(ToolProfile::parse(None), ToolProfile::Full, "unset ⇒ full (safe default)");
+        assert_eq!(ToolProfile::parse(Some("core")), ToolProfile::Core);
+        assert_eq!(ToolProfile::parse(Some(" CORE ")), ToolProfile::Core, "trimmed + case-insensitive");
+        assert_eq!(ToolProfile::parse(Some("full")), ToolProfile::Full);
+        assert_eq!(ToolProfile::parse(Some("bogus")), ToolProfile::Full, "unknown ⇒ full");
+        // more_catalog lists the excluded tools and names the escape.
+        let cat = more_catalog();
+        assert!(cat.contains("parler_discover"), "catalog lists excluded tools");
+        assert!(cat.contains("PARLER_TOOLS=full"), "catalog names the full-profile switch");
+        assert!(!cat.contains("parler_send"), "catalog omits core tools");
     }
 
     #[tokio::test]
@@ -2142,6 +2377,115 @@ mod tests {
         let full = call_session_tool(&mut bob, "parler_recv", &json!({ "since": seq, "limit": 1 })).await.unwrap();
         assert!(full.contains(&long), "explicit since re-read returns the full body");
         assert!(!full.contains("chars — parler_recv since="), "re-reads are never truncated");
+    }
+
+    #[tokio::test]
+    async fn focus_mentions_expands_targeted_collapses_rest_losslessly() {
+        // focus:"mentions" is a *render* tier: messages addressed to the agent render in full, the
+        // rest collapse to previews — but the cursor advances identically to an unfocused recv, so it
+        // stays lossless. Two joiners read the same backlog: one focused, one not; assert same cursor,
+        // both fully drained, and the focused render is measurably smaller.
+        let hub = start_hub().await;
+        let mut alice = state(&hub, "alice").await;
+        let opened = open_session(&mut alice, Some("seed"), None, None, None, false).await.unwrap();
+        let room = alice.active_session.clone().unwrap();
+        let key = key_of(&opened);
+        let mut bob = state(&hub, "bob").await;
+        let mut bob2 = state(&hub, "bob").await;
+        join_session(&mut bob, &key, Backlog::Recent, None).await.unwrap();
+        join_session(&mut bob2, &key, Backlog::Recent, None).await.unwrap();
+        // Drain both readers up to "now" so they start level with what alice is about to post.
+        for r in [&mut bob, &mut bob2] {
+            loop {
+                let out = call_session_tool(r, "parler_recv", &json!({})).await.unwrap();
+                if out.contains("no new messages") {
+                    break;
+                }
+            }
+        }
+
+        // 22 long "noise" messages that don't target bob, and 3 short ones that @-mention him.
+        let noise_body = "z".repeat(200);
+        for i in 0..22 {
+            alice.agent.send_text(Target::Room { room: room.clone() }, &format!("noise{i} {noise_body}")).await.unwrap();
+        }
+        for i in 0..3 {
+            alice
+                .agent
+                .send(Target::Room { room: room.clone() }, vec![parler_protocol::Part::Text(format!("MENTION{i} please review"))], Some(vec!["bob".into()]), None)
+                .await
+                .unwrap();
+        }
+
+        let focused = call_session_tool(&mut bob, "parler_recv", &json!({ "focus": "mentions" })).await.unwrap();
+        let plain = call_session_tool(&mut bob2, "parler_recv", &json!({})).await.unwrap();
+
+        // Same cursor: the render choice never touched the cursor.
+        let cursor_of = |s: &str| s.split("cursor at ").nth(1).and_then(|r| r.split_whitespace().next()).map(str::to_string);
+        assert_eq!(cursor_of(&focused), cursor_of(&plain), "focused recv advances the cursor identically");
+        // Both fully drained afterwards.
+        for r in [&mut bob, &mut bob2] {
+            let again = call_session_tool(r, "parler_recv", &json!({})).await.unwrap();
+            assert!(again.contains("no new messages"), "backlog fully drained after focused/plain recv");
+        }
+
+        // Mentions render in full in the focused output; the long noise body is collapsed (absent).
+        for i in 0..3 {
+            assert!(focused.contains(&format!("MENTION{i} please review")), "mention {i} rendered in full");
+        }
+        assert!(!focused.contains(&noise_body), "long non-mention body is collapsed, not rendered in full");
+        assert!(focused.contains("noise0"), "collapsed lines still carry the author/preview");
+        // Measurably smaller than the unfocused render of the same 25-message batch.
+        assert!(focused.len() < plain.len(), "focused render {} B < unfocused {} B", focused.len(), plain.len());
+    }
+
+    #[test]
+    fn size_nudge_fires_only_above_threshold() {
+        // Pure boundary: strictly above the threshold nudges; at or below stays silent.
+        assert!(size_nudge(801, 800).is_some(), "above threshold nudges");
+        assert!(size_nudge(800, 800).is_none(), "at threshold is silent");
+        assert!(size_nudge(0, 800).is_none(), "empty send never nudges");
+        // Threshold 0 is the disable switch — never nudge, however large.
+        assert!(size_nudge(1_000_000, 0).is_none(), "threshold 0 disables the nudge");
+        // The nudge names the cheaper path.
+        assert!(size_nudge(5000, 800).unwrap().contains("parler_push"), "nudge points at the bundle path");
+    }
+
+    #[tokio::test]
+    async fn large_send_nudges_small_send_does_not() {
+        let hub = start_hub().await;
+        let mut alice = state(&hub, "alice").await;
+        open_session(&mut alice, Some("seed"), None, None, None, false).await.unwrap();
+
+        // A short message stays under the default threshold — no nudge, delivery unaffected.
+        let small = call_session_tool(&mut alice, "parler_send", &json!({ "text": "ok" })).await.unwrap();
+        assert!(small.contains("sent to"), "the send still succeeds");
+        assert!(!small.contains("≈"), "a small message carries no size nudge:\n{small}");
+
+        // A big paste (well over 800 est tokens ≈ 3,200 chars) trips the nudge but still sends.
+        let big = "x".repeat(5000);
+        let sent = call_session_tool(&mut alice, "parler_send", &json!({ "text": big })).await.unwrap();
+        assert!(sent.contains("sent to"), "delivery is never blocked by the nudge:\n{}", &sent[..sent.len().min(120)]);
+        assert!(sent.contains("parler_push"), "an over-threshold send nudges toward a bundle:\n{}", &sent[sent.len().saturating_sub(200)..]);
+    }
+
+    #[test]
+    fn message_targets_matches_name_or_role_case_insensitively() {
+        let mk = |mentions: Option<Vec<String>>| StoredMessage {
+            seq: 1,
+            id: "m".into(),
+            room: "r".into(),
+            from: parler_protocol::EndpointRef { id: "u".into(), name: "carol".into(), role: None },
+            parts: vec![parler_protocol::Part::Text("hi".into())],
+            mentions,
+            reply_to: None,
+            ts: 0,
+        };
+        assert!(message_targets(&mk(Some(vec!["bob".into()])), "bob", None));
+        assert!(message_targets(&mk(Some(vec!["bob".into()])), "Bob", None), "name match is case-insensitive");
+        assert!(message_targets(&mk(Some(vec!["reviewer".into()])), "bob", Some("reviewer")), "role match");
+        assert!(!message_targets(&mk(Some(vec!["alice".into()])), "bob", None), "unaddressed message doesn't target");
+        assert!(!message_targets(&mk(None), "bob", None), "no mentions ⇒ not targeted");
     }
 
     #[test]
@@ -2956,6 +3300,9 @@ mod tests {
         valid_tools.insert("parler_watch_session".to_string());
         valid_tools.insert("parler_session_handoff".to_string());
         valid_tools.insert("parler_consolidate_session".to_string());
+        // Exposed only in the `core` profile (progressive-disclosure escape hatch), so it isn't in the
+        // full `tool_specs()` list the harvest above builds from.
+        valid_tools.insert("parler_more".to_string());
         
         let mcp_src = std::fs::read_to_string("src/mcp.rs").unwrap_or_else(|_| std::fs::read_to_string("crates/parler-cli/src/mcp.rs").unwrap());
         let lib_src = std::fs::read_to_string("src/lib.rs").unwrap_or_else(|_| std::fs::read_to_string("crates/parler-cli/src/lib.rs").unwrap());

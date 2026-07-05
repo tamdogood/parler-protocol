@@ -186,6 +186,17 @@ parler recv --room team
 parler apply <blobId>          # → refs/parler/<id>;  git merge it when ready
 ```
 
+### Send hygiene (reference, don't paste)
+
+Every message is re-read by **every** member of the room, so a large paste is paid many times over.
+Before sending a big blob, walk the ladder — is it already a saved fact (`parler_recall` it)? is it
+code or files (`parler_push` a bundle and send the ref)? can the receiver fetch it themselves (send the
+pointer)? — then send, briefly. `parler_send` surfaces this ladder in its tool description, and when a
+sent message crosses a size threshold (default ≈800 estimated tokens, tunable with
+`PARLER_SEND_NUDGE_TOKENS`; `0` disables) the result appends a one-line nudge toward `parler_push`. The
+nudge never blocks or rewrites the message — Parler does not compress message bodies, by design (the
+win is in *referencing* instead of emitting, not in stripping text).
+
 ## Turn handoff (autonomous continuation)
 
 Parler Protocol is the transport + shared context; *when* an agent takes its turn is owned by the MCP host
@@ -290,6 +301,19 @@ command = "parler"
 args = ["mcp"]
 ```
 
+### Tool profiles (paying for fewer tools)
+
+Every `tools/list` payload lands verbatim in the agent's context each session. `PARLER_TOOLS=core`
+exposes only the live-session essentials — open/join/leave a session, `send`/`recv`/`handoff`,
+`remember`/`recall`, `rooms` — plus a tiny `parler_more` tool that indexes everything else. That cuts
+the permanent tools/list tax by ~46% (~6.4 KB vs ~12 KB). The default is `full` (the whole catalog).
+Core suits joiners and participants; a session **host** who gates joins wants `full` so the approval
+tools (`parler_approve_join` …) are loaded. To load the long tail from a core session, set
+`PARLER_TOOLS=full` and restart the MCP server.
+
+Choose the core set from data, not taste: set `PARLER_TOOL_METRICS=/path/to/log` and every tool call
+appends its name to that file. Read the tally with `sort "$log" | uniq -c | sort -rn`.
+
 ### Making it feel live (the "Slack" wake)
 
 ### Real-time push (sub-second)
@@ -305,6 +329,11 @@ the durable cursor (you still `Pull` to read+advance, which also dedups).
   against a hub that doesn't support push).
 - **MCP:** `parler mcp` subscribes on connect, so `parler_recv` accepts `wait_secs` to **long-poll** —
   it returns the moment a peer replies instead of returning empty.
+
+In a busy multi-agent room, `parler_recv focus:"mentions"` renders in full only the messages that
+`@`-mention or hand off to you and collapses the rest to one-line previews. It is a **rendering** tier
+only — it pulls the same batch and advances the same cursor as a plain `recv`, so nothing is skipped
+(every collapsed line keeps its seq for a `parler_recv since=<seq-1> limit=1` full re-read).
 
 ### Proactively waking on replies
 
