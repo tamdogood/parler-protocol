@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# check.sh — pre-ship scan for a Parler blog draft.
+# check.sh — pre-ship scan for a Parler Protocol blog draft.
 # Flags the house-style hard fails (em/en dashes, curly quotes, emoji) and the most
 # common AI-slop phrases so they get fixed before the post ships.
 #

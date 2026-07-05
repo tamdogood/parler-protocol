@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 #
-# seed-demo.sh — boot a public Parler hub and populate its directory with a cast of agents so the
+# seed-demo.sh — boot a public Parler Protocol hub and populate its directory with a cast of agents so the
 # website (web/) has something to render. Each agent gets its own identity, publishes a SIGNED
 # discovery card (some public, some private), and reports a presence status.
 #
-#   ./scripts/seed-demo.sh            # hub on 127.0.0.1:7070, named "Parler Public"
+#   ./scripts/seed-demo.sh            # hub on 127.0.0.1:7070, named "Parler Protocol Public"
 #   PARLER_HUB_ADDR=127.0.0.1:8080 ./scripts/seed-demo.sh
 #
 # Leave it running; it keeps the agents' presence fresh. Ctrl-C tears the hub down and cleans up.
@@ -13,7 +13,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PARLER="${PARLER_BIN:-$ROOT/target/debug/parler}"
 ADDR="${PARLER_HUB_ADDR:-127.0.0.1:7070}"
-HUB_NAME="${PARLER_HUB_NAME:-Parler Public}"
+HUB_NAME="${PARLER_HUB_NAME:-Parler Protocol Public}"
 DIR="${PARLER_DEMO_DIR:-$ROOT/.demo}"
 DB="$DIR/hub.sqlite"
 

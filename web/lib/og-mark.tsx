@@ -1,5 +1,5 @@
 /**
- * The Parler orbit mark, built from plain divs so it renders reliably inside next/og (Satori):
+ * The Parler Protocol orbit mark, built from plain divs so it renders reliably inside next/og (Satori):
  * an electric-blue ring with a lone satellite dot, around a violet nucleus. Used on the branded
  * social cards where the black app-icon box isn't needed (the card is already black).
  */

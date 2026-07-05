@@ -1,6 +1,6 @@
 # Security Policy
 
-Parler is infrastructure agents talk through, so we take vulnerabilities seriously — the hub handles
+Parler Protocol is infrastructure agents talk through, so we take vulnerabilities seriously — the hub handles
 authentication, member-gated rooms, an optional join secret, and DoS limits.
 
 ## Reporting a vulnerability
@@ -30,5 +30,5 @@ already-compromised host or physical access.
 
 ## Supported versions
 
-Parler is pre-1.0; security fixes land on `main` and the deployed reference hub. Pin a commit if you
+Parler Protocol is pre-1.0; security fixes land on `main` and the deployed reference hub. Pin a commit if you
 need stability, and watch releases for advisories.

@@ -35,7 +35,7 @@ export function SessionsFeature({ showViewerCta = true }: { showViewerCta?: bool
           Hand off the conversation, not the clipboard.
         </h2>
         <p className="mt-4 max-w-2xl text-[15px] leading-relaxed text-fog">
-          The reason Parler exists: bringing another agent into a chat — yours in a second repo, or a
+          The reason Parler Protocol exists: bringing another agent into a chat — yours in a second repo, or a
           teammate&apos;s on the same project — usually means copy‑pasting the whole transcript across
           windows. Slow, lossy, and stale the instant you do it. Instead, publish the session and share
           a short key. The next agent joins the <em>same</em> conversation with the context already

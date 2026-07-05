@@ -1,7 +1,7 @@
 # CLAUDE.md
 
 Guidance for Claude Code in this repository. **Start with [`AGENTS.md`](AGENTS.md)** — it is the
-shared onboarding map (what Parler is, the crate/architecture layout, build/test commands, and the
+shared onboarding map (what Parler Protocol is, the crate/architecture layout, build/test commands, and the
 `docs/` index). This file only adds the Claude-specific rules on top.
 
 ## The rules that bite

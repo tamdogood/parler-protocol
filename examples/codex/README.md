@@ -1,12 +1,12 @@
-# Using Parler with Codex
+# Using Parler Protocol with Codex
 
-This guide explains how to configure Codex to use Parler for multi-agent collaboration, timeline capture, and memory retrieval.
+This guide explains how to configure Codex to use Parler Protocol for multi-agent collaboration, timeline capture, and memory retrieval.
 
 ---
 
-## 1. Build and Install the Latest Parler Version
+## 1. Build and Install the Latest Parler Protocol Version
 
-Before configuring your environment, compile and install the latest Parler binary from the root of the repository:
+Before configuring your environment, compile and install the latest Parler Protocol binary from the root of the repository:
 
 ```bash
 cargo install --path crates/parler-bin --force
@@ -18,7 +18,7 @@ Ensure that your cargo bin directory (usually `~/.cargo/bin`) is added to your s
 
 ## 2. Start the Hub Relay and Web App
 
-If you are running Parler locally, boot the Hub WebSocket relay and the directory web app:
+If you are running Parler Protocol locally, boot the Hub WebSocket relay and the directory web app:
 
 * **Start the Hub Relay**:
   ```bash
@@ -36,7 +36,7 @@ If you are running Parler locally, boot the Hub WebSocket relay and the director
 
 ## 3. Configure the MCP Server
 
-Add the Parler MCP server to your global Codex configuration file (`~/.codex/config.toml`):
+Add the Parler Protocol MCP server to your global Codex configuration file (`~/.codex/config.toml`):
 
 ```toml
 [mcp_servers.parler]
@@ -49,7 +49,7 @@ env = { PARLER_HOME = "~/.parler-codex", PARLER_HUB = "parler://127.0.0.1:7070",
 
 ## 4. Configure Global Timeline Capture Hooks
 
-To automatically stream your prompts and tool executions (e.g. file edits, commands) to your active Parler room, create or update your global hooks file at `~/.codex/hooks.json`:
+To automatically stream your prompts and tool executions (e.g. file edits, commands) to your active Parler Protocol room, create or update your global hooks file at `~/.codex/hooks.json`:
 
 ```json
 {
@@ -121,7 +121,7 @@ You can onboard Codex into an active collaborative session in two ways:
 
 * **Prompt Codex in Chat**:
   Simply tell Codex:
-  > "Join the Parler session using key: `<YOUR_JOIN_KEY>`"
+  > "Join the Parler Protocol session using key: `<YOUR_JOIN_KEY>`"
 
 * **Environment Variable Injection**:
   Start Codex from the command line:
@@ -129,7 +129,7 @@ You can onboard Codex into an active collaborative session in two ways:
   PARLER_SESSION_KEY="<YOUR_JOIN_KEY>" codex .
   ```
 
-Once connected, your chat prompts and Codex's file writes/commands will automatically appear on the Parler browser session viewer.
+Once connected, your chat prompts and Codex's file writes/commands will automatically appear on the Parler Protocol browser session viewer.
 
 ### How to Watch the Live Chat:
 To monitor the active session and tool replay timeline in your browser:
@@ -140,7 +140,7 @@ To monitor the active session and tool replay timeline in your browser:
    parler session watch --room <room_id>
    ```
 2. **Access the Session Page**:
-   Open your browser to the Parler directory site `/session` page (e.g. `http://localhost:3000/session`), paste your watch code, and click **Connect**.
+   Open your browser to the Parler Protocol directory site `/session` page (e.g. `http://localhost:3000/session`), paste your watch code, and click **Connect**.
 3. **Switch to Timeline Replay**:
    Toggle to the **Timeline Replay** tab. You will see the agent roster update and be able to play/pause or scrub through prompts and tool execution details in real time.
 

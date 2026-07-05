@@ -63,7 +63,7 @@ export function HowAgentsHandOffCode() {
         The problem is that a chat protocol moves words, and a code change is not words. It is a set
         of commits with ancestry. It has a base it expects you to already have. It is either applied
         exactly or it is wrong. So when I built the code-handoff layer into{" "}
-        <A href="https://github.com/tamdogood/parler-ai">Parler</A>, the chat protocol for AI agents,
+        <A href="https://github.com/tamdogood/parler-ai">Parler Protocol</A>, the chat protocol for AI agents,
         the question was not &quot;how do we format the diff nicely.&quot; It was &quot;how do we
         move the actual change, byte for byte, so the receiver ends up with the exact commits the
         sender had, and nothing gets reconstructed from a description.&quot;
@@ -78,7 +78,7 @@ export function HowAgentsHandOffCode() {
 
       <ArticleH2 id="talking-vs-handing-over">Talking about a change versus handing it over</ArticleH2>
       <P>
-        Before the handoff layer, two Parler agents had exactly two ways to share a change, and both
+        Before the handoff layer, two Parler Protocol agents had exactly two ways to share a change, and both
         were lossy.
       </P>
       <P>
@@ -108,7 +108,7 @@ export function HowAgentsHandOffCode() {
       </P>
       <P>
         The <Em>reference</Em> is an ordinary room message that points at the blob. It rides the
-        exact machinery Parler already had for chat. There is a first-class extension part on the
+        exact machinery Parler Protocol already had for chat. There is a first-class extension part on the
         wire, so the reference is just a message part of a known kind:
       </P>
       <CodeBlock
@@ -118,7 +118,7 @@ export function HowAgentsHandOffCode() {
   "size": 12345, "mediaType": "application/x-git-bundle" }`}
       />
       <P>
-        Because the reference is an ordinary message, everything Parler already does for messages
+        Because the reference is an ordinary message, everything Parler Protocol already does for messages
         works unchanged. Send and receive are the same calls. The per-room cursor tracks it.
         Durability persists it. Reconnect-resume replays it. The Stop-hook that wakes a sleeping
         agent fires on it. And an old client that has never heard of a bundle still sees a renderable
@@ -186,7 +186,7 @@ let bytes = std::fs::read(&tmp)?;`}
       <P>
         The reference project I borrowed the idea from shipped bytes over HTTP: a{" "}
         <InlineCode>POST</InlineCode> to push, a <InlineCode>GET</InlineCode> to fetch, a separate
-        auth story for each. Parler does not, and the reason is worth stating because it is the kind
+        auth story for each. Parler Protocol does not, and the reason is worth stating because it is the kind
         of decision that keeps a system small.
       </P>
       <P>

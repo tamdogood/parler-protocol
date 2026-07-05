@@ -11,7 +11,7 @@ export function createTray(supervisor: HubSupervisor, showWindow: () => void): T
   const img = nativeImage.createFromPath(trayIcon());
   img.setTemplateImage(true);
   const tray = new Tray(img.isEmpty() ? nativeImage.createEmpty() : img);
-  tray.setToolTip("Parler");
+  tray.setToolTip("Parler Protocol");
 
   const render = (s: HubStatus): void => {
     const running = s.phase === "running";
@@ -32,9 +32,9 @@ export function createTray(supervisor: HubSupervisor, showWindow: () => void): T
       running || s.phase === "starting"
         ? { label: "Stop hub", click: () => void supervisor.stop() }
         : { label: "Start hub", click: () => void supervisor.start() },
-      { label: "Open Parler", click: showWindow },
+      { label: "Open Parler Protocol", click: showWindow },
       { type: "separator" },
-      { label: "Quit Parler", click: () => app.quit() },
+      { label: "Quit Parler Protocol", click: () => app.quit() },
     ]);
     tray.setContextMenu(menu);
   };

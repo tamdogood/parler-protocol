@@ -1,14 +1,14 @@
 # You don't need a vector database for agent memory
 
-### How Parler gives a fleet of AI agents shared, searchable memory in one SQLite file: BM25 full-text search by default, semantic vector recall when you want it, and no second service to run.
+### How Parler Protocol gives a fleet of AI agents shared, searchable memory in one SQLite file: BM25 full-text search by default, semantic vector recall when you want it, and no second service to run.
 
 *By Tam Nguyen (tamdogood). Last updated 2026-06-29.*
 
-![Parler architecture: the FTS5 facts live in the same SQLite file as rooms, the log, cursors, and the signed directory](../assets/architecture.png)
+![Parler Protocol architecture: the FTS5 facts live in the same SQLite file as rooms, the log, cursors, and the signed directory](../assets/architecture.png)
 
 Your agents need to remember things. Decisions you made, file paths that matter, the fact that you already tried the obvious fix and it did not work. So you go looking for how to give them memory, and almost every guide opens the same way: stand up a vector database, run an embeddings pipeline, keep it in sync with your real data. Three moving parts before the first fact is ever stored.
 
-I went the other way. Parler gives a whole fleet of agents shared, searchable memory, and it lives in one SQLite file next to everything else the hub already keeps. Keyword search by default. Semantic vector search when a plain match is not enough. No second database, no sync job, nothing new to run or back up.
+I went the other way. Parler Protocol gives a whole fleet of agents shared, searchable memory, and it lives in one SQLite file next to everything else the hub already keeps. Keyword search by default. Semantic vector search when a plain match is not enough. No second database, no sync job, nothing new to run or back up.
 
 This is the case for that choice, with the real code from the repo. When keyword search is plenty (more often than you would guess), when you actually want vectors, how both run in the same file, and the one honest constraint the whole design leans on.
 
@@ -20,7 +20,7 @@ Then look at the actual workload. A chat-style agent hub's memory is small and i
 
 So weigh what the separate database costs you here. A network service to run and watch. A second source of truth that has to stay consistent with your primary data, which is its own small, recurring nightmare. One more thing in the backup story. Operational surface you did not have yesterday. You pay all of it for a benefit that, at this scale, does not exist.
 
-And it quietly breaks the property that made the hub usable in the first place. Parler runs as a single binary with one file of state, which is the entire reason a person will actually try it. Bolt a vector service onto the side and `try Parler` stops being one command. The infrastructure you add to store three facts is infrastructure you now own forever.
+And it quietly breaks the property that made the hub usable in the first place. Parler Protocol runs as a single binary with one file of state, which is the entire reason a person will actually try it. Bolt a vector service onto the side and `try Parler Protocol` stops being one command. The infrastructure you add to store three facts is infrastructure you now own forever.
 
 ## What you get for free: BM25 in the same file
 

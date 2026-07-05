@@ -35,10 +35,10 @@ export function SettingsScreen({
       </div>
 
       <Group title="Local hub">
-        <Row title="Start Parler at login" subtitle="Launch in the background at login so the hub is up before your agents dial in.">
+        <Row title="Start Parler Protocol at login" subtitle="Launch in the background at login so the hub is up before your agents dial in.">
           <Switch on={settings.startAtLogin} onChange={(v) => onUpdate({ startAtLogin: v })} />
         </Row>
-        <Row title="Start hub on launch" subtitle="Boot your private hub automatically when Parler opens.">
+        <Row title="Start hub on launch" subtitle="Boot your private hub automatically when Parler Protocol opens.">
           <Switch on={settings.autoStartHub} onChange={(v) => onUpdate({ autoStartHub: v })} />
         </Row>
         <Row
@@ -57,7 +57,7 @@ export function SettingsScreen({
       </Group>
 
       <Group title="About">
-        <Row title="Parler Desktop" subtitle={`Version ${version} · unsigned build`}>
+        <Row title="Parler Protocol Desktop" subtitle={`Version ${version} · unsigned build`}>
           <div className="flex gap-2">
             <Button variant="subtle" size="sm" onClick={() => parler.shell.openExternal(REPO)}>
               <Github className="size-3.5" /> GitHub

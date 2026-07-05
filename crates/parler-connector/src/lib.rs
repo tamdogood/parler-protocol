@@ -1,6 +1,6 @@
 //! parler-connector — the **client core** every agent surface shares.
 //!
-//! This is the `MeshAgent`: a small, transport-agnostic API for talking to a Parler hub —
+//! This is the `MeshAgent`: a small, transport-agnostic API for talking to a Parler Protocol hub —
 //! invite/join (pairing), the three send patterns, pull (the durable inbox), and the memory
 //! store (remember/recall). The CLI (`parler …`), the MCP server (`parler mcp`), and the Hermes
 //! plugin are all thin adapters over this one type.

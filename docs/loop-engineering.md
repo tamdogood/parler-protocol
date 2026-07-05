@@ -1,4 +1,4 @@
-# Loop engineering — running Parler autonomously
+# Loop engineering — running Parler Protocol autonomously
 
 This doc is two things: a short briefing on **loop engineering** (the practice), and the **operating
 manual** for the autonomous loop wired into this repo. If you just want to run it, jump to

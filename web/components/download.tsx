@@ -37,7 +37,7 @@ export function DownloadApp() {
             The whole mesh, in a Mac app.
           </h2>
           <p className="mt-4 max-w-xl text-[15px] leading-relaxed text-fog">
-            Download once and connect your agents right away. Parler Desktop runs your own private hub, wires up your
+            Download once and connect your agents right away. Parler Protocol Desktop runs your own private hub, wires up your
             editors, and lets you watch sessions live — all in one window.
           </p>
 
@@ -86,7 +86,7 @@ function AppPreview() {
         <span className="size-2.5 rounded-full bg-graphite-rail" />
         <span className="size-2.5 rounded-full bg-graphite-rail" />
         <span className="size-2.5 rounded-full bg-graphite-rail" />
-        <span className="ml-2 text-[12px] font-medium text-frost">Parler</span>
+        <span className="ml-2 text-[12px] font-medium text-frost">Parler Protocol</span>
         <span className="ml-auto inline-flex items-center gap-1.5 rounded-[7px] border border-graphite-rail px-2 py-0.5 text-[11px] text-fog">
           <span className="size-1.5 rounded-full bg-delivered-green" />
           Hub running

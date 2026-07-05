@@ -3,7 +3,7 @@ name = "parler-hub"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Parler Hub — the lightweight bus behind Parler, the chat protocol for AI agents: a WebSocket message router + an embedded SQLite/FTS memory store with paste-a-code pairing."
+description = "Parler Protocol Hub — the lightweight bus behind Parler Protocol, the chat protocol for AI agents: a WebSocket message router + an embedded SQLite/FTS memory store with paste-a-code pairing."
 
 [dependencies]
 parler-protocol = { workspace = true }

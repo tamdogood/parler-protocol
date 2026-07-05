@@ -4,7 +4,7 @@ Date: 2026-07-03 · Author: architect-research run (Claude) · Raw findings: `.a
 
 ## The brief
 
-How should Parler further improve the connection between agents? Two goals: (1) the protocol
+How should Parler Protocol further improve the connection between agents? Two goals: (1) the protocol
 works *flawlessly* (no lost/duplicated messages, robust reconnect), and (2) it wastes no
 unnecessary tokens on the agent side. Study [ponytail](https://github.com/DietrichGebert/ponytail)
 and [caveman-compression](https://github.com/wilpel/caveman-compression) for lessons, plus survey
@@ -43,11 +43,11 @@ implementation here).
    (arXiv 2606.24083) found measurable accuracy penalties across models/benchmarks with no
    universally beneficial configuration; the LLMLingua literature flags instruction-following
    as particularly vulnerable. **What transfers instead is caveman's *verification* pattern**:
-   its fact-to-question LLM-judge benchmark is exactly the harness Parler needs to prove its
+   its fact-to-question LLM-judge benchmark is exactly the harness Parler Protocol needs to prove its
    *digests* (join backlog digest, session-digest fact) don't drop decision-relevant facts.
 4. **Ponytail's transferable idea is the pre-action gate, not the plugin.** Its "laziness
    ladder" (don't emit what already exists / can be referenced) maps onto send-side hygiene:
-   reference a fact or bundle instead of pasting content the receiver can fetch. Parler
+   reference a fact or bundle instead of pasting content the receiver can fetch. Parler Protocol
    already has ponytail's other good ideas: an intensity dial (`PARLER_MCP_VERBOSE`), budget
    regression tests (`TOOL_SPECS_BUDGET`), and debt tracking (backlog). Ponytail's headline
    numbers (54% LOC / 22% tokens) are self-benchmarked with no independent reproduction found
@@ -86,7 +86,7 @@ implementation here).
 | F9 | serde enums without a catch-all variant reject unknown variants (breaking for old clients); structs are safe (no `deny_unknown_fields` anywhere in parler-protocol) | VERIFIED (grep + serde issue #2634) | Add unknown-variant tolerance guidance + tests to protocol |
 | F10 | Hub replies gracefully to malformed/unknown frames (`server.rs:1197-1205`), keeps connection | VERIFIED (code read) | Conformance suite codifies this |
 | F11 | MCP push (`resources/subscribe` notifications) is spec'd but rarely implemented by clients | med (secondary, 2026) | Don't bet the inbox on MCP notifications; keep long-poll primary |
-| F12 | Discord resume = session_id+seq replay; jittered heartbeats; zombied-conn detection. Phoenix is at-most-once with no replay (open issue since 2014) | VERIFIED (official docs) | Parler's durable-cursor design is already the stronger pattern; add heartbeat/liveness |
+| F12 | Discord resume = session_id+seq replay; jittered heartbeats; zombied-conn detection. Phoenix is at-most-once with no replay (open issue since 2014) | VERIFIED (official docs) | Parler Protocol's durable-cursor design is already the stronger pattern; add heartbeat/liveness |
 
 ## Expert positions map
 

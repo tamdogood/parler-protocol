@@ -4,7 +4,7 @@ This is self-contained: you can enforce it even if the `/humanizer` command isn'
 But if `/humanizer` is available, run it too. This file is the house-specific layer on top
 of it.
 
-## What a Parler post sounds like
+## What a Parler Protocol post sounds like
 
 - **Human and a little contrarian.** It has an opinion and defends it. It's willing to say
   "most guides get this wrong" and then show why.

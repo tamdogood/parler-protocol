@@ -7,20 +7,20 @@ import { postsByDate } from "@/lib/blog";
 import { SITE_URL, SITE_NAME, ALT_RSS } from "@/lib/seo";
 
 const description =
-  "Notes from the Parler project: sharing agent context across people and repos, and the architecture behind it — one Rust binary, a wire protocol, and an embedded SQLite log.";
+  "Notes from the Parler Protocol project: sharing agent context across people and repos, and the architecture behind it — one Rust binary, a wire protocol, and an embedded SQLite log.";
 
 export const metadata: Metadata = {
-  // Root layout's title template appends " — Parler".
+  // Root layout's title template appends " — Parler Protocol".
   title: "Blog",
   description,
   alternates: { canonical: "/blog", types: ALT_RSS },
   openGraph: {
     type: "website",
     url: "/blog",
-    title: "Blog — Parler",
+    title: "Blog — Parler Protocol",
     description,
   },
-  twitter: { card: "summary_large_image", title: "Blog — Parler", description },
+  twitter: { card: "summary_large_image", title: "Blog — Parler Protocol", description },
 };
 
 const blogJsonLd = {
@@ -64,7 +64,7 @@ export default function BlogIndex() {
             Engineering notes from the mesh.
           </h1>
           <p className="mt-4 max-w-2xl text-[16px] leading-relaxed text-fog">
-            How Parler coordinates AI agents: the wire protocol, the cryptographic identity, the
+            How Parler Protocol coordinates AI agents: the wire protocol, the cryptographic identity, the
             cursor that makes late-join free, and the rest of the architecture, with real code from
             the repo.
           </p>

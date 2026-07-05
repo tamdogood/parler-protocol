@@ -32,7 +32,7 @@ the conversation already caught up.
    parler session open --topic hackathon --context "…what we're building, key files, current blocker…"
    ```
 
-   Ask your agent in plain language too: *"Open a Parler session, summarize what we're doing as the
+   Ask your agent in plain language too: *"Open a Parler Protocol session, summarize what we're doing as the
    context, and give me the key."* The `parler_open_session` MCP tool returns a ready-to-paste
    one-liner for a teammate (with the hub and any join secret already filled in).
 

@@ -1,4 +1,4 @@
-# Research: full audit + battle-tested resilience, security, and token-efficiency for Parler
+# Research: full audit + battle-tested resilience, security, and token-efficiency for Parler Protocol
 
 Date: 2026-07-04 · Method: 6 parallel researchers (2 codebase audits at HEAD `af8261c`, 4 web) +
 orchestrator verification against primary sources. Raw findings in `.architect/research/` (gitignored).
@@ -44,7 +44,7 @@ issues the evidence re-prioritises.
      batches (standard SQLite-under-load practice).
 
 4. **For token efficiency, the evidence strongly backs the *structural* moves already queued and adds
-   hard accuracy numbers.** Parler exposes ~24 tools; both frontier labs publish thresholds right at
+   hard accuracy numbers.** Parler Protocol exposes ~24 tools; both frontier labs publish thresholds right at
    that line — OpenAI "aim for **< 20** functions at once," Anthropic "consider tool search at **30+**,"
    with a measured **Opus 4 49%→74%** accuracy jump from deferred loading and **>85%** token reduction
    [primary, verified]. This elevates #89 (tool profiles) from a token-saver to an **agent-accuracy**
@@ -54,13 +54,13 @@ issues the evidence re-prioritises.
    compression (round-1 verdict holds); **do** embed usage examples in tool descriptions (measured
    72%→90% on complex params) and prefer enums over free strings (supports #110).
 
-5. **Capability-token verdict: keep the opaque DB-backed tokens Parler already uses — do not migrate to
+5. **Capability-token verdict: keep the opaque DB-backed tokens Parler Protocol already uses — do not migrate to
    biscuit/macaroons.** A primary practitioner source (Fly.io, having built *and abandoned* a macaroon
    system) recommends attenuable tokens only when attenuation + confinement + delegation are *all*
-   needed at once; Parler's watch/directory tokens are single-scope reads. The missing piece is a
+   needed at once; Parler Protocol's watch/directory tokens are single-scope reads. The missing piece is a
    **revocation path** (there is none today; TTL up to 365 days), not a fancier token format.
 
-6. **A genuinely novel angle this bus should own: cross-agent prompt injection.** Parler is a literal
+6. **A genuinely novel angle this bus should own: cross-agent prompt injection.** Parler Protocol is a literal
    agent-to-agent message bus, so one agent's message body *is* untrusted input to another agent —
    exactly the surface the 2025–2026 literature flags (Prompt Infection: >80% spread on GPT-4o;
    Willison: no general solution). There is **no consensus mitigation for agent-to-agent chat**, but
@@ -105,10 +105,10 @@ handling. (Full detail: `01-correctness-audit.md`, `02-security-audit.md`.)
 
 | # | Finding | Confidence | Implication |
 |---|---------|-----------|-------------|
-| B1 | NATS disconnects slow consumers at **65536 msgs / 64 MiB** pending per sub, "protect the system as a whole" over buffering [primary, docs.nats.io] | VERIFIED | Bound per-connection outbound queue; disconnect slow agents → they reconnect and resume from durable cursor (Parler already has cursors) |
+| B1 | NATS disconnects slow consumers at **65536 msgs / 64 MiB** pending per sub, "protect the system as a whole" over buffering [primary, docs.nats.io] | VERIFIED | Bound per-connection outbound queue; disconnect slow agents → they reconnect and resume from durable cursor (Parler Protocol already has cursors) |
 | B2 | `governor` = GCRA, lock-free CAS, ~10× faster than mutex under contention; 58.3M downloads [primary docs] | VERIFIED (mechanism) / MED (adoption; dependents NOT FOUND) | The Rust rate-limiter for A1/A2 |
 | B3 | AWS **full-jitter** backoff is canonical; Istio #58100 shows the server must **jitter its drain timeout too**, not just clients [primary] | VERIFIED | Reconnect backoff + staggered drain to avoid a reconnect storm on deploy |
-| B4 | Discord publishes a **close-code table with per-code reconnect semantics** (4004/4010-4014 = do-not-reconnect; 4008 rate-limited = reconnect); code 1001 = graceful "going away", 1006 = abnormal [primary] | VERIFIED | Give Parler close codes that tell the client whether to reconnect; emit 1001 on deploy drain |
+| B4 | Discord publishes a **close-code table with per-code reconnect semantics** (4004/4010-4014 = do-not-reconnect; 4008 rate-limited = reconnect); code 1001 = graceful "going away", 1006 = abnormal [primary] | VERIFIED | Give Parler Protocol close codes that tell the client whether to reconnect; emit 1001 on deploy drain |
 | B5 | Any long-lived **reader** starves WAL checkpoints → unbounded WAL growth; heuristic "alarm if WAL > 2× DB"; `busy_timeout=5000` [primary + practitioner] | VERIFIED (mechanism) / MED (numbers) | Cheap WAL-size monitor; keep reader transactions short |
 | B6 | Litestream = single-node DR/PITR only (no failover); LiteFS Cloud **sunset Oct 2024**, LiteFS deprioritised/pre-1.0 [primary/med] | VERIFIED | For a single-node hub, Litestream is the right (and simpler) backup path; don't reach for LiteFS |
 | B7 | Fly sends **SIGINT** by default; `kill_signal`/`kill_timeout` (up to 24h dedicated) control the grace window; app must translate the signal into a WS close frame [primary] | VERIFIED | Wire SIGINT→graceful WS close (B4) during Fly deploys |
@@ -119,8 +119,8 @@ handling. (Full detail: `01-correctness-audit.md`, `02-security-audit.md`.)
 | # | Finding | Confidence | Implication |
 |---|---------|-----------|-------------|
 | C1 | Keep opaque DB tokens: Fly.io (built+abandoned macaroons) says attenuable tokens only pay off when attenuation+confinement+delegation all needed at once [primary practitioner] | VERIFIED (as opinion) | Don't migrate to biscuit/macaroons; add revocation (A4) instead |
-| C2 | MCP spec: servers **MUST NOT** accept tokens not issued for them (token passthrough anti-pattern); tool-poisoning + no-reapproval "rug pulls" are the best-documented MCP attacks [primary spec + Invariant Labs 2025-04] | VERIFIED | Parler as an MCP server: never proxy a downstream token; surface tool-definition changes for re-approval |
-| C3 | Constant-time compare is **not optional even on low-jitter networks**: 100ns-20µs timing differences are remotely recoverable (Crosby/Wallach 2009); "timeless" concurrency attacks (USENIX 2020) ignore jitter entirely [primary] | VERIFIED | Parler's join-secret compare is already constant-time (verified); confirm the same for any future secret-equality check |
+| C2 | MCP spec: servers **MUST NOT** accept tokens not issued for them (token passthrough anti-pattern); tool-poisoning + no-reapproval "rug pulls" are the best-documented MCP attacks [primary spec + Invariant Labs 2025-04] | VERIFIED | Parler Protocol as an MCP server: never proxy a downstream token; surface tool-definition changes for re-approval |
+| C3 | Constant-time compare is **not optional even on low-jitter networks**: 100ns-20µs timing differences are remotely recoverable (Crosby/Wallach 2009); "timeless" concurrency attacks (USENIX 2020) ignore jitter entirely [primary] | VERIFIED | Parler Protocol's join-secret compare is already constant-time (verified); confirm the same for any future secret-equality check |
 | C4 | RFC 8628: entropy × attempt-limit × lifetime must be sized **jointly**; worked example 8-char/~34.5-bit code + 5 attempts ≈ 2⁻³²; WPS = canonical failure (never leak partial-correctness of a code) [primary] | VERIFIED | Sizing guide for A2 (invite-code throttling) |
 | C5 | Cross-agent prompt injection: Prompt Infection >80% spread on GPT-4o; **no consensus mitigation for agent-to-agent chat**; transferable primitive is spotlighting/demarcation + Meta "Rule of Two" [arXiv/MED + Willison/primary] | MIXED | Novel bus-specific issue: demarcate peer message bodies as untrusted data, not instructions |
 
@@ -128,9 +128,9 @@ handling. (Full detail: `01-correctness-audit.md`, `02-security-audit.md`.)
 
 | # | Finding | Confidence | Implication |
 |---|---------|-----------|-------------|
-| D1 | OpenAI **< 20** functions/turn (soft); Anthropic **30+** → tool search; **Opus 4 49%→74%**, Opus 4.5 79.5%→88.1%; **>85%** token cut; degradation "once you exceed 30–50 tools" [primary] | VERIFIED (thresholds, >85%, 30–50) / UNVERIFIED (exact 49→74 deltas — on the linked advanced-tool-use post, not re-fetched) | Parler's ~24 tools sit at the line → #89 is an **accuracy** fix, not just tokens |
+| D1 | OpenAI **< 20** functions/turn (soft); Anthropic **30+** → tool search; **Opus 4 49%→74%**, Opus 4.5 79.5%→88.1%; **>85%** token cut; degradation "once you exceed 30–50 tools" [primary] | VERIFIED (thresholds, >85%, 30–50) / UNVERIFIED (exact 49→74 deltas — on the linked advanced-tool-use post, not re-fetched) | Parler Protocol's ~24 tools sit at the line → #89 is an **accuracy** fix, not just tokens |
 | D2 | Dominant tool-calling failure = **looping/non-recovery after an error**, not wrong selection; τ-bench pass¹ 61% → pass⁸ 25% [primary] | VERIFIED | #111 (actionable errors) is load-bearing for agent performance; error text is higher-leverage than description polish |
-| D3 | Tool-use **examples in descriptions** moved accuracy **72%→90%** on complex params [primary] | VERIFIED | Add input examples to Parler's tool descriptions |
+| D3 | Tool-use **examples in descriptions** moved accuracy **72%→90%** on complex params [primary] | VERIFIED | Add input examples to Parler Protocol's tool descriptions |
 | D4 | Enums make invalid states unrepresentable; minimise required params; academic: fewer targeted tools raised selection accuracy **93.1% vs 87.1%** (76.8 vs 60.9 on medium) [primary + arXiv/MED] | VERIFIED (guidance) | Supports #110 (strict inputs) |
 | D5 | Instructed brevity (not mechanical stripping) +26pp on math/science, **reverses** size hierarchies [arXiv 2604.00025, abstract VERIFIED]; a counter-case on cross-sentence integration (BoolQ) is reported deeper in the paper | VERIFIED (main) / UNVERIFIED (BoolQ counter-case, single source) | Refine #94: "be brief" helps status/result/handoff messages; risky for messages the receiver must integrate across many sentences |
 | D6 | MCP **Tasks pulled from core → extension** with a new stateless lifecycle in the 2026-07-28 RC; `tools/list` now cacheable via **`ttlMs`/`cacheScope`** (SEP-2549) [primary spec blog, VERIFIED verbatim] | VERIFIED | Don't build #90 on MCP-native Tasks (still churning); #89 can lean on `ttlMs` caching |
@@ -182,11 +182,11 @@ Token efficiency / agent UX (fold into existing where noted):
 
 1. **A2A-vs-MCP token numbers (D7)** — read arXiv 2603.22823 in full; the 3.1×/39% figures are
    currently unverified secondary claims. Only then decide whether a structured A2A-style envelope
-   would cut Parler's per-message overhead vs its current MCP shape.
+   would cut Parler Protocol's per-message overhead vs its current MCP shape.
 2. **Brevity counter-case (D5)** — confirm the BoolQ/cross-sentence-integration result against the full
    paper before it shapes #94's copy.
 3. **Backpressure thresholds for *this* workload** — NATS's 65536/64 MiB are for a high-throughput bus;
-   size Parler's per-connection bound against its actual tens-of-agents profile (needs a load probe).
+   size Parler Protocol's per-connection bound against its actual tens-of-agents profile (needs a load probe).
 4. **Real Caddy/Fly WS idle behaviour** (B8) — live probe against parler-hub.fly.dev to set the #87
    heartbeat interval; the configured timeout is not trustworthy per #6958.
 5. **Tool-usage distribution** — instrument which of the 24 tools sessions actually touch, to design

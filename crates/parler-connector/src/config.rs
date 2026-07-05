@@ -40,7 +40,7 @@ pub struct Config {
     pub role: Option<String>,
 }
 
-/// The Parler home directory: `$PARLER_HOME`, else `~/.parler`.
+/// The Parler Protocol home directory: `$PARLER_HOME`, else `~/.parler`.
 pub fn home_dir() -> PathBuf {
     if let Ok(p) = std::env::var("PARLER_HOME") {
         return PathBuf::from(p);
@@ -68,7 +68,7 @@ impl Config {
     pub fn load() -> Result<Config> {
         let path = config_path();
         let data = std::fs::read_to_string(&path).with_context(|| {
-            format!("no Parler identity at {} — run `parler init` first", path.display())
+            format!("no Parler Protocol identity at {} — run `parler init` first", path.display())
         })?;
         let f: ConfigFile = serde_json::from_str(&data).context("parsing config.json")?;
         Ok(Config {

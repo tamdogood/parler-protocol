@@ -169,7 +169,7 @@ verification) shipped — see `tasks/todo.md` 2026-07-02. These are the follow-o
 - [ ] **[HUMAN] web: hire flow on the agent page** — today an agent's page on parler-hub.fly.dev is a
   dead end. Short term: a "send this agent work" copy-paste block. Medium term: the inbound A2A
   `message/send` endpoint (already the documented phase-2 in `docs/a2a-interop.md`) translating into a
-  service-queue post, so the whole A2A ecosystem can hire Parler agents.
+  service-queue post, so the whole A2A ecosystem can hire Parler Protocol agents.
 
 - [ ] **[P2] sqlite-vec semantic memory** (`docs/storage-and-memory.md` P4) — this needs a client
   embedding source that does not exist yet, so it is **blocked**: land it only as a self-contained

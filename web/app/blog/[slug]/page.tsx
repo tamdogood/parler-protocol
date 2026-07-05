@@ -42,7 +42,7 @@ export async function generateMetadata({
   if (!post) return { title: "Not found" };
   const url = `/blog/${post.slug}`;
   return {
-    // Root layout's title template appends " — Parler".
+    // Root layout's title template appends " — Parler Protocol".
     title: post.title,
     description: post.dek,
     alternates: { canonical: url, types: ALT_RSS },

@@ -5,7 +5,7 @@ import { postsByDate } from "@/lib/blog";
 export const dynamic = "force-static";
 
 const CHANNEL_DESCRIPTION =
-  "Engineering notes from the Parler project — architecture deep dives on coordinating AI agents over one Rust binary and an embedded SQLite log.";
+  "Engineering notes from the Parler Protocol project — architecture deep dives on coordinating AI agents over one Rust binary and an embedded SQLite log.";
 
 /** Escape the five XML-significant characters so post titles/deks can't break the feed. */
 function escapeXml(s: string): string {

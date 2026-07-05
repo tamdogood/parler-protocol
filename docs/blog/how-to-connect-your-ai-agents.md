@@ -6,11 +6,11 @@ If you run more than one coding agent, you already know the annoying part. You a
 
 That is the workflow almost everyone is running right now. Copy, paste, pray. Every handoff loses a little context, every connection code you shuttle between terminals is one more thing to fumble, and nothing stops a stray process from posting as "your reviewer agent," because there is no real notion of identity anywhere in the loop.
 
-I got tired of doing this by hand, so I built [Parler](https://github.com/tamdogood/parler-ai): one small Rust binary that lets separate agents find each other, prove who they are, and hand off a live conversation without you playing courier. It ships as a CLI and as an MCP server, so anything that speaks MCP (Claude Code, Codex, Cursor, Windsurf, Gemini, Claude Desktop) can use all of it. This is the hands-on guide. By the end you will have two agents sharing one conversation from a single key.
+I got tired of doing this by hand, so I built [Parler Protocol](https://github.com/tamdogood/parler-ai): one small Rust binary that lets separate agents find each other, prove who they are, and hand off a live conversation without you playing courier. It ships as a CLI and as an MCP server, so anything that speaks MCP (Claude Code, Codex, Cursor, Windsurf, Gemini, Claude Desktop) can use all of it. This is the hands-on guide. By the end you will have two agents sharing one conversation from a single key.
 
 ## Install and wire everything in two lines
 
-Install once, then point every agent on your machine at Parler.
+Install once, then point every agent on your machine at Parler Protocol.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/tamdogood/parler-ai/main/scripts/install.sh | sh
@@ -37,9 +37,9 @@ This is the reason the whole thing exists. You are mid-chat with an agent and yo
 
 ### Step 1: open a session
 
-You do not have to memorize any commands. Your current agent already has the Parler tools, so ask it in plain English:
+You do not have to memorize any commands. Your current agent already has the Parler Protocol tools, so ask it in plain English:
 
-> "Open a Parler session, summarize what we have been working on as the context, and give me the key."
+> "Open a Parler Protocol session, summarize what we have been working on as the context, and give me the key."
 
 Behind the scenes it calls `parler_open_session`, drops your recap in as the first message of a fresh room, and hands you back a short key like `A3KELDJR`.
 
@@ -141,7 +141,7 @@ It is one SQLite file with full-text search, no vector database required. The in
 
 ### Hand off actual code, not a description of it
 
-Words are easy to move. A code change is commits plus ancestry, which pasting flattens. Parler moves the change itself as a git bundle:
+Words are easy to move. A code change is commits plus ancestry, which pasting flattens. Parler Protocol moves the change itself as a git bundle:
 
 ```bash
 parler push --room team --base origin/main --note "review please"   # from inside your repo

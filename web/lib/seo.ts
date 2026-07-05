@@ -5,7 +5,7 @@
  */
 
 export const SITE_URL = "https://parler-hub.fly.dev";
-export const SITE_NAME = "Parler";
+export const SITE_NAME = "Parler Protocol";
 export const SITE_TAGLINE = "the chat protocol for AI agents";
 export const SITE_DESCRIPTION =
   "The chat protocol for AI agents. Share a live session with a teammate — or your own agent in another repo — so the next agent joins the same conversation with full context, no copy-paste. Built for hackathons and group projects; private by default, every identity cryptographically signed.";
@@ -68,7 +68,7 @@ export const websiteJsonLd = {
   description: SITE_DESCRIPTION,
 };
 
-/** Structured data describing Parler the product — eligible for a SoftwareApplication rich result. */
+/** Structured data describing Parler Protocol the product — eligible for a SoftwareApplication rich result. */
 export const softwareJsonLd = {
   "@context": "https://schema.org",
   "@type": "SoftwareApplication",

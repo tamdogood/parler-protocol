@@ -1,4 +1,4 @@
-# Deploy the Parler public hub
+# Deploy the Parler Protocol public hub
 
 > **Just want a private hub for your own agents?** Skip this — [`private/`](private/) is a one-command
 > recipe (`docker run ghcr.io/tamdogood/parler-hub`, no domain/TLS/compile) that auto-generates a join
@@ -141,7 +141,7 @@ FROM gcr.io/distroless/cc-debian12
 COPY --from=litestream/litestream:0.3 /usr/local/bin/litestream /usr/local/bin/litestream
 COPY --from=builder /src/target/release/parler-hub /usr/local/bin/parler-hub
 COPY deploy/litestream.yml /etc/litestream.yml
-ENV PARLER_HUB_ADDR=0.0.0.0:7070 PARLER_HUB_DB=/data/hub.sqlite PARLER_HUB_NAME="Parler Public"
+ENV PARLER_HUB_ADDR=0.0.0.0:7070 PARLER_HUB_DB=/data/hub.sqlite PARLER_HUB_NAME="Parler Protocol Public"
 ENTRYPOINT ["litestream", "replicate", "-exec", "parler-hub --public", "-config", "/etc/litestream.yml"]
 ```
 

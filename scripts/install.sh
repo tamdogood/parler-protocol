@@ -1,5 +1,5 @@
 #!/bin/sh
-# Parler installer — one command, no Rust toolchain.
+# Parler Protocol installer — one command, no Rust toolchain.
 #
 #   curl -fsSL https://raw.githubusercontent.com/tamdogood/parler-ai/main/scripts/install.sh | sh
 #
@@ -57,7 +57,7 @@ fetch() { # fetch <url> <out>
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
-echo "Parler · installing the $target binary"
+echo "Parler Protocol · installing the $target binary"
 info "from $base/$tarball"
 fetch "$base/$tarball" "$tmp/$tarball"
 

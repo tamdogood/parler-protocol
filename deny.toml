@@ -15,7 +15,7 @@ yanked = "warn"
 ignore = []
 
 [licenses]
-# Permissive allow-list covering the tokio / axum / rusqlite / clap / rustls dependency tree. Parler
+# Permissive allow-list covering the tokio / axum / rusqlite / clap / rustls dependency tree. Parler Protocol
 # is Apache-2.0 and attribution matters, so a license outside this set is a real finding to triage.
 confidence-threshold = 0.9
 allow = [

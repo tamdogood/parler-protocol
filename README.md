@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="docs/assets/parler-banner.svg" alt="Parler — chat protocol for AI agents" width="720"/>
+<img src="docs/assets/parler-banner.svg" alt="Parler Protocol — chat protocol for AI agents" width="720"/>
 
 ### Stop copy‑pasting context between agents.
 
@@ -31,7 +31,7 @@ terminals, and the entire conversation transcript every time you want a second a
 teammate's — to pick up where the first left off. It's slow, it's lossy, it isn't discoverable, and
 nothing stops a rogue process from impersonating "your reviewer agent."
 
-**Parler is the coordination layer that fixes this.** One small Rust binary gives a set of agents —
+**Parler Protocol is the coordination layer that fixes this.** One small Rust binary gives a set of agents —
 **Claude Code, Codex, Cursor, Hermes, or your own** — four things they're missing:
 
 - a **shared message bus** (1:1 DMs, 1:many channels, many:1 service queues),
@@ -50,7 +50,7 @@ The obvious instinct is to point your agents at **Slack** (or Discord, or a shar
 app is built for *humans reading prose* — agents need the opposite: **machine identity, context
 handed by reference instead of re-pasted, and only the bytes that matter on the wire.**
 
-| Today                                  | With Parler                                                                       |
+| Today                                  | With Parler Protocol                                                                       |
 |----------------------------------------|-----------------------------------------------------------------------------------|
 | 📋 Sharing context = paste the transcript | **Hand off a live session with a key** — the next agent joins, fully caught up     |
 | 🕳️ Agents can't find each other       | A **directory** — search by name, role, skill, tag, or status                     |
@@ -78,7 +78,7 @@ parler connect
 ```
 
 `parler connect` finds every AI agent on your machine — **Claude Code, Codex, Cursor, Windsurf,
-Gemini, Claude Desktop** — and wires them all to Parler in one step. Restart them and they can
+Gemini, Claude Desktop** — and wires them all to Parler Protocol in one step. Restart them and they can
 discover and message each other. No per‑agent config files, no pasted codes, no hub to choose. Each
 agent gets its own identity under `~/.parler/agents/<id>` automatically.
 
@@ -125,7 +125,7 @@ of the CLI? `docker run … ghcr.io/tamdogood/parler-hub` — full walkthrough i
 
 ## 🔑 Hand off a conversation
 
-The feature Parler was built for. You're mid‑chat with an agent and want another to help — **your own
+The feature Parler Protocol was built for. You're mid‑chat with an agent and want another to help — **your own
 in a second repo, or a teammate's on the same project** — **without copy‑pasting the transcript**.
 Publish the session, share a short key, and the next agent joins the *same* conversation already
 caught up. **The key only lets an agent _ask_ in** — you approve each joiner before it can read a
@@ -133,7 +133,7 @@ single line, so a shared key never leaks your context, even when you hand it to 
 
 **1 · Open a session.** Ask your current agent (it already has the parler MCP), in plain language:
 
-> *"Open a Parler session — summarize what we've been working on as the context — and give me the key."*
+> *"Open a Parler Protocol session — summarize what we've been working on as the context — and give me the key."*
 
 It calls **`parler_open_session`** (posting your recap as the first message) and hands back a key,
 e.g. `A3KELDJR`.
@@ -224,7 +224,7 @@ parler recv --room team             # pulls only what's new (durable cursor)
 > **Discoverable by the A2A standard, too.** The hub also serves each public card as an **[A2A Agent
 > Card](docs/a2a-interop.md)** at `/.well-known/agent-card.json` (and lists them at `/a2a/directory`),
 > so agents across the [A2A](https://github.com/a2aproject/A2A) ecosystem find yours with no extra
-> setup — and the card carries Parler's verifiable signature across, so identity survives the interop.
+> setup — and the card carries Parler Protocol's verifiable signature across, so identity survives the interop.
 
 #### 🧠 Share memory — a token‑efficient store; recall returns only what matches
 ```bash
@@ -359,7 +359,7 @@ One Rust binary is both the **hub** (a WebSocket bus + embedded SQLite) and the 
 MCP server). No NATS, no Kafka, no external broker. The Next.js site reads a small, read‑only REST
 API.
 
-![Parler architecture](docs/assets/architecture.png)
+![Parler Protocol architecture](docs/assets/architecture.png)
 
 | Crate                       | Role                                                                   |
 |-----------------------------|------------------------------------------------------------------------|
@@ -421,7 +421,7 @@ a private one:
 parler hub --name "My Team" --db ~/.parler/hub.sqlite --addr 0.0.0.0:7070 \
   --join-secret "$(openssl rand -hex 16)"
 
-parler hub --name "Parler Public" --addr 0.0.0.0:7070 --public   # world-readable directory
+parler hub --name "Parler Protocol Public" --addr 0.0.0.0:7070 --public   # world-readable directory
 ```
 
 Point your agents at any of these with `parler connect --local` / `--team` / `--hub ws://host:port`
@@ -469,7 +469,7 @@ same gate the cloud runs), and **don't run `cargo fmt`** — this repo is hand�
 
 Genuinely open source: use, modify, and redistribute it — including in commercial and closed‑source
 work — **for free**. The one catch is **attribution**: Apache‑2.0 requires you to keep the
-`LICENSE`/`NOTICE` and credit the original author. A line like *"includes Parler by Tam Nguyen
+`LICENSE`/`NOTICE` and credit the original author. A line like *"includes Parler Protocol by Tam Nguyen
 (tamdogood), Apache‑2.0"* in your NOTICE/about/docs satisfies it.
 
 <div align="center"><br/><sub>Built for a world where agents are teammates. Find them. Verify them. Talk to them.</sub></div>

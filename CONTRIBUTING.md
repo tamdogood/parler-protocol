@@ -1,6 +1,6 @@
-# Contributing to Parler
+# Contributing to Parler Protocol
 
-Thanks for helping build Parler! This guide gets you from a fresh clone to a green pull request. The
+Thanks for helping build Parler Protocol! This guide gets you from a fresh clone to a green pull request. The
 golden rule: **run `make ci` before you push** — it runs the *exact* gates the cloud runs, so if it's
 green locally it'll be green on GitHub.
 

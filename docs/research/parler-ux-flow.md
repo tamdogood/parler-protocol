@@ -1,4 +1,4 @@
-# Research: a seamless, 10/10-UX Parler flow — setup to session
+# Research: a seamless, 10/10-UX Parler Protocol flow — setup to session
 
 Date: 2026-07-03 · Method: 4 parallel researchers (2 codebase audits, 2 web) + orchestrator
 verification against source. Raw findings in `.architect/research/` (gitignored). Companion to the
@@ -7,7 +7,7 @@ round owns **flow coherence and UX**, and deliberately does not overlap it.
 
 ## Brief (restated)
 
-What concrete changes make Parler's end-to-end flow — install → `parler connect` → first message →
+What concrete changes make Parler Protocol's end-to-end flow — install → `parler connect` → first message →
 sessions → handoff → memory — seamless, bug-free, and 10/10 UX, with special weight on setup and
 with no redundant steps or surface? Decision informed: which GitHub issues to file for implementing
 agents. Constraints: keep the security model; additive/backward-compatible wire changes only;
@@ -17,9 +17,9 @@ agents. Constraints: keep the security model; additive/backward-compatible wire 
 
 The setup flow's *happy path* is genuinely good (idempotent config writers, hub probing, specific
 restart hints), but it is undermined by three **verified blockers**, all of the same species:
-**instructions Parler itself prints don't work, and the failure is silent — the agent lands on the
+**instructions Parler Protocol itself prints don't work, and the failure is silent — the agent lands on the
 wrong hub and "works."** In-flow, the tool surface is one tool short of a working MCP code-handoff
-(the banner tells the model to call a tool that doesn't exist), and the session join gate — Parler's
+(the banner tells the model to call a tool that doesn't exist), and the session join gate — Parler Protocol's
 most distinctive feature, with no peer precedent — has an owner-offline dead end and asymmetric
 name resolution inside a single flow. External evidence says the fixes are known patterns: every
 printed command must be copy-paste-runnable (ngrok/Stripe), env/config precedence must be one rule
@@ -99,19 +99,19 @@ is closed), 0600 secret files, installer PATH handling.
 
 - **Copy-paste-runnable commands with values pre-filled** are the ngrok/Stripe onboarding core;
   Stripe's `stripe login` is the canonical auth handoff (readable pairing code, auto-opened browser,
-  1s poll, headless fallback) [primary, 2026-07]. Parler's equivalents are exactly the broken lines
+  1s poll, headless fallback) [primary, 2026-07]. Parler Protocol's equivalents are exactly the broken lines
   in blockers 2–3.
 - **clig.dev error canon**: what happened, why, and the *exact fix command*; suggest the next
   command in multi-step flows; "if you change state, tell the user" [primary, 2026-07].
 - **`doctor` pattern** (flutter/brew): per-check ✅/❌ plus the exact command that fixes each failure,
-  advertised as re-runnable — Parler has the command but not the advertisement [secondary, 2026-07].
+  advertised as re-runnable — Parler Protocol has the command but not the advertisement [secondary, 2026-07].
 - **Tool surface**: Anthropic — "Claude's ability to pick the right tool degrades once you exceed
   30–50 available tools"; tool-search recommended at 10+ tools; keep 3–5 hot tools loaded
-  [primary, fetched 2026-07-03]. Parler's 23 tools + 2 prompts is below the degradation band but
+  [primary, fetched 2026-07-03]. Parler Protocol's 23 tools + 2 prompts is below the degradation band but
   well above the "no action needed" band — and issue #89 (tool profiles) already owns the fix; this
   round's contribution is *not adding tools needlessly* and merging redundant ones.
 - **Approval-gate precedent**: no surveyed agent framework (A2A v1.0, AutoGen, Claude agent teams,
-  AgentMail, agenthub) gates session join on per-request owner approval — Parler's gate is a
+  AgentMail, agenthub) gates session join on per-request owner approval — Parler Protocol's gate is a
   differentiator with no peer, so its UX has no ecosystem crutch. The closest analogue is Tailscale
   device approval, whose documented pain (approver away → blocked) is mitigated by **pre-approved
   keys** and **auto-approval hooks** [primary, 2026-07]. GitHub's device flow adds the other missing
@@ -125,10 +125,10 @@ is closed), 0600 secret files, installer PATH handling.
 ## Disputes / tensions
 
 - Anthropic ships two install philosophies (GUI `.mcpb` "no terminal" vs CLI-first `claude mcp
-  add`) — Parler already bets on the CLI path via `parler connect`; `.mcpb` is a future option, not
+  add`) — Parler Protocol already bets on the CLI path via `parler connect`; `.mcpb` is a future option, not
   a correction.
 - A2A's adoption is contested ("supported by ≠ used by", one analyst, 2026) — relevant only as a
-  caution against protocol surface growth, not a Parler decision.
+  caution against protocol surface growth, not a Parler Protocol decision.
 - No public per-step onboarding funnel dataset exists (NOT FOUND); "time to first hello world"
   drop-off claims are vendor-blog tier. Treat TTFHW as a design compass, not a measured benchmark.
 

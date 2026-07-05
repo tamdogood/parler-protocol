@@ -67,7 +67,7 @@ jobs:
             type=sha,format=short
           labels: |
             org.opencontainers.image.title=parler-hub
-            org.opencontainers.image.description=Parler hub — the lightweight bus for agent-to-agent messaging
+            org.opencontainers.image.description=Parler Protocol hub — the lightweight bus for agent-to-agent messaging
 
       # Same Dockerfile + context as the Fly/Compose builds; just built for both common server arches.
       # arm64 is emulated under QEMU (slow on a cold cache), so the first publish can take a while.

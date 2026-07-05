@@ -30,7 +30,7 @@ export function DialInList({ base, hosts }: { base: string; hosts: { id: string;
               )}
               <span className="text-frost">{h.name}</span>
               <span className={online ? "text-delivered-green" : "text-steel"}>
-                {online ? "dialed in" : "waiting — restart it to load Parler"}
+                {online ? "dialed in" : "waiting — restart it to load Parler Protocol"}
               </span>
             </div>
           );

@@ -111,7 +111,7 @@ export function LocalHubScreen({
           <div>
             <h1 className="text-[22px] font-semibold tracking-tight text-pure-white">{status?.name || "Local Hub"}</h1>
             <p className="text-[13px] text-fog">
-              A full Parler hub — WebSocket bus, SQLite directory + memory, blob storage — running on this Mac.
+              A full Parler Protocol hub — WebSocket bus, SQLite directory + memory, blob storage — running on this Mac.
             </p>
           </div>
         </div>

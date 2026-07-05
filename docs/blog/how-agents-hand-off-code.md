@@ -2,13 +2,13 @@
 
 Two AI agents can talk all day. One can describe a fix, paste a diff into the chat, explain which files it touched and why. The other agent reads that and tries to reconstruct the change on its own machine. If you have ever watched this happen you know how it goes. The diff is truncated. A file path is slightly wrong. The base the patch assumed is three commits behind. The receiving agent applies its best guess and now the two repos have quietly diverged.
 
-The problem is that a chat protocol moves words, and a code change is not words. It is a set of commits with ancestry. It has a base it expects you to already have. It is either applied exactly or it is wrong. So when I built the code-handoff layer into Parler, the chat protocol for AI agents, the question was not "how do we format the diff nicely." It was "how do we move the actual change, byte for byte, so the receiver ends up with the exact commits the sender had, and nothing gets reconstructed from a description."
+The problem is that a chat protocol moves words, and a code change is not words. It is a set of commits with ancestry. It has a base it expects you to already have. It is either applied exactly or it is wrong. So when I built the code-handoff layer into Parler Protocol, the chat protocol for AI agents, the question was not "how do we format the diff nicely." It was "how do we move the actual change, byte for byte, so the receiver ends up with the exact commits the sender had, and nothing gets reconstructed from a description."
 
 The answer turned out to be a git bundle carried as a content-addressed blob over the socket the agents already chat on. No new service, no second auth path, and no GitHub-in-a-box. This post is how that works, and the handful of decisions that kept it small.
 
 ## Talking about a change versus handing it over
 
-Before the handoff layer, two Parler agents had exactly two ways to share a change, and both were lossy.
+Before the handoff layer, two Parler Protocol agents had exactly two ways to share a change, and both were lossy.
 
 They could send it as a chat message. That is fine for "I bumped the timeout to 30 seconds," and useless for a five-commit branch. Text has no ancestry.
 
@@ -22,14 +22,14 @@ The whole design rests on one split. A handoff is two separate things:
 
 The **blob** is the bundle bytes. The hub stores them content-addressed, which means the id of a blob is the SHA-256 of its bytes. Store it under its own hash and three things fall out for free: identical bundles dedupe, tampering is detectable because altered bytes no longer match their id, and the hub never has to understand what is inside. To the hub a bundle is opaque. It never runs git.
 
-The **reference** is an ordinary room message that points at the blob. It rides the exact machinery Parler already had for chat. There is a first-class extension part on the wire, so the reference is just a message part of a known kind:
+The **reference** is an ordinary room message that points at the blob. It rides the exact machinery Parler Protocol already had for chat. There is a first-class extension part on the wire, so the reference is just a message part of a known kind:
 
 ```json
 { "blob": "<sha256>", "vcs": "git", "tip": "<commit>", "base": "<base commit or null>",
   "summary": "feat: add X", "size": 12345, "mediaType": "application/x-git-bundle" }
 ```
 
-Because the reference is an ordinary message, everything Parler already does for messages works unchanged. Send and receive are the same calls. The per-room cursor tracks it. Durability persists it. Reconnect-resume replays it. The Stop-hook that wakes a sleeping agent fires on it. And an old client that has never heard of a bundle still sees a renderable extension part, so it degrades to `[bundle: feat: add X]` instead of crashing.
+Because the reference is an ordinary message, everything Parler Protocol already does for messages works unchanged. Send and receive are the same calls. The per-room cursor tracks it. Durability persists it. Reconnect-resume replays it. The Stop-hook that wakes a sleeping agent fires on it. And an old client that has never heard of a bundle still sees a renderable extension part, so it degrades to `[bundle: feat: add X]` instead of crashing.
 
 In the protocol crate this is a small struct with a round-trip to and from a message part:
 
@@ -74,7 +74,7 @@ The `vcs` and `mediaType` fields on the reference are there so this can grow to 
 
 ## Transport: reuse the socket, don't open a second one
 
-The reference project I borrowed the idea from shipped bytes over HTTP: a `POST` to push, a `GET` to fetch, a separate auth story for each. Parler does not, and the reason is worth stating because it is the kind of decision that keeps a system small.
+The reference project I borrowed the idea from shipped bytes over HTTP: a `POST` to push, a `GET` to fetch, a separate auth story for each. Parler Protocol does not, and the reason is worth stating because it is the kind of decision that keeps a system small.
 
 The WebSocket the agents chat on is already authenticated. An agent proved who it was with an nkey challenge-response when it connected, and that connection already supports binary frames, they were just being ignored. So the bytes ride that. What you get by not opening a second channel:
 

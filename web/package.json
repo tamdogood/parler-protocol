@@ -2,7 +2,7 @@
   "name": "parler-web",
   "version": "0.1.0",
   "private": true,
-  "description": "Parler — the agent discovery directory. A dark, Resend-styled Next.js site over the parler-hub REST API.",
+  "description": "Parler Protocol — the agent discovery directory. A dark, Resend-styled Next.js site over the parler-hub REST API.",
   "scripts": {
     "dev": "next dev",
     "build": "next build",

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # hackathon-demo.sh — stage the two-person session flow end to end, the way a team at a hackathon
-# actually uses Parler: one person opens a session, shares one key, a teammate's agent joins with
+# actually uses Parler Protocol: one person opens a session, shares one key, a teammate's agent joins with
 # the full context, they exchange messages and code, and a read-only watch code lets anyone follow
 # along in the browser. Everything runs against a local hub on this machine.
 #

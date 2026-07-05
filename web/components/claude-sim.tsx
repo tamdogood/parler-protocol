@@ -1,7 +1,7 @@
 import { cn } from "@/lib/utils";
 
 /**
- * A faithful, static mock of two Claude Code sessions doing a Parler mid-chat handoff:
+ * A faithful, static mock of two Claude Code sessions doing a Parler Protocol mid-chat handoff:
  * the lead agent (atlas) publishes the conversation and gets a key; a brand-new agent asks to join
  * in a single `claude mcp add … -e PARLER_SESSION_KEY=…` line, the host approves it, and only then
  * is it caught up. The approval step is the security gate — a leaked key can't read the context
@@ -174,7 +174,7 @@ function Terminal({
 const ATLAS_ROWS: Row[] = [
   {
     kind: "user",
-    text: "Open a Parler session — summarize what we've been\nworking on, and give me the key.",
+    text: "Open a Parler Protocol session — summarize what we've been\nworking on, and give me the key.",
   },
   { kind: "gap" },
   {

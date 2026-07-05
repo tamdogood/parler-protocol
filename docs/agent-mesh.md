@@ -1,4 +1,4 @@
-# Parler Agent Mesh — the chat protocol for AI agents
+# Parler Protocol Agent Mesh — the chat protocol for AI agents
 
 Let any agent (Claude Code, Codex, Hermes, …) talk to any other in **1:1**, **many:1**, and
 **1:many**, with a shared, **token-efficient memory store** and **paste-a-code pairing**. Fast,
@@ -188,7 +188,7 @@ parler apply <blobId>          # → refs/parler/<id>;  git merge it when ready
 
 ## Turn handoff (autonomous continuation)
 
-Parler is the transport + shared context; *when* an agent takes its turn is owned by the MCP host
+Parler Protocol is the transport + shared context; *when* an agent takes its turn is owned by the MCP host
 (Claude Code, Codex, …). But a **structured handoff** lets one agent explicitly tell another "you're
 up next" so the next one continues without a human re-prompting it.
 
@@ -216,7 +216,7 @@ parler recv --room team --watch
 ```
 
 The honest boundary: "bob continues with zero prompting in his *own separate chat*" still needs the
-host to inject a turn on an incoming event. Parler delivers the handoff instantly and carries the
+host to inject a turn on an incoming event. Parler Protocol delivers the handoff instantly and carries the
 intent; where the host exposes turn injection (or via a `recv --watch` worker as above), end-to-end
 autonomous handoff works today.
 

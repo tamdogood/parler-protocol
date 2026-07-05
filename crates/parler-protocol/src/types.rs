@@ -1,4 +1,4 @@
-//! Parler wire types (v0.2) — the shapes that travel on the mesh.
+//! Parler Protocol wire types (v0.2) — the shapes that travel on the mesh.
 //!
 //! Port of Cotal `packages/core/src/types.ts`. A2A-inspired (AgentCard / Message / Part) but
 //! transport-agnostic. This file IS part of the wire contract — treat changes as protocol changes.

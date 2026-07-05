@@ -1,9 +1,9 @@
 ---
-description: Autonomously advance the Parler backlog by one verified item (the loop's single iteration)
+description: Autonomously advance the Parler Protocol backlog by one verified item (the loop's single iteration)
 argument-hint: "[optional: a specific backlog item or focus to override the top item]"
 ---
 
-You are running one iteration of the Parler autonomous loop. Do exactly ONE backlog item, prove it
+You are running one iteration of the Parler Protocol autonomous loop. Do exactly ONE backlog item, prove it
 works, commit it, and stop. Another iteration will pick up the next item — do not try to do more.
 
 ## 0. Orient (read before acting)

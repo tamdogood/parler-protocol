@@ -1,4 +1,4 @@
-//! parler-protocol — the Parler wire contract (transport-agnostic).
+//! parler-protocol — the Parler Protocol wire contract (transport-agnostic).
 //!
 //! This is the Rust port of Cotal's `packages/core/src/{types,subjects}.ts` — the parts of the
 //! protocol that are pure: message shapes, the addressing/subject grammar, and the naming of
@@ -18,5 +18,5 @@ pub use types::*;
 /// The wire-contract version this implementation speaks (mirrors Cotal SPEC `"0.2"`).
 pub const PROTOCOL_VERSION: &str = "0.2";
 
-/// The subject root token for every Parler subject: `parler.<space>.<kind>.…`.
+/// The subject root token for every Parler Protocol subject: `parler.<space>.<kind>.…`.
 pub const ROOT: &str = "parler";

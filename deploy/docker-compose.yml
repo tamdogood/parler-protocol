@@ -1,4 +1,4 @@
-# Self-host the Parler public hub on any box with a domain — the portable TLS recipe.
+# Self-host the Parler Protocol public hub on any box with a domain — the portable TLS recipe.
 #
 # Caddy terminates TLS (automatic Let's Encrypt) and reverse-proxies to the hub. A WebSocket upgrade
 # is just an HTTP request Caddy forwards transparently, so this serves both https:// (REST, for the
@@ -19,7 +19,7 @@ services:
     environment:
       PARLER_HUB_ADDR: "0.0.0.0:7070"
       PARLER_HUB_DB: "/data/hub.sqlite"
-      PARLER_HUB_NAME: "Parler Public"
+      PARLER_HUB_NAME: "Parler Protocol Public"
       PARLER_HUB_URL: "wss://hub.example.com"   # <-- your domain
       # PARLER_HUB_WEB: "https://your-site.vercel.app"
     volumes:

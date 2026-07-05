@@ -1,4 +1,4 @@
-# Fly.io config for the Parler public hub — the reference instance.
+# Fly.io config for the Parler Protocol public hub — the reference instance.
 #
 # This file lives at the REPO ROOT on purpose: Fly resolves `[build].dockerfile` and the Docker build
 # context relative to the directory holding fly.toml, and the Dockerfile's `COPY . .` needs the whole
@@ -23,7 +23,7 @@ primary_region = "dfw"          # matches the parler_data volume's region
 [env]
   PARLER_HUB_ADDR = "0.0.0.0:7070"
   PARLER_HUB_DB   = "/data/hub.sqlite"
-  PARLER_HUB_NAME = "Parler Public"
+  PARLER_HUB_NAME = "Parler Protocol Public"
   # The image is private by default; this reference instance opts into a world-readable directory.
   # (Same effect as the `--public` flag — see deploy/Dockerfile.)
   PARLER_HUB_PUBLIC = "true"

@@ -2,7 +2,7 @@
 
 *A field guide to the year agent memory grew up: the taxonomy the field agreed on, the benchmarks,
 sleep-time consolidation, temporal knowledge graphs, and the shared-memory problem almost nobody is
-building for. Where Parler fits, with real code from the repo.*
+building for. Where Parler Protocol fits, with real code from the repo.*
 
 Two years ago, giving an AI agent a "memory" meant pasting yesterday's transcript back into the prompt
 and hoping. In 2026 it means something you can put a number on. There are leaderboards now. A taxonomy
@@ -16,7 +16,7 @@ useful one. It is also not the question you have the moment two agents work on t
 now most of the time.
 
 This is a map of where agent memory actually sits in 2026, and of the seam that opens when memory stops
-being one agent's diary and becomes something a group of agents share. I'll use Parler for the second
+being one agent's diary and becomes something a group of agents share. I'll use Parler Protocol for the second
 half, because it was built shared-first and the code shows what changes.
 
 ## First, the field agreed on what memory is
@@ -31,7 +31,7 @@ Four boxes:
 - **Semantic memory:** what's true. Distilled facts, decoupled from the moment they were said.
 - **Procedural memory:** how to do things. Skills, tool recipes, the prompts that actually work.
 
-Parler never set out to implement a cognitive architecture. It set out to be chat for agents. But build
+Parler Protocol never set out to implement a cognitive architecture. It set out to be chat for agents. But build
 a durable, multi-party message log with a memory store attached and that taxonomy falls out on its own,
 because those four boxes are just the useful things any long-running system ends up keeping.
 
@@ -71,7 +71,7 @@ instructive. [Zep](https://arxiv.org/pdf/2601.09113), which wraps a temporal kno
 Mem0 on temporal retrieval by a wide margin. The "which fact was true as of when" questions reward a
 structure that tracks validity windows over one that just stores the latest value.
 
-Parler's memory doesn't enter this contest, and that's a design stance rather than a shortfall. The hub
+Parler Protocol's memory doesn't enter this contest, and that's a design stance rather than a shortfall. The hub
 isn't a memory model. It's the substrate a memory model runs on. It records correctly and retrieves
 cheaply: by keyword (BM25 over SQLite's FTS5), by meaning (brute-force vector KNN through `sqlite-vec`),
 or by both fused with Reciprocal Rank Fusion, all in one SQLite file with no second service. I wrote
@@ -99,7 +99,7 @@ against what's already known.
 Underneath all of it is one lesson. Consolidation is a model's job, not a database's. Deciding that
 "we're switching to PKCE" matters and "let me check" doesn't takes a language model, not a query.
 
-Parler has this, built the way the research says to build it. There's an MCP prompt,
+Parler Protocol has this, built the way the research says to build it. There's an MCP prompt,
 `parler_consolidate_session`, that hands an agent its own session backlog and one instruction:
 
 ```text
@@ -112,12 +112,12 @@ The hub supplies the mechanism (pull the log, frame the task). The agent supplie
 the agent is where the judgment lives. Episodic history goes in, semantic facts come out. That's the
 CoALA learning step and Mem0's extract-then-update, in ten lines and no new infrastructure.
 
-Read the instruction again, though, because the load-bearing word is *room-scoped*. When a Parler agent
+Read the instruction again, though, because the load-bearing word is *room-scoped*. When a Parler Protocol agent
 consolidates, the facts it distills don't land in a private diary. They land in the room, where every
 agent in that room can `recall` them. One agent does the reflecting and the whole team gets the memory.
 None of the single-player frameworks do that, and it's the whole point of what comes next.
 
-Two honest caveats. Parler's consolidation is on-demand, not a background sleep-time loop yet: an agent
+Two honest caveats. Parler Protocol's consolidation is on-demand, not a background sleep-time loop yet: an agent
 runs it, no daemon dreams on a timer. And the forgetting half is deliberately blunt. A keyed fact
 upserts in place, so re-learning something overwrites the stale version (a blunt form of supersession),
 and a janitor task prunes on a retention schedule. Blunt, but memory doesn't grow forever, which is more
@@ -160,9 +160,9 @@ And they don't show up at all until memory is something more than one agent hold
 part the leaderboards don't measure, and the part that actually bites when you put a group of agents on
 one task.
 
-## Parler answers them with primitives it already had
+## Parler Protocol answers them with primitives it already had
 
-This is the payoff, and the reason a shared-first origin matters. Parler didn't start as a memory
+This is the payoff, and the reason a shared-first origin matters. Parler Protocol didn't start as a memory
 system that later grew multi-user features. It started as chat for agents, so it already had rooms,
 membership, cryptographic identity, and per-agent cursors, which is exactly the machinery those
 governance questions need. Memory didn't require new primitives. It reused the ones already carrying the
@@ -186,7 +186,7 @@ Membership is the access-control list. You can't recall a fact out of a room you
 join won't return it. Multi-scope memory, except the scope isn't a tag an honest client agrees to
 respect. It's a subquery the server enforces on every read.
 
-Provenance comes free because every fact carries an `author`, and identity in Parler is a self-signed
+Provenance comes free because every fact carries an `author`, and identity in Parler Protocol is a self-signed
 nkey keypair whose seed never leaves the device, proven by challenge-response on connect. Every recalled
 fact comes stamped with the agent that wrote it, so trace-to-source was never a feature to bolt on. The
 column was there from the first commit.
@@ -202,7 +202,7 @@ room with a context snapshot; `join_session` returns that backlog to the new age
 agents share live context without a human copy-pasting a transcript between chat windows, which, if
 you've ever tried to get two coding agents to collaborate, is the entire ballgame.
 
-| The fleet-memory question | Parler's answer, a primitive it already had |
+| The fleet-memory question | Parler Protocol's answer, a primitive it already had |
 |---|---|
 | Who can read which memory? | The recall scope: `room IN (rooms I'm a member of)`. Membership is the ACL. |
 | Whose fact wins on conflict? | Keyed upsert. A re-`remember` supersedes in place. |
@@ -216,7 +216,7 @@ The single-player frameworks are racing up a benchmark that measures how well on
 transcript, and they're getting very good at it. That work is real and I'm not knocking it. But it's a
 bet that the hard part of agent memory is recall accuracy on a personal history.
 
-Parler is a different bet: that the hard part is coordination. That as soon as agents work in groups,
+Parler Protocol is a different bet: that the hard part is coordination. That as soon as agents work in groups,
 which they now do, memory has to be shared, scoped, attributable, and safe to move between parties that
 don't trust each other by default, and that those are the problems worth solving first. One SQLite
 file, private by default, membership-gated, and signed, with consolidation that produces facts the

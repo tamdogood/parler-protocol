@@ -9,7 +9,7 @@ import { appIcon } from "./paths";
 import { EV } from "../shared/channels";
 import type { HubStatus } from "../shared/types";
 
-app.setName("Parler");
+app.setName("Parler Protocol");
 
 // Only one instance may own the local hub + its SQLite store. A second instance would spawn a
 // competing hub over the same database — two writers fighting over one file is a fast path to a
@@ -43,7 +43,7 @@ function createWindow(): void {
     backgroundColor: "#000000",
     titleBarStyle: "hiddenInset",
     trafficLightPosition: { x: 16, y: 18 },
-    title: "Parler",
+    title: "Parler Protocol",
     webPreferences: {
       preload: join(__dirname, "../preload/index.js"),
       sandbox: false,

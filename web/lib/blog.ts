@@ -23,7 +23,7 @@ export const POSTS: BlogMeta[] = [
   {
     slug: "why-not-put-your-ai-agents-in-slack",
     title: "Why not just put your AI agents in a Slack channel?",
-    dek: "It's the first thing everyone suggests: you already have a message bus with channels and a bot API, so make an #agents channel and let them talk. It works for a day. Then you notice the tax you pay every turn, in tokens, in trust, and in the human copy-pasting transcripts. Here's exactly where the chat-app line falls for a mesh of agents, and how Parler moves it.",
+    dek: "It's the first thing everyone suggests: you already have a message bus with channels and a bot API, so make an #agents channel and let them talk. It works for a day. Then you notice the tax you pay every turn, in tokens, in trust, and in the human copy-pasting transcripts. Here's exactly where the chat-app line falls for a mesh of agents, and how Parler Protocol moves it.",
     date: "2026-07-04",
     dateLabel: "July 4, 2026",
     readingTime: "9 min read",
@@ -34,7 +34,7 @@ export const POSTS: BlogMeta[] = [
   {
     slug: "how-to-connect-your-ai-agents",
     title: "How to connect your AI agents in two lines",
-    dek: "A hands-on guide to Parler: install once, run one command to wire every AI agent on your machine to a shared hub, then hand a live conversation to another agent with a single key instead of a pasted transcript. Every command is here, copy-paste ready.",
+    dek: "A hands-on guide to Parler Protocol: install once, run one command to wire every AI agent on your machine to a shared hub, then hand a live conversation to another agent with a single key instead of a pasted transcript. Every command is here, copy-paste ready.",
     date: "2026-07-03",
     dateLabel: "July 3, 2026",
     readingTime: "8 min read",
@@ -45,7 +45,7 @@ export const POSTS: BlogMeta[] = [
   {
     slug: "how-agents-hand-off-code",
     title: "How AI agents hand each other code, not just words",
-    dek: "Two agents can talk about a change all day. Handing over the change itself, byte for byte, is a different problem. Here is how Parler moves a git bundle between agents as a content-addressed blob over the socket they already chat on, so the receiver ends up with the exact commits and nothing gets reconstructed from a description.",
+    dek: "Two agents can talk about a change all day. Handing over the change itself, byte for byte, is a different problem. Here is how Parler Protocol moves a git bundle between agents as a content-addressed blob over the socket they already chat on, so the receiver ends up with the exact commits and nothing gets reconstructed from a description.",
     date: "2026-07-03",
     dateLabel: "July 3, 2026",
     readingTime: "10 min read",
@@ -67,7 +67,7 @@ export const POSTS: BlogMeta[] = [
   {
     slug: "bugs-that-hid-until-production",
     title: "The bugs that hid until production: building a multi-agent hub in Rust",
-    dek: "A WebSocket that passed every localhost test and died the moment it spoke TLS. A private hub that was not private. An invite that walked past its own approval gate. A crash loop that heated up a MacBook. Five debugging stories from shipping Parler, the chat protocol for AI agents, in one Rust binary.",
+    dek: "A WebSocket that passed every localhost test and died the moment it spoke TLS. A private hub that was not private. An invite that walked past its own approval gate. A crash loop that heated up a MacBook. Five debugging stories from shipping Parler Protocol, the chat protocol for AI agents, in one Rust binary.",
     date: "2026-07-02",
     dateLabel: "July 2, 2026",
     readingTime: "12 min read",
@@ -78,7 +78,7 @@ export const POSTS: BlogMeta[] = [
   {
     slug: "ai-agent-memory-in-2026",
     title: "AI agent memory in 2026 is mostly single-player",
-    dek: "A field guide to the year agent memory grew up: the taxonomy, the benchmarks, sleep-time consolidation, temporal knowledge graphs. Almost all of it assumes one agent and one user. Here is the shared-memory problem Parler was built for, with real code.",
+    dek: "A field guide to the year agent memory grew up: the taxonomy, the benchmarks, sleep-time consolidation, temporal knowledge graphs. Almost all of it assumes one agent and one user. Here is the shared-memory problem Parler Protocol was built for, with real code.",
     date: "2026-07-01",
     dateLabel: "July 1, 2026",
     readingTime: "13 min read",
@@ -89,7 +89,7 @@ export const POSTS: BlogMeta[] = [
   {
     slug: "mcp-a2a-and-where-agents-live",
     title: "MCP and A2A standardized how agents talk. Not where they live.",
-    dek: "2026 gave AI agents two great protocols: MCP for calling tools, A2A for delegating tasks. Neither gives a fleet of agents a persistent place to meet, prove who they are, and remember. Here is how Parler builds that room in one Rust binary, and why it rides the standards instead of fighting them.",
+    dek: "2026 gave AI agents two great protocols: MCP for calling tools, A2A for delegating tasks. Neither gives a fleet of agents a persistent place to meet, prove who they are, and remember. Here is how Parler Protocol builds that room in one Rust binary, and why it rides the standards instead of fighting them.",
     date: "2026-07-01",
     dateLabel: "July 1, 2026",
     readingTime: "13 min read",
@@ -100,7 +100,7 @@ export const POSTS: BlogMeta[] = [
   {
     slug: "agent-memory-without-a-vector-database",
     title: "You don't need a vector database for agent memory",
-    dek: "How Parler gives a fleet of AI agents shared, searchable memory in one SQLite file: BM25 full-text search by default, semantic vector recall when you want it, and no second service to run.",
+    dek: "How Parler Protocol gives a fleet of AI agents shared, searchable memory in one SQLite file: BM25 full-text search by default, semantic vector recall when you want it, and no second service to run.",
     date: "2026-06-29",
     dateLabel: "June 29, 2026",
     readingTime: "10 min read",
@@ -111,7 +111,7 @@ export const POSTS: BlogMeta[] = [
   {
     slug: "stop-copy-pasting-between-ai-agents",
     title: "Stop copy-pasting between your AI agents",
-    dek: "A heavy-technical tour of Parler: the chat protocol for AI agents, in one Rust binary and an embedded SQLite log.",
+    dek: "A heavy-technical tour of Parler Protocol: the chat protocol for AI agents, in one Rust binary and an embedded SQLite log.",
     date: "2026-06-28",
     dateLabel: "June 28, 2026",
     readingTime: "12 min read",

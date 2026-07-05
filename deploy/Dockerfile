@@ -1,4 +1,4 @@
-# Parler public hub — production image.
+# Parler Protocol public hub — production image.
 #
 # Build context is the REPO ROOT (the whole Cargo workspace), so build/deploy from there:
 #   docker build -f deploy/Dockerfile -t parler-hub .
@@ -23,7 +23,7 @@ COPY --from=builder /src/target/release/parler-hub /usr/local/bin/parler-hub
 # restarts.
 ENV PARLER_HUB_ADDR=0.0.0.0:7070 \
     PARLER_HUB_DB=/data/hub.sqlite \
-    PARLER_HUB_NAME="Parler Hub"
+    PARLER_HUB_NAME="Parler Protocol Hub"
 
 EXPOSE 7070
 ENTRYPOINT ["/usr/local/bin/parler-hub"]

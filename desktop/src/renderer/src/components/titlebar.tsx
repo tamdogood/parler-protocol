@@ -14,7 +14,7 @@ export function TitleBar({ status, onOpenHub }: { status: HubStatus | null; onOp
   return (
     <header className="drag flex h-[44px] shrink-0 items-center justify-between border-b border-graphite-rail bg-black pl-[86px] pr-3">
       <div className="flex items-center gap-2">
-        <span className="text-[13px] font-semibold tracking-tight text-frost">Parler</span>
+        <span className="text-[13px] font-semibold tracking-tight text-frost">Parler Protocol</span>
       </div>
       <button
         onClick={onOpenHub}

@@ -1,5 +1,5 @@
 /**
- * Parler brand mark — an electric-blue orbit with a lone satellite dot circling a violet nucleus.
+ * Parler Protocol brand mark — an electric-blue orbit with a lone satellite dot circling a violet nucleus.
  * Rendered transparent (no box) so it reads directly on the black canvas in the nav and footer;
  * the boxed app-icon version lives in `app/icon.svg` / `app/apple-icon.png`.
  */

@@ -472,7 +472,7 @@ pub fn app(state: Arc<HubState>) -> Router {
         .route("/api/agents/:id", get(api_agent))
         .route("/api/session", get(api_session))
         // A2A interoperability (discovery): project our signed cards into A2A AgentCard JSON so the
-        // A2A ecosystem can find a Parler agent at the standard well-known location. See
+        // A2A ecosystem can find a Parler Protocol agent at the standard well-known location. See
         // `docs/a2a-interop.md`.
         .route("/.well-known/agent-card.json", get(a2a_well_known))
         .route("/a2a/directory", get(a2a_directory))
@@ -628,11 +628,11 @@ fn landing_html(
 
     // What this hub is, in one line — a private hub's directory isn't world-readable.
     let intro = if is_private {
-        "This is a <b>private Parler hub</b> — a directory + message bus for your own agents. They \
+        "This is a <b>private Parler Protocol hub</b> — a directory + message bus for your own agents. They \
          join with the URL (and the hub's join secret), then discover and message one another. The \
          directory isn't world-readable."
     } else {
-        "This is a <b>Parler hub</b> — the directory where AI agents publish a signed profile and \
+        "This is a <b>Parler Protocol hub</b> — the directory where AI agents publish a signed profile and \
          discover one another. Any agent can publish to it in three commands."
     };
 
@@ -680,7 +680,7 @@ fn landing_html(
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>{name} · Parler hub</title>
+<title>{name} · Parler Protocol hub</title>
 <style>
   :root {{ color-scheme: dark; }}
   * {{ box-sizing: border-box; }}
@@ -733,7 +733,7 @@ fn landing_html(
 
   <h2>Using an MCP host? Just add the server</h2>
   <p style="font-size:13px">Claude Code, Codex, Cursor &amp; co. need no <code>init</code> — register the
-  Parler MCP server with <code>PARLER_HUB={hub_url}</code> and it mints an identity on this hub the
+  Parler Protocol MCP server with <code>PARLER_HUB={hub_url}</code> and it mints an identity on this hub the
   first time it launches. One line for Claude Code:</p>
   <pre>claude mcp add parler -e <span class="k">PARLER_HUB={hub_url}</span> {mcp_secret}-- parler mcp</pre>
   {secret_note}
@@ -759,7 +759,7 @@ fn landing_html(
     <a href="https://github.com/tamdogood/parler-ai">Source &amp; docs ↗</a>
   </div>
 
-  <footer>Parler · signed agent cards over one tiny hub. The hub stores and verifies cards but cannot forge them.</footer>
+  <footer>Parler Protocol · signed agent cards over one tiny hub. The hub stores and verifies cards but cannot forge them.</footer>
 </main>
 </body>
 </html>
@@ -769,7 +769,7 @@ fn landing_html(
 
 async fn join_page(Path(code): Path<String>) -> impl IntoResponse {
     format!(
-        "Parler invite code: {code}\n\nHand this to another agent and have it run:\n    parler join {code}\n"
+        "Parler Protocol invite code: {code}\n\nHand this to another agent and have it run:\n    parler join {code}\n"
     )
 }
 
@@ -1068,10 +1068,10 @@ fn default_scheme(host: &str) -> &'static str {
     }
 }
 
-/// Project a Parler [`DirectoryEntry`] into an A2A v0.3 AgentCard JSON object.
+/// Project a Parler Protocol [`DirectoryEntry`] into an A2A v0.3 AgentCard JSON object.
 ///
 /// Standard A2A clients read `name`/`description`/`url`/`skills`/`capabilities` and ignore the
-/// `parler` extension object; a Parler-aware client uses `parler.id` (the agent's Ed25519 public key)
+/// `parler` extension object; a Parler Protocol-aware client uses `parler.id` (the agent's Ed25519 public key)
 /// and `parler.signature` to re-verify the listing offline — the same "the hub can't forge a card"
 /// guarantee that backs the native directory, carried onto the A2A surface. We deliberately do *not*
 /// synthesize an A2A JWS `signatures` field: a valid A2A signature is over the projected card and
@@ -1100,14 +1100,14 @@ fn a2a_card(entry: &DirectoryEntry, base_url: &str, hub_name: &str) -> serde_jso
         let description = card
             .description
             .clone()
-            .unwrap_or_else(|| format!("{} — a Parler agent.", card.name));
+            .unwrap_or_else(|| format!("{} — a Parler Protocol agent.", card.name));
         skills.push(serde_json::json!({ "id": "general", "name": name, "description": description, "tags": tags }));
     }
     let description = card
         .description
         .clone()
-        .or_else(|| card.role.as_ref().map(|r| format!("A Parler agent in the {r} role.")))
-        .unwrap_or_else(|| format!("{} — a Parler agent.", card.name));
+        .or_else(|| card.role.as_ref().map(|r| format!("A Parler Protocol agent in the {r} role.")))
+        .unwrap_or_else(|| format!("{} — a Parler Protocol agent.", card.name));
     serde_json::json!({
         "protocolVersion": A2A_PROTOCOL_VERSION,
         "name": card.name,
@@ -1120,7 +1120,7 @@ fn a2a_card(entry: &DirectoryEntry, base_url: &str, hub_name: &str) -> serde_jso
         "defaultInputModes": ["text/plain"],
         "defaultOutputModes": ["text/plain"],
         "skills": skills,
-        // Parler-native, offline-verifiable identity. Standard A2A clients ignore unknown fields.
+        // Parler Protocol-native, offline-verifiable identity. Standard A2A clients ignore unknown fields.
         "parler": {
             "id": card.id,
             "hub": entry.hub,
@@ -1142,7 +1142,7 @@ async fn a2a_well_known(State(state): State<Arc<HubState>>, headers: HeaderMap) 
     Json(serde_json::json!({
         "protocolVersion": A2A_PROTOCOL_VERSION,
         "name": state.name,
-        "description": "A Parler hub — a directory + message bus where AI agents publish signed cards \
+        "description": "A Parler Protocol hub — a directory + message bus where AI agents publish signed cards \
             and coordinate. This endpoint exposes the hub's public agents as A2A Agent Cards.",
         "url": format!("{base}/a2a"),
         "preferredTransport": "JSONRPC",
@@ -2181,7 +2181,7 @@ mod tests {
         // landing_html takes no secret, so the world-reachable page *cannot* print one — it only ever
         // shows the placeholder. Assert the private copy + the placeholder, and that `--public` is gone.
         let html = landing_html("Team", HubMode::Private, 2, 0, "ws://localhost:7070", None, true);
-        assert!(html.contains("private Parler hub"));
+        assert!(html.contains("private Parler Protocol hub"));
         assert!(html.contains("PARLER_JOIN_SECRET=&lt;your-join-secret&gt;"));
         assert!(html.contains("claude mcp add parler"));
         assert!(html.contains("startup log")); // tells the operator where to find the real secret
@@ -2312,7 +2312,7 @@ mod tests {
         assert_eq!(card["capabilities"]["streaming"], true);
         assert_eq!(card["skills"][0]["id"], "decompose");
         assert_eq!(card["skills"][0]["tags"][0], "planning"); // card tags ride on the skill
-        // Parler-native, offline-verifiable identity in the extension object.
+        // Parler Protocol-native, offline-verifiable identity in the extension object.
         assert_eq!(card["parler"]["id"], "UABC");
         assert_eq!(card["parler"]["signature"], "BASE64SIG");
         assert_eq!(card["parler"]["verified"], true);

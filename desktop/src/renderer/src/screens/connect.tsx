@@ -219,7 +219,7 @@ function ConnectAllCard({
           </div>
           {result.connected > 0 && (
             <p className="mt-2.5 text-[12.5px] text-delivered-green">
-              Wired {result.connected} agent{result.connected > 1 ? "s" : ""}. Restart them to load Parler.
+              Wired {result.connected} agent{result.connected > 1 ? "s" : ""}. Restart them to load Parler Protocol.
             </p>
           )}
           {result.results.length === 0 && result.message && (

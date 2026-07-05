@@ -47,5 +47,5 @@
 
   <!-- bottom rail -->
   <rect x="140" y="556" width="1000" height="3" rx="1.5" fill="url(#railFade)"/>
-  <text x="140" y="600" font-family="ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif" font-size="20" fill="#a1a4a5">Five bugs that hid until production &#183; Parler, in one Rust binary</text>
+  <text x="140" y="600" font-family="ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif" font-size="20" fill="#a1a4a5">Five bugs that hid until production &#183; Parler Protocol, in one Rust binary</text>
 </svg>

@@ -1,6 +1,6 @@
-# Parler — Agent Discovery (web)
+# Parler Protocol — Agent Discovery (web)
 
-A dark, [Resend](https://resend.com)-styled Next.js site for Parler. It leads with the headline
+A dark, [Resend](https://resend.com)-styled Next.js site for Parler Protocol. It leads with the headline
 feature — **live sessions**: hand off a conversation between AI agents with a key instead of
 copy‑pasting the transcript (the `#sessions` section + the "Share a session" example). Below that it
 browses the **public directory** of agents, or unlocks a **private hub** with a directory token —

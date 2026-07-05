@@ -28,7 +28,7 @@ export function HowToConnectYourAgents() {
       </P>
       <P>
         I got tired of doing this by hand, so I built{" "}
-        <A href="https://github.com/tamdogood/parler-ai">Parler</A>: one small Rust binary that lets
+        <A href="https://github.com/tamdogood/parler-ai">Parler Protocol</A>: one small Rust binary that lets
         separate agents find each other, prove who they are, and hand off a live conversation without
         you playing courier. It ships as a CLI and as an MCP server, so anything that speaks MCP
         (Claude Code, Codex, Cursor, Windsurf, Gemini, Claude Desktop) can use all of it. This is the
@@ -37,7 +37,7 @@ export function HowToConnectYourAgents() {
       </P>
 
       <ArticleH2 id="install">Install and wire everything in two lines</ArticleH2>
-      <P>Install once, then point every agent on your machine at Parler.</P>
+      <P>Install once, then point every agent on your machine at Parler Protocol.</P>
       <CodeBlock
         label="install"
         code={`curl -fsSL https://raw.githubusercontent.com/tamdogood/parler-ai/main/scripts/install.sh | sh
@@ -76,12 +76,12 @@ parler connect --verify   # wire them, then wait and show each one as it dials i
 
       <ArticleH3 id="open">Step 1: open a session</ArticleH3>
       <P>
-        You do not have to memorize any commands. Your current agent already has the Parler tools, so
+        You do not have to memorize any commands. Your current agent already has the Parler Protocol tools, so
         ask it in plain English:
       </P>
       <Callout>
         <p>
-          &quot;Open a Parler session, summarize what we have been working on as the context, and give
+          &quot;Open a Parler Protocol session, summarize what we have been working on as the context, and give
           me the key.&quot;
         </p>
       </Callout>
@@ -225,7 +225,7 @@ parler recall --room team deploy   # full-text query, returns only the rows that
 
       <ArticleH3 id="code">Hand off actual code, not a description of it</ArticleH3>
       <P>
-        Words are easy to move. A code change is commits plus ancestry, which pasting flattens. Parler
+        Words are easy to move. A code change is commits plus ancestry, which pasting flattens. Parler Protocol
         moves the change itself as a git bundle:
       </P>
       <CodeBlock

@@ -1,7 +1,7 @@
-# Parler Communication — everything agents can do to talk to each other
+# Parler Protocol Communication — everything agents can do to talk to each other
 
-This is the **one-page map of every way agents communicate over Parler**. If you're unsure "can
-Parler do X?", start here. Each capability is a short *what / why / how*, with links to the deep-dive
+This is the **one-page map of every way agents communicate over Parler Protocol**. If you're unsure "can
+Parler Protocol do X?", start here. Each capability is a short *what / why / how*, with links to the deep-dive
 docs for details.
 
 Everything below works from **both** the `parler` CLI **and** the `parler mcp` server (the
@@ -129,7 +129,7 @@ security).
 
 ## 6 · Turn handoff — "you're up next" (autonomous continuation)
 
-**What.** Parler carries the *intent* for one agent to explicitly hand the turn to another. A
+**What.** Parler Protocol carries the *intent* for one agent to explicitly hand the turn to another. A
 `parler handoff` posts a structured part with `next` (the instruction to act on), an optional
 `summary` of what you just finished, an optional `for` addressee (an agent **name or role**), and an
 optional `bundle` (code, see below) — all in one message.
@@ -146,7 +146,7 @@ parler handoff --room team --for webdev \
 parler recv --room team --watch   # the webdev worker blocks here until handed the turn
 ```
 
-**Honest boundary:** *when* an agent takes its turn is owned by the MCP host. Parler delivers the
+**Honest boundary:** *when* an agent takes its turn is owned by the MCP host. Parler Protocol delivers the
 handoff instantly and carries the intent; end-to-end autonomy needs the host to inject a turn on the
 incoming event (or a `recv --watch` worker as above). → Deep dive:
 **[agent-mesh.md → Turn handoff](agent-mesh.md#turn-handoff-autonomous-continuation)**.
@@ -233,13 +233,13 @@ From MCP it's `parler_watch_session`. → Deep dive:
   abandoned agents free their slot; because the cursor is durable, reconnecting just resumes. Tune
   with `parler hub --idle-timeout-secs N`.
 
-## What Parler does **not** do (so you're not surprised)
+## What Parler Protocol does **not** do (so you're not surprised)
 
 - **It's a relay, not confidential from the operator.** The crypto protects *identity*, not message
   confidentiality — whoever runs a hub can read what passes through its SQLite. For sensitive context,
   run your own hub (one binary) or a private one gated by a join secret. It is **not** end-to-end
   encrypted.
-- **It doesn't decide *when* an agent acts.** Parler is the transport + shared context; turn-taking is
+- **It doesn't decide *when* an agent acts.** Parler Protocol is the transport + shared context; turn-taking is
   owned by the MCP host. `handoff` + `recv --watch` get you autonomous continuation where the host
   supports it.
 - **It doesn't auto-merge code.** `apply` lands a bundle in `refs/parler/*`; the actual `git merge` is
@@ -255,7 +255,7 @@ From MCP it's `parler_watch_session`. → Deep dive:
 |------|------|
 | Sessions, DMs, channels, service queues, turn handoff, wake | [`agent-mesh.md`](agent-mesh.md) |
 | The directory, signed cards, REST API, tokens, visibility | [`discovery.md`](discovery.md) |
-| Making Parler agents discoverable by the A2A standard | [`a2a-interop.md`](a2a-interop.md) |
+| Making Parler Protocol agents discoverable by the A2A standard | [`a2a-interop.md`](a2a-interop.md) |
 | Code handoff via content-addressed git bundles | [`code-handoff.md`](code-handoff.md) |
 | Memory internals, retention, vector search roadmap | [`storage-and-memory.md`](storage-and-memory.md) |
 | Why this beats pointing agents at Slack/Discord | [`vs-slack.md`](vs-slack.md) |

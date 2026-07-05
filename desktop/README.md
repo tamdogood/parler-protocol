@@ -1,6 +1,6 @@
-# Parler Desktop (macOS)
+# Parler Protocol Desktop (macOS)
 
-A native macOS app that makes Parler one download away:
+A native macOS app that makes Parler Protocol one download away:
 
 - **Run a private hub locally** — one toggle spawns the real `parler-hub` binary with a persistent
   SQLite directory + memory + blob store in the app's data folder. No Docker, no terminal.

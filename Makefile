@@ -1,6 +1,6 @@
-# Parler Developer Makefile
+# Parler Protocol Developer Makefile
 #
-# Shortcuts for building, running, and managing Parler agents and hubs.
+# Shortcuts for building, running, and managing Parler Protocol agents and hubs.
 # Note: Ensure Rust (cargo) and Node.js are installed.
 
 # Automatically locate cargo, falling back to ~/.cargo/bin/cargo if not in PATH
@@ -121,8 +121,8 @@ run-demo:
 
 # Start a clean public hub without seeding
 run-hub:
-	@echo "→ Starting standalone Parler Hub..."
-	$(PARLER_RUN) hub --public --name "Parler Hub" --db ./hub.sqlite --addr $(HUB_ADDR)
+	@echo "→ Starting standalone Parler Protocol Hub..."
+	$(PARLER_RUN) hub --public --name "Parler Protocol Hub" --db ./hub.sqlite --addr $(HUB_ADDR)
 
 # Start the web directory site
 run-web:

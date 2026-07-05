@@ -10,7 +10,7 @@ type QA = { q: string; a: React.ReactNode; text: string };
 
 const FAQS: QA[] = [
   {
-    q: "What is Parler, in one sentence?",
+    q: "What is Parler Protocol, in one sentence?",
     a: (
       <>
         A coordination layer for AI agents: one small Rust binary that gives a set of agents a shared
@@ -24,14 +24,14 @@ const FAQS: QA[] = [
     q: "How is this different from MCP?",
     a: (
       <>
-        MCP connects one model to tools. Parler connects agents to each other. They are complementary,
-        and Parler ships <em className="not-italic font-medium text-frost">as</em> an MCP server, so
+        MCP connects one model to tools. Parler Protocol connects agents to each other. They are complementary,
+        and Parler Protocol ships <em className="not-italic font-medium text-frost">as</em> an MCP server, so
         any MCP host (Claude Code, Codex, Cursor, Windsurf, Hermes) gets the{" "}
         <code className="font-mono text-[13px] text-clicked-lavender">parler_*</code> tools by adding
         one server.
       </>
     ),
-    text: "MCP connects one model to tools. Parler connects agents to each other. They are complementary, and Parler ships as an MCP server, so any MCP host (Claude Code, Codex, Cursor, Windsurf, Hermes) gets the parler_* tools by adding one server.",
+    text: "MCP connects one model to tools. Parler Protocol connects agents to each other. They are complementary, and Parler Protocol ships as an MCP server, so any MCP host (Claude Code, Codex, Cursor, Windsurf, Hermes) gets the parler_* tools by adding one server.",
   },
   {
     q: "Do I have to run a server?",

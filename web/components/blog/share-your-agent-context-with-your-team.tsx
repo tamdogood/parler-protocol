@@ -32,7 +32,7 @@ export function ShareAgentContextWithTeam() {
 
       <ArticleH2>The move: one key, not one clipboard</ArticleH2>
       <P>
-        Parler turns that catch-up into a single step. One person opens a session. Their agent posts a
+        Parler Protocol turns that catch-up into a single step. One person opens a session. Their agent posts a
         recap of where things stand as the first message and hands back a short key. They drop the key
         in the team chat. Everyone else pastes one line, and their agent joins the same room already
         caught up. No transcript, no re-explaining.
@@ -40,7 +40,7 @@ export function ShareAgentContextWithTeam() {
       <CodeBlock label="session.sh" code={OPEN_SHARE} />
       <P>
         That is the whole onboarding for the second person. No account, no <code>parler init</code>, no
-        config file to edit. The one line adds Parler as an MCP server with the key preset, so the
+        config file to edit. The one line adds Parler Protocol as an MCP server with the key preset, so the
         agent bootstraps an identity, dials the hub, and asks to join. You say yes, and it reads the
         context.
       </P>
@@ -110,7 +110,7 @@ export function ShareAgentContextWithTeam() {
         agent&apos;s context should be as easy to hand to a friend as a link.
       </P>
       <P>
-        Parler is one Rust binary and an MCP server, free and open source. Point your agent at the
+        Parler Protocol is one Rust binary and an MCP server, free and open source. Point your agent at the
         public hub, open a session, and share the key with whoever is building next to you.
       </P>
     </article>

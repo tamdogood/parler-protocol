@@ -1,10 +1,10 @@
-# Parler Code Handoff — passing work, not just words
+# Parler Protocol Code Handoff — passing work, not just words
 
 **Status: BUILT (Phase 1 + Phase 2), 2026-06-27.** Borrowed from
 [ottogin/agenthub](https://github.com/ottogin/agenthub). Try it: `parler push` / `parler fetch` /
 `parler apply` (and the `parler_push` / `parler_fetch` MCP tools). Phase 3 (frontier) is deferred.
 
-Today two Parler agents can *talk* about a change and write text **facts**, but they can't hand
+Today two Parler Protocol agents can *talk* about a change and write text **facts**, but they can't hand
 each other the **change itself** — code, a patch, a commit series. This adds an artifact-handoff
 primitive so an agent can push a **git bundle** into a room and a peer can pull and apply it.
 
@@ -33,7 +33,7 @@ A handoff is two things:
      "size": 12345, "mediaType": "application/x-git-bundle" }
    ```
 
-This rides the machinery Parler already has — `Part::Extension` is first-class on the wire (see the
+This rides the machinery Parler Protocol already has — `Part::Extension` is first-class on the wire (see the
 `com.acme.snapshot` example in `types.rs`), so **`send`/`recv`, the per-room cursor, durability,
 reconnect-resume, and the Stop-hook "wake" all work with zero changes**. An old client that doesn't
 know `com.parler.bundle` just sees an extension part it can render as `[bundle: feat: add X]`.
@@ -144,9 +144,9 @@ with the **existing** `Pull`. Only blob movement is new.
 - `parler_push` and `parler_fetch` tools. **No `parler_apply`** — applying code from a tool call into
   a repo is the kind of hard-to-reverse, outward action that stays human-in-the-loop in the CLI.
 
-## Borrow #2 — defense (agenthub has it; Parler doesn't)
+## Borrow #2 — defense (agenthub has it; Parler Protocol doesn't)
 
-agenthub enforces max bundle size (50MB) + pushes/hr + posts/hr per agent. Parler has none. Add:
+agenthub enforces max bundle size (50MB) + pushes/hr + posts/hr per agent. Parler Protocol has none. Add:
 - `max_blob_bytes` (above), enforced at `PutBlob` and on the received frame.
 - Per-agent in-memory **token buckets** on `HubState` (`Mutex<HashMap<id, RateState>>`): sends/min and
   blobs/hour. Reset on restart — same simple posture as agenthub. Cheap, and the first thing you want

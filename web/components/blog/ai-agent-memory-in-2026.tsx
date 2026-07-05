@@ -33,7 +33,7 @@ export function AgentMemory2026() {
       <P>
         This is a map of where agent memory actually sits in 2026, and of the seam that opens when
         memory stops being one agent&apos;s diary and becomes something a group of agents share. I&apos;ll
-        use Parler for the second half, because it was built shared-first and the code shows what
+        use Parler Protocol for the second half, because it was built shared-first and the code shows what
         changes.
       </P>
 
@@ -54,7 +54,7 @@ export function AgentMemory2026() {
         ]}
       />
       <P>
-        Parler never set out to implement a cognitive architecture. It set out to be chat for agents.
+        Parler Protocol never set out to implement a cognitive architecture. It set out to be chat for agents.
         But build a durable, multi-party message log with a memory store attached and that taxonomy
         falls out on its own, because those four boxes are just the useful things any long-running
         system ends up keeping.
@@ -106,7 +106,7 @@ export function AgentMemory2026() {
         the latest value.
       </P>
       <P>
-        Parler&apos;s memory doesn&apos;t enter this contest, and that is a design stance rather than a
+        Parler Protocol&apos;s memory doesn&apos;t enter this contest, and that is a design stance rather than a
         shortfall. The hub isn&apos;t a memory model. It&apos;s the substrate a memory model runs on. It
         records correctly and retrieves cheaply: by keyword (BM25 over SQLite&apos;s FTS5), by meaning
         (brute-force vector KNN through <InlineCode>sqlite-vec</InlineCode>), or by both fused with
@@ -148,7 +148,7 @@ export function AgentMemory2026() {
         doesn&apos;t takes a language model, not a query.
       </P>
       <P>
-        Parler has this, built the way the research says to build it. There&apos;s an MCP prompt,{" "}
+        Parler Protocol has this, built the way the research says to build it. There&apos;s an MCP prompt,{" "}
         <InlineCode>parler_consolidate_session</InlineCode>, that hands an agent its own session backlog
         and one instruction:
       </P>
@@ -167,20 +167,20 @@ Write them down as room-scoped facts using the \`parler_remember\` tool with the
       </P>
       <P>
         Read the instruction again, though, because the load-bearing word is <Em>room-scoped</Em>. When
-        a Parler agent consolidates, the facts it distills don&apos;t land in a private diary. They land
+        a Parler Protocol agent consolidates, the facts it distills don&apos;t land in a private diary. They land
         in the room, where every agent in that room can <InlineCode>recall</InlineCode> them.
       </P>
       <Callout title="One agent reflects. The whole room remembers.">
         <p>
           This is the multi-agent twist the single-player frameworks don&apos;t have. Consolidation in
-          Parler isn&apos;t one assistant tidying its own diary; it turns a shared conversation into
+          Parler Protocol isn&apos;t one assistant tidying its own diary; it turns a shared conversation into
           shared semantic memory. One agent does the reflecting, and the distilled facts are available
           to every agent in the room the next time it calls <InlineCode>recall</InlineCode>. That is the
           whole point of what comes next.
         </p>
       </Callout>
       <P>
-        Two honest caveats. Parler&apos;s consolidation is on-demand, not a background sleep-time loop
+        Two honest caveats. Parler Protocol&apos;s consolidation is on-demand, not a background sleep-time loop
         yet: an agent runs it, no daemon dreams on a timer. And the forgetting half is deliberately
         blunt. A keyed fact upserts in place, so re-learning something overwrites the stale version (a
         blunt form of supersession), and a janitor task prunes on a retention schedule. Blunt, but
@@ -234,9 +234,9 @@ Write them down as room-scoped facts using the \`parler_remember\` tool with the
         actually bites when you put a group of agents on one task.
       </P>
 
-      <ArticleH2 id="parler-primitives">Parler answers them with primitives it already had</ArticleH2>
+      <ArticleH2 id="parler-primitives">Parler Protocol answers them with primitives it already had</ArticleH2>
       <P>
-        This is the payoff, and the reason a shared-first origin matters. Parler didn&apos;t start as a
+        This is the payoff, and the reason a shared-first origin matters. Parler Protocol didn&apos;t start as a
         memory system that later grew multi-user features. It started as chat for agents, so it already
         had rooms, membership, cryptographic identity, and per-agent cursors, which is exactly the
         machinery those governance questions need. Memory didn&apos;t require new primitives. It reused
@@ -265,7 +265,7 @@ Write them down as room-scoped facts using the \`parler_remember\` tool with the
       </P>
       <P>
         Provenance comes free because every fact carries an <InlineCode>author</InlineCode>, and identity
-        in Parler is a self-signed nkey keypair whose seed never leaves the device, proven by
+        in Parler Protocol is a self-signed nkey keypair whose seed never leaves the device, proven by
         challenge-response on connect. Every recalled fact comes stamped with the agent that wrote it, so
         trace-to-source was never a feature to bolt on. The column was there from the first commit.
       </P>
@@ -285,7 +285,7 @@ Write them down as room-scoped facts using the \`parler_remember\` tool with the
         if you&apos;ve ever tried to get two coding agents to collaborate, is the entire ballgame.
       </P>
       <RefTable
-        head={["The fleet-memory question", "Parler's answer, a primitive it already had"]}
+        head={["The fleet-memory question", "Parler Protocol's answer, a primitive it already had"]}
         rows={[
           [
             "Who can read which memory?",
@@ -328,7 +328,7 @@ Write them down as room-scoped facts using the \`parler_remember\` tool with the
         personal history.
       </P>
       <P>
-        Parler is a different bet: that the hard part is coordination. That as soon as agents work in
+        Parler Protocol is a different bet: that the hard part is coordination. That as soon as agents work in
         groups, which they now do, memory has to be shared, scoped, attributable, and safe to move
         between parties that don&apos;t trust each other by default, and that those are the problems
         worth solving first. One SQLite file, private by default, membership-gated, and signed, with

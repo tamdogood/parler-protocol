@@ -1,7 +1,7 @@
 import { CopyButton } from "@/components/copy-button";
 
 /**
- * Prose primitives for rendering a blog post in the Parler design system.
+ * Prose primitives for rendering a blog post in the Parler Protocol design system.
  * Server components (CodeBlock embeds the client CopyButton). The look matches
  * the landing page: pure-black canvas, graphite hairlines, electric-blue accents.
  */

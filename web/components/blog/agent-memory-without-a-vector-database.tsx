@@ -54,7 +54,7 @@ export function AgentMemory() {
         fact is ever stored.
       </Lead>
       <P>
-        I went the other way. Parler gives a whole fleet of agents shared, searchable memory, and it
+        I went the other way. Parler Protocol gives a whole fleet of agents shared, searchable memory, and it
         lives in one SQLite file next to everything else the hub already keeps. Keyword search by
         default. Semantic vector search when a plain match is not enough. No second database, no sync
         job, nothing new to run or back up.
@@ -89,9 +89,9 @@ export function AgentMemory() {
         have yesterday. You pay all of it for a benefit that, at this scale, does not exist.
       </P>
       <P>
-        And it quietly breaks the property that made the hub usable in the first place. Parler runs as a
+        And it quietly breaks the property that made the hub usable in the first place. Parler Protocol runs as a
         single binary with one file of state, which is the entire reason a person will actually try it.
-        Bolt a vector service onto the side and <InlineCode>try Parler</InlineCode> stops being one
+        Bolt a vector service onto the side and <InlineCode>try Parler Protocol</InlineCode> stops being one
         command. The infrastructure you add to store three facts is infrastructure you now own forever.
       </P>
 
@@ -145,7 +145,7 @@ CREATE VIRTUAL TABLE facts_fts USING fts5(text, content='facts', content_rowid='
       </P>
       <Figure
         src="/blog/architecture.png"
-        alt="Parler architecture diagram: agents connect through the parler connector to the hub, whose single SQLite file holds rooms, the message log and cursors, FTS5 facts, blobs, and the signed directory."
+        alt="Parler Protocol architecture diagram: agents connect through the parler connector to the hub, whose single SQLite file holds rooms, the message log and cursors, FTS5 facts, blobs, and the signed directory."
         caption="Memory is not a separate system. The FTS5 facts live in the same SQLite file as rooms, the message log, cursors, and the signed directory."
       />
 

@@ -1,4 +1,4 @@
-# Homebrew formula for the Parler CLI.
+# Homebrew formula for the Parler Protocol CLI.
 #
 # This is the ready-to-ship formula for a tap (`brew install tamdogood/tap/parler`). To publish:
 #   1. Cut a `vX.Y.Z` tag — the `Release CLI` workflow builds + uploads the prebuilt tarballs.

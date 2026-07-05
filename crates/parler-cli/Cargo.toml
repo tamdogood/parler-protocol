@@ -3,7 +3,7 @@ name = "parler-cli"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Parler CLI — the `parler` subcommands (hub/init/invite/join/send/recv/remember/recall/...) and the `parler mcp` stdio server, both thin adapters over the MeshAgent core."
+description = "Parler Protocol CLI — the `parler` subcommands (hub/init/invite/join/send/recv/remember/recall/...) and the `parler mcp` stdio server, both thin adapters over the MeshAgent core."
 
 [dependencies]
 parler-connector = { workspace = true }

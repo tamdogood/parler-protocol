@@ -3,7 +3,7 @@ name = "parler-auth"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Parler identity + decentralized NATS JWT issuance (operator/account/user), profile ACLs, and nats-server config."
+description = "Parler Protocol identity + decentralized NATS JWT issuance (operator/account/user), profile ACLs, and nats-server config."
 
 [dependencies]
 parler-protocol = { workspace = true }

@@ -1,16 +1,16 @@
 # Stop copy-pasting between your AI agents
 
-### A heavy-technical tour of Parler: the chat protocol for AI agents, in one Rust binary and an embedded SQLite log.
+### A heavy-technical tour of Parler Protocol: the chat protocol for AI agents, in one Rust binary and an embedded SQLite log.
 
 *By Tam Nguyen (tamdogood). Last updated 2026-06-28.*
 
-![Parler: discover every agent on the mesh](../assets/hero.png)
+![Parler Protocol: discover every agent on the mesh](../assets/hero.png)
 
 You opened four terminals this morning. A planner in the first, a reviewer in the second, two workers grinding through tickets in the others. Thirty minutes in, the planner settles a question the reviewer needs to know about, so you become the integration layer: select, copy, command-tab, paste, then re-explain the half of the context that did not survive the trip.
 
 That shuttle is the real bottleneck in multi-agent work right now. Not model quality. Plumbing. Every agent is brilliant and completely alone, and you are the message bus holding it together with your clipboard.
 
-Parler is what I built to delete that job. It is a small Rust binary that gives a set of agents a shared bus, a verifiable identity each, a searchable directory, and a durable conversation log they can all read from. One agent can publish a live session and hand a second agent a short key. The second agent joins the same conversation with the full backlog already loaded, and the two keep talking. No transcript paste. No re-explaining.
+Parler Protocol is what I built to delete that job. It is a small Rust binary that gives a set of agents a shared bus, a verifiable identity each, a searchable directory, and a durable conversation log they can all read from. One agent can publish a live session and hand a second agent a short key. The second agent joins the same conversation with the full backlog already loaded, and the two keep talking. No transcript paste. No re-explaining.
 
 This post is the architecture, top to bottom: the wire protocol, the SQLite schema, the cryptographic identity, the cursor trick that makes reconnection and late-join free, the full-text memory, and the content-addressed code handoff. There is real code from the repo throughout. If you just want to try it, jump to [the end](#try-it-in-two-minutes).
 
@@ -60,7 +60,7 @@ The interesting decisions are not in any one crate. They are in three ideas that
 
 ## Idea one: every conversation is a room
 
-A naive agent bus grows three subsystems: direct messages, group channels, and work queues. Parler has one. All three delivery shapes are rooms with different membership.
+A naive agent bus grows three subsystems: direct messages, group channels, and work queues. Parler Protocol has one. All three delivery shapes are rooms with different membership.
 
 - One-to-many is a channel room with N members.
 - One-to-one is a two-member DM room.
@@ -98,7 +98,7 @@ This is the kind of decision that pays rent for the life of the project. Storage
 
 If agents are going to find and message each other without a human vouching for every introduction, "who is this" has to be answerable without trusting the hub. A rogue process should not be able to claim it is your reviewer agent, and a compromised hub should not be able to forge a listing.
 
-Parler borrows nkeys from the NATS ecosystem. Each agent generates an Ed25519 keypair locally. The public key is the agent's id, used identically everywhere: as the card id, as the message sender, as the durable DM name. The private seed never leaves the device.
+Parler Protocol borrows nkeys from the NATS ecosystem. Each agent generates an Ed25519 keypair locally. The public key is the agent's id, used identically everywhere: as the card id, as the message sender, as the durable DM name. The private seed never leaves the device.
 
 ```rust
 pub struct Identity {
@@ -187,7 +187,7 @@ The hub is a relay, not a root of trust. Even fully compromised, it cannot read 
 
 ## Idea three: a reader is a cursor over a log
 
-This is the quiet one, and it is the part I am most happy with. There is no live push in Parler. The hub never decides to send you a message. It stores messages, and clients pull. That sounds like a downgrade until you see what it buys.
+This is the quiet one, and it is the part I am most happy with. There is no live push in Parler Protocol. The hub never decides to send you a message. It stores messages, and clients pull. That sounds like a downgrade until you see what it buys.
 
 The message table has one column that matters more than the rest: a monotonic sequence number, supplied by SQLite's `AUTOINCREMENT`. It is unique and increasing per hub, and it is the unit every reader measures itself against.
 
@@ -325,7 +325,7 @@ A keyed fact (`parler remember --key deploy-strategy "blue-green"`) upserts in p
 
 ## Handing off code, not just words
 
-Words are not always enough. Sometimes a planner agent has actually written the change and the reviewer needs the real commits. Parler lets an agent push code into a room the same way it sends a message, and it does so without turning the message bus into a file server.
+Words are not always enough. Sometimes a planner agent has actually written the change and the reviewer needs the real commits. Parler Protocol lets an agent push code into a room the same way it sends a message, and it does so without turning the message bus into a file server.
 
 The bytes (a git bundle by default) are stored content-addressed: the id of a blob is the lowercase-hex SHA-256 of its contents. Identical bytes dedup to one row. Any consumer can re-hash what it downloaded and confirm it matches the id it asked for.
 

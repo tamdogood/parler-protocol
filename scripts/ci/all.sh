@@ -17,7 +17,7 @@ gate() { # <label> <script> [args...]
   if "$@"; then ci::ok "gate: $label"; else failed+=("$label"); ci::err "gate: $label"; fi
 }
 
-ci::log "${_CI_BOLD}Parler local CI${_CI_RST} — mirrors .github/workflows/ci.yml"
+ci::log "${_CI_BOLD}Parler Protocol local CI${_CI_RST} — mirrors .github/workflows/ci.yml"
 
 gate "selftest" "$here/selftest.sh"
 gate "rust"     "$here/rust.sh"

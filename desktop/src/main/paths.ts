@@ -18,7 +18,7 @@ export function hubBinary(): string {
 /** Absolute path to the bundled `parler` binary (CLI + `parler mcp` server). */
 export function parlerBinary(): string {
   // Named 'parler-cli' in staging/packaging to avoid case-insensitive collisions
-  // with the app bundle 'Parler' (.app) on macOS, which causes recursive app launches.
+  // with the app bundle 'Parler Protocol' (.app) on macOS, which causes recursive app launches.
   return join(binDir(), "parler-cli");
 }
 

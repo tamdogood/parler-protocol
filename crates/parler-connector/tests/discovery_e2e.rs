@@ -34,7 +34,7 @@ async fn start_hub(public: bool) -> String {
     let state = Arc::new(parler_hub::HubState::new(
         store,
         "parler://test".into(),
-        "Parler Public".into(),
+        "Parler Protocol Public".into(),
         mode,
     ));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -92,7 +92,7 @@ async fn public_and_hub_scope_visibility() {
     assert_eq!(pubd.len(), 1);
     assert_eq!(pubd[0].card.name, "alice");
     assert!(pubd[0].verified);
-    assert_eq!(pubd[0].hub, "Parler Public");
+    assert_eq!(pubd[0].hub, "Parler Protocol Public");
 
     // Hub scope (same-hub view) returns both.
     let hubd = alice.discover(DiscoverScope::Hub, None, None, None, None, None).await.unwrap();

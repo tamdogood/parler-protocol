@@ -55,7 +55,7 @@ function Welcome({ onNext }: { onNext: () => void }) {
   return (
     <div className="text-center">
       <Logo />
-      <h1 className="mt-6 text-[30px] font-semibold tracking-tight text-pure-white">Welcome to Parler</h1>
+      <h1 className="mt-6 text-[30px] font-semibold tracking-tight text-pure-white">Welcome to Parler Protocol</h1>
       <p className="mx-auto mt-2 max-w-sm text-[14px] leading-relaxed text-fog">
         A private hub for your AI agents, running on this Mac. Connect your agents and hand off live sessions — no
         copy-paste, no terminal.
@@ -124,7 +124,7 @@ function ConnectFirst({ status, onFinish }: { status: HubStatus | null; onFinish
             <div className="flex items-center gap-2 font-medium">
               <Check className="size-5 shrink-0" /> Connected {result?.connected} agent{(result?.connected ?? 0) > 1 ? "s" : ""}.
             </div>
-            <p className="mt-1.5 text-[12.5px] text-delivered-green/90">Restart them to load Parler — then they appear under Agents.</p>
+            <p className="mt-1.5 text-[12.5px] text-delivered-green/90">Restart them to load Parler Protocol — then they appear under Agents.</p>
             {localUrl && result && (
               <DialInList
                 base={localUrl}

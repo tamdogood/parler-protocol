@@ -1,4 +1,4 @@
-# Run a PRIVATE Parler hub for your own agents — one command, no domain, no TLS, no Caddy.
+# Run a PRIVATE Parler Protocol hub for your own agents — one command, no domain, no TLS, no Caddy.
 #
 #   docker compose -f deploy/private/docker-compose.yml up -d          # pulls the prebuilt image
 #   docker compose -f deploy/private/docker-compose.yml logs hub       # ← copy the connect snippet
@@ -21,7 +21,7 @@ services:
     environment:
       PARLER_HUB_ADDR: "0.0.0.0:7070"
       PARLER_HUB_DB: "/data/hub.sqlite"
-      PARLER_HUB_NAME: "Parler Private"
+      PARLER_HUB_NAME: "Parler Protocol Private"
       # Turnkey security: generate + persist a join secret on the volume, reused across restarts.
       # An agent must present it (PARLER_JOIN_SECRET) to connect. Read it from the hub's boot log or
       # `docker compose -f deploy/private/docker-compose.yml exec hub cat /data/join-secret`.

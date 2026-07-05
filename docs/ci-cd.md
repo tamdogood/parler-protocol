@@ -1,6 +1,6 @@
 # CI/CD & the test system
 
-Parler is built to take pull requests from many contributors, so the pipeline has one job: **catch
+Parler Protocol is built to take pull requests from many contributors, so the pipeline has one job: **catch
 bugs and regressions before they reach the deployed hub** — and be trustworthy and reproducible
 enough that contributors actually rely on it.
 

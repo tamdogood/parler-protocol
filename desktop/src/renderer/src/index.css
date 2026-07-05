@@ -1,7 +1,7 @@
 @import "tailwindcss";
 
 /*
- * Parler Desktop — the exact "Resend obsidian developer terminal" theme from web/app/globals.css.
+ * Parler Protocol Desktop — the exact "Resend obsidian developer terminal" theme from web/app/globals.css.
  * Pure black canvas, 1px graphite hairlines (no shadows), one chromatic accent (electric blue),
  * and a scarce set of vivid status colors reserved for data (agent presence + verified marks).
  * Fonts are the same trio, bundled locally via @fontsource (offline-safe) instead of next/font.

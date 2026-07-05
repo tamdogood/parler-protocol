@@ -22,7 +22,7 @@ use std::time::Duration;
 #[command(
     name = "parler",
     version,
-    about = "Parler — the chat protocol for AI agents: 1:1 / many:1 / 1:many messaging + a shared memory store"
+    about = "Parler Protocol — the chat protocol for AI agents: 1:1 / many:1 / 1:many messaging + a shared memory store"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -33,7 +33,7 @@ struct Cli {
 enum Cmd {
     /// Run the hub (the message bus + memory store).
     Hub(HubArgs),
-    /// Wire every AI agent on this machine to Parler in one step (Claude Code, Codex, Cursor, …).
+    /// Wire every AI agent on this machine to Parler Protocol in one step (Claude Code, Codex, Cursor, …).
     Connect(ConnectArgs),
     /// Create this agent's identity and point it at a hub (advanced; `connect`/`mcp` do this for you).
     Init(InitArgs),
@@ -117,7 +117,7 @@ struct HubArgs {
     #[arg(long, env = "PARLER_HUB_URL")]
     url: Option<String>,
     /// Display name for this hub (the workspace name shown in the directory/site).
-    #[arg(long, env = "PARLER_HUB_NAME", default_value = "Parler Hub")]
+    #[arg(long, env = "PARLER_HUB_NAME", default_value = "Parler Protocol Hub")]
     name: String,
     /// Run a public hub (world-readable directory). Omit for a private, token-gated hub.
     #[arg(long, env = "PARLER_HUB_PUBLIC")]
@@ -179,13 +179,13 @@ struct ConnectArgs {
     /// Don't write anything — just print the config snippet to paste yourself.
     #[arg(long)]
     print: bool,
-    /// List detected agents and their current Parler status; write nothing.
+    /// List detected agents and their current Parler Protocol status; write nothing.
     #[arg(long)]
     list: bool,
-    /// Remove Parler from the named agents (or every configured one when none are named).
+    /// Remove Parler Protocol from the named agents (or every configured one when none are named).
     #[arg(long)]
     remove: bool,
-    /// Emit machine-readable JSON (used by the Parler desktop app).
+    /// Emit machine-readable JSON (used by the Parler Protocol desktop app).
     #[arg(long)]
     json: bool,
     /// After wiring, wait and report each agent as it dials the hub — restart your agents and watch
@@ -228,7 +228,7 @@ enum SessionCmd {
         /// The session room (defaults to your active session).
         #[arg(long)]
         room: Option<String>,
-        /// Emit machine-readable JSON (used by the Parler desktop app): `{room, requests:[…]}`.
+        /// Emit machine-readable JSON (used by the Parler Protocol desktop app): `{room, requests:[…]}`.
         #[arg(long)]
         json: bool,
     },
@@ -958,7 +958,7 @@ async fn cmd_session(c: SessionCmd) -> Result<()> {
             println!();
             println!("    {token}");
             println!();
-            println!("Paste it into the Parler website's session viewer (the /session page) to watch the");
+            println!("Paste it into the Parler Protocol website's session viewer (the /session page) to watch the");
             println!("conversation and how many agents are in the room — read-only, no joining. Anyone with");
             println!("this code can read the session, so share it like a password.");
         }
@@ -1511,7 +1511,7 @@ async fn check_session_key(cfg: &Config, key: &str, connected: bool) -> Result<S
 }
 
 async fn cmd_doctor() -> Result<()> {
-    println!("🩺 Running Parler System Diagnostics...");
+    println!("🩺 Running Parler Protocol System Diagnostics...");
     let mut clean = true;
 
     // 1. Config Check
@@ -1692,7 +1692,7 @@ async fn cmd_doctor() -> Result<()> {
 
     println!();
     if clean {
-        println!("✨ All diagnostics passed! Your Parler mesh agent is healthy.");
+        println!("✨ All diagnostics passed! Your Parler Protocol mesh agent is healthy.");
     } else {
         println!("⚠️ Diagnostics failed. Review the errors above to fix your installation.");
     }

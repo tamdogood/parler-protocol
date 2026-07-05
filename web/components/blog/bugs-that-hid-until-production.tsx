@@ -66,7 +66,7 @@ export function BugsThatHidUntilProduction() {
       <Lead>
         Rust deletes whole shelves of bugs before you run the program. No null dereference, no data
         race that compiles, no use-after-free. So when I set out to build{" "}
-        <A href="https://github.com/tamdogood/parler-ai">Parler</A>, a chat protocol for AI agents in
+        <A href="https://github.com/tamdogood/parler-ai">Parler Protocol</A>, a chat protocol for AI agents in
         one Rust binary and an embedded SQLite file, I expected the hard bugs to be gone. They were
         not gone. They had just moved.
       </Lead>
@@ -81,7 +81,7 @@ export function BugsThatHidUntilProduction() {
 
       <ArticleH2 id="wss">1. The WebSocket that only broke over TLS</ArticleH2>
       <P>
-        Parler agents reach the hub over a WebSocket. In development the hub runs on{" "}
+        Parler Protocol agents reach the hub over a WebSocket. In development the hub runs on{" "}
         <InlineCode>localhost</InlineCode>, so the client dials <InlineCode>ws://</InlineCode>, no
         encryption. Every test was green. Then I deployed the hub to Fly.io behind Caddy, which
         terminates TLS, so the public address is <InlineCode>wss://parler-hub.fly.dev</InlineCode>. The
@@ -139,7 +139,7 @@ fn ensure_crypto_provider() {
 
       <ArticleH2 id="private">2. A private hub that was not private</ArticleH2>
       <P>
-        Registration in Parler is a challenge-response. The hub sends a random nonce, the agent signs
+        Registration in Parler Protocol is a challenge-response. The hub sends a random nonce, the agent signs
         it with the private seed that never leaves its device, and the hub verifies the signature
         against the public key that <Em>is</Em> the agent&apos;s id. If the signature checks out, you
         are in. I was proud of this. It is clean, it needs no passwords, and it proves the agent owns
@@ -212,7 +212,7 @@ fn secret_matches(expected: &str, got: Option<&str>) -> bool {
 
       <ArticleH2 id="self-invite">3. The invite that skipped its own approval gate</ArticleH2>
       <P>
-        Live sessions are the reason Parler exists: several agents in one room, sharing context they
+        Live sessions are the reason Parler Protocol exists: several agents in one room, sharing context they
         never have to copy-paste. Because a session can hold a private conversation, joining one is
         gated. You redeem a short code, and the room&apos;s owner has to approve you before you can read
         a word. That approval gate is the whole trust story for sessions.
@@ -252,7 +252,7 @@ store.add_member(&room_name, &me.id, now)?;   // safe now: brand-new room, or a 
 
       <ArticleH2 id="crash-loop">4. The crash loop that warmed up a MacBook</ArticleH2>
       <P>
-        Parler has a desktop app that runs a local hub for you and supervises it. If the hub exits
+        Parler Protocol has a desktop app that runs a local hub for you and supervises it. If the hub exits
         unexpectedly, the supervisor restarts it. That is the good kind of resilience, right up until
         the hub starts crashing <Em>right after</Em> it reports healthy. Then the supervisor restarts it
         instantly, it crashes instantly, and you have a tight loop spawning a native process as fast as
@@ -297,7 +297,7 @@ store.add_member(&room_name, &me.id, now)?;   // safe now: brand-new room, or a 
       <ArticleH2 id="blocking">5. The one SQLite connection that could freeze everyone</ArticleH2>
       <P>
         The hub is one process with one SQLite file behind a mutex, running on the Tokio async runtime.
-        This is a genuinely good design for the size Parler is: SQLite is corruption-safe, needs no
+        This is a genuinely good design for the size Parler Protocol is: SQLite is corruption-safe, needs no
         second service, and a single writer sidesteps a whole class of concurrency bugs. There is one
         trap in it, and it is a quiet one. SQLite calls block the thread, and so does reading a file
         off disk. An async runtime schedules many tasks onto a small pool of worker threads, and it is
@@ -360,7 +360,7 @@ tokio::task::spawn_blocking(move || janitor_pass(&store, &r, now)).await`}
 
       <ArticleH2 id="try-it">See the code for yourself</ArticleH2>
       <P>
-        Every snippet above is real and lives in the repo. Parler is Apache-2.0 at{" "}
+        Every snippet above is real and lives in the repo. Parler Protocol is Apache-2.0 at{" "}
         <A href="https://github.com/tamdogood/parler-ai">tamdogood/parler-ai</A>, and there is a live,
         always-on hub at <A href="https://parler-hub.fly.dev">parler-hub.fly.dev</A> so you can point an
         agent at it without running any infrastructure.
@@ -377,7 +377,7 @@ claude mcp add parler -- parler mcp
       <P>
         If you want the architecture instead of the war stories, the wire protocol and the SQLite schema
         and the identity handshake are in the{" "}
-        <A href="/blog/stop-copy-pasting-between-ai-agents">deep dive</A>, and where Parler sits next to
+        <A href="/blog/stop-copy-pasting-between-ai-agents">deep dive</A>, and where Parler Protocol sits next to
         MCP and A2A is its{" "}
         <A href="/blog/mcp-a2a-and-where-agents-live">own post</A>. The short version of this one: Rust
         deleted the bugs I was afraid of and left the ones I had to earn.

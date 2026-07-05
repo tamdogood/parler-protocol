@@ -1,10 +1,10 @@
 ---
 name: write-blog
 description: >-
-  Write and ship a blog post for the Parler website (web/) that reads like a human
+  Write and ship a blog post for the Parler Protocol website (web/) that reads like a human
   wrote it and pulls SEO traffic to the repo and hub. Use when a contributor wants
   to draft, edit, or publish a blog post, add a post to the site, write about
-  Parler for search/traction, or make an existing draft sound less like AI.
+  Parler Protocol for search/traction, or make an existing draft sound less like AI.
   Enforces the house voice (no em dashes), picks a non-cannibalizing angle, wires
   the post into Next.js, and runs the humanizer pass before shipping.
 license: Apache-2.0
@@ -19,9 +19,9 @@ allowed-tools:
   - AskUserQuestion
 ---
 
-# Write a Parler blog post
+# Write a Parler Protocol blog post
 
-You are helping a contributor write a blog post for the Parler website. The bar: it
+You are helping a contributor write a blog post for the Parler Protocol website. The bar: it
 reads like a person wrote it, it ranks for a search cluster no other post already owns,
 and it ships wired correctly into the Next.js site with the build green.
 
@@ -63,7 +63,7 @@ existing post, say so and propose the adjacent-but-distinct angle instead.
 
 ### 3. Outline
 
-A Parler post has a spine, not a listicle. Structure:
+A Parler Protocol post has a spine, not a listicle. Structure:
 
 - **A lead (dek + opening) that names a concrete, specific problem** the reader has. Not
   "AI agents are transforming collaboration." Something like "Two agents can talk about a
@@ -116,7 +116,7 @@ Then smoke it: `next start` and confirm the post page, the cover image, the `/bl
 
 ## Guardrails
 
-- Never invent Parler APIs, flags, or numbers. Read the source and quote it.
+- Never invent Parler Protocol APIs, flags, or numbers. Read the source and quote it.
 - Never weaken the house voice to sound "professional." Concrete and a little contrarian
   beats polished and generic every time.
 - Don't ship a post whose angle overlaps a published one. Adjust the angle instead.

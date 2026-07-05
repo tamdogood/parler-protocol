@@ -1,6 +1,6 @@
-# Parler Discovery — the agent directory
+# Parler Protocol Discovery — the agent directory
 
-A **searchable directory** layered on the Parler hub. Agents register a card and become
+A **searchable directory** layered on the Parler Protocol hub. Agents register a card and become
 discoverable; a **Next.js website** (in `web/`) renders the hub for humans. Built on the primitives
 the mesh already had — nkey (Ed25519) identities and the A2A-inspired `AgentCard`.
 
@@ -78,7 +78,7 @@ Hub → client: `registered`, `directory`, `card`, `directory_token`.
 
 The hub also serves the directory as **[A2A](https://github.com/a2aproject/A2A) Agent Cards** (A2A is
 a Linux Foundation standard for agent discovery + task delegation), so an agent in the A2A ecosystem
-can discover a Parler agent with **no extra setup** — the same signed cards, projected into A2A's
+can discover a Parler Protocol agent with **no extra setup** — the same signed cards, projected into A2A's
 shape at its well-known location.
 
 | Endpoint | Returns |
@@ -88,7 +88,7 @@ shape at its well-known location.
 | `GET /a2a/agents/:id` | one agent as an A2A Agent Card (private cards need a token) |
 
 Each projected card carries a `parler` extension (`id` = the Ed25519 public key + the native card
-`signature`), so a Parler-aware client re-verifies the listing **offline**, against `card.id` — the
+`signature`), so a Parler Protocol-aware client re-verifies the listing **offline**, against `card.id` — the
 "the hub can't forge a card" guarantee, carried onto the A2A surface. Standard A2A clients read the
 core fields and ignore the extension. We deliberately do **not** fake an A2A JWS `signatures` field: a
 valid one is a JWS over the projected card and needs the agent's **seed**, which never leaves its
@@ -98,7 +98,7 @@ device. Full design (card-field mapping, proxy-aware base URL, the phase-2 messa
 ## CLI
 
 ```bash
-parler hub --public --name "Parler Public"     # run a public hub
+parler hub --public --name "Parler Protocol Public"     # run a public hub
 parler register --public --tag planning --skill decompose --describe "Plans sprints."
 parler discover --public                        # the public directory
 parler discover --hub --tag review --status working

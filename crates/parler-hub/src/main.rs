@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 #[derive(Parser)]
-#[command(name = "parler-hub", about = "Parler Hub — the lightweight bus for agent-to-agent messaging")]
+#[command(name = "parler-hub", about = "Parler Protocol Hub — the lightweight bus for agent-to-agent messaging")]
 struct Args {
     /// Address to bind, host:port.
     #[arg(long, env = "PARLER_HUB_ADDR", default_value = "127.0.0.1:7070")]
@@ -25,7 +25,7 @@ struct Args {
     url: Option<String>,
 
     /// Display name for this hub (the workspace name shown in the directory/site).
-    #[arg(long, env = "PARLER_HUB_NAME", default_value = "Parler Hub")]
+    #[arg(long, env = "PARLER_HUB_NAME", default_value = "Parler Protocol Hub")]
     name: String,
 
     /// Run a public hub: its directory is world-readable (no token needed for the hub-scope view).

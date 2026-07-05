@@ -6,9 +6,9 @@ members = ["crates/*"]
 version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0"
-authors = ["Tam Nguyen (tamdogood)", "Parler contributors"]
+authors = ["Tam Nguyen (tamdogood)", "Parler Protocol contributors"]
 repository = "https://github.com/tamdogood/parler-ai"
-description = "Parler — an open standard for AI agent coordination (Rust)"
+description = "Parler Protocol — an open standard for AI agent coordination (Rust)"
 
 [workspace.dependencies]
 # Internal crates

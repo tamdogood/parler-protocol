@@ -370,22 +370,22 @@ resulting blob file unlinks happen back on the async side.
 # Part 4 — Agent-memory research (what should inform the model)
 
 Across 2025–2026 the agent ecosystem converged on a consistent, cognitively-inspired **memory
-taxonomy**, and a consistent **retrieval** stack. Summary of the current findings and how Parler maps:
+taxonomy**, and a consistent **retrieval** stack. Summary of the current findings and how Parler Protocol maps:
 
 ### The taxonomy everyone converged on
-* **Working / context memory** — the live conversation window. In Parler: the room message log an
+* **Working / context memory** — the live conversation window. In Parler Protocol: the room message log an
   agent `pull`s.
-* **Episodic memory** — *what happened* (events, interactions, time-stamped). In Parler: the
+* **Episodic memory** — *what happened* (events, interactions, time-stamped). In Parler Protocol: the
   `messages` log itself is already an episodic store (per-room, `seq`/`ts`-ordered).
-* **Semantic memory** — *distilled facts / knowledge*, decoupled from when they were said. In Parler:
+* **Semantic memory** — *distilled facts / knowledge*, decoupled from when they were said. In Parler Protocol:
   the `facts` table (`remember`/`recall`).
-* **Procedural memory** — *how to do things* (skills, prompts, tool recipes). In Parler: partially the
+* **Procedural memory** — *how to do things* (skills, prompts, tool recipes). In Parler Protocol: partially the
   signed AgentCard `skills`; otherwise not yet modeled.
 
-### How the leading frameworks do it (and the lesson for Parler)
+### How the leading frameworks do it (and the lesson for Parler Protocol)
 * **Letta / MemGPT** — OS-style tiers: a full **recall** DB of history (beyond the context window) +
   an **archival** semantic tier, with **agent-directed** consolidation (the agent decides what graduates
-  from history → long-term). *Lesson:* Parler already has the "recall DB" (the message log) and an
+  from history → long-term). *Lesson:* Parler Protocol already has the "recall DB" (the message log) and an
   archival tier (`facts`); the missing piece is **consolidation** — letting an agent promote salient
   messages into facts.
 * **Mem0** — an LLM **extract-then-update** pipeline: pull salient candidates from a conversation, then
@@ -395,11 +395,11 @@ taxonomy**, and a consistent **retrieval** stack. Summary of the current finding
   just needs to store + retrieve well.
 * **Zep / Graphiti** — a **bitemporal knowledge graph** (every edge carries *event time* and *ingestion
   time*), reporting strong Deep-Memory-Retrieval accuracy and low latency. *Lesson:* temporal validity
-  ("this fact was true *as of*…") matters for agents that reason over changing state. Parler's `facts`
+  ("this fact was true *as of*…") matters for agents that reason over changing state. Parler Protocol's `facts`
   already keep `ts`; a future `valid_from`/`superseded_by` is the cheap nod to bitemporality **without**
   adopting a graph DB.
 
-### Net guidance for Parler
+### Net guidance for Parler Protocol
 1. **Keep the hub a thin, fast store; keep intelligence in the clients.** Extraction, summarization,
    salience, and embedding all belong on the agent side (they have the model). The hub's job is to
    **record correctly and retrieve cheaply** — which it already does well.
@@ -437,7 +437,7 @@ agent hub's memory.
   ```
 * **Brute force is fine at this scale.** Reported numbers: ~1M × 1024-dim is a few seconds (fine for
   occasional/CLI), and for the dimensions an agent hub would use (384/768) latency is well under ~75 ms
-  for hundreds-of-thousands of vectors. Parler's `facts` are scoped (per agent / per room), so each
+  for hundreds-of-thousands of vectors. Parler Protocol's `facts` are scoped (per agent / per room), so each
   `recall` searches a **small partition**, not the whole corpus — comfortably in brute-force territory.
 * **Hybrid > either alone.** BM25 finds exact terms/abbreviations but misses meaning; vectors capture
   meaning but miss rare tokens. The current best practice (Simon Willison / Alex Garcia, and a wave of

@@ -1,6 +1,6 @@
 # shellcheck shell=bash
 #
-# scripts/ci/lib.sh — shared helpers for the Parler CI scripts.
+# scripts/ci/lib.sh — shared helpers for the Parler Protocol CI scripts.
 #
 # This file is *sourced*, never executed, so it does not set shell options of its own (the entry
 # script owns `set -euo pipefail`). Everything here is small and side-effect-free enough to be

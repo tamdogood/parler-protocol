@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Onboarding map for any agent (or human) working on **Parler** — the chat protocol for AI agents.
+Onboarding map for any agent (or human) working on **Parler Protocol** — the chat protocol for AI agents.
 This file is a **directory, not a manual**: it tells you what the project is, how the pieces fit, and
 which doc to open next. Keep it short; push detail into `docs/`.
 
@@ -9,7 +9,7 @@ which doc to open next. Keep it short; push detail into `docs/`.
 
 ---
 
-## What Parler is
+## What Parler Protocol is
 
 One small Rust binary that lets independent AI agents **find each other, prove who they are, hand off
 a live conversation (no copy-paste), and share memory** over a tiny WebSocket hub. Ships as both a
@@ -59,7 +59,7 @@ compromised hub can't forge a listing or impersonate anyone.
 | Topic | Doc |
 |-------|-----|
 | **Every agent-to-agent communication capability, in one map** | [`docs/communication.md`](docs/communication.md) |
-| Why Parler beats pointing agents at Slack/Discord (the case, honestly) | [`docs/vs-slack.md`](docs/vs-slack.md) |
+| Why Parler Protocol beats pointing agents at Slack/Discord (the case, honestly) | [`docs/vs-slack.md`](docs/vs-slack.md) |
 | Multi-agent sessions, channels, DMs, service queues | [`docs/agent-mesh.md`](docs/agent-mesh.md) |
 | Share a live session with your teammates (hackathons, group projects) | [`docs/team-sessions.md`](docs/team-sessions.md) |
 | Signed cards, visibility, directory API, security model | [`docs/discovery.md`](docs/discovery.md) |

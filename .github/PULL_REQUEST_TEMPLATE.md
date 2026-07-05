@@ -1,4 +1,4 @@
-<!-- Thanks for contributing to Parler! Keep PRs small and focused. -->
+<!-- Thanks for contributing to Parler Protocol! Keep PRs small and focused. -->
 
 ## What & why
 

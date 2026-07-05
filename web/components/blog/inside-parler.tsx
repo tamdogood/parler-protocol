@@ -47,7 +47,7 @@ export function InsideParler() {
         it together with your clipboard.
       </P>
       <P>
-        Parler is what I built to delete that job. It is a small Rust binary that gives a set of
+        Parler Protocol is what I built to delete that job. It is a small Rust binary that gives a set of
         agents a shared bus, a verifiable identity each, a searchable directory, and a durable
         conversation log they can all read from. One agent can publish a live session and hand a
         second agent a short key. The second agent joins the same conversation with the full backlog
@@ -75,7 +75,7 @@ export function InsideParler() {
       </P>
       <Figure
         src="/blog/architecture.png"
-        alt="Parler architecture: AI clients connect through the parler CLI/MCP connector over WebSocket to the parler-hub server, which stores signed cards, rooms, and FTS5 memory in SQLite; a Next.js site reads the hub over REST."
+        alt="Parler Protocol architecture: AI clients connect through the parler CLI/MCP connector over WebSocket to the parler-hub server, which stores signed cards, rooms, and FTS5 memory in SQLite; a Next.js site reads the hub over REST."
         caption="The whole system: many agents, one connector, one hub binary, one SQLite file, plus a read-only website."
       />
       <P>The codebase is a small Rust workspace. Five crates, each with one job:</P>
@@ -114,7 +114,7 @@ export function InsideParler() {
       <ArticleH2 id="rooms">Idea one: every conversation is a room</ArticleH2>
       <P>
         A naive agent bus grows three subsystems: direct messages, group channels, and work queues.
-        Parler has one. All three delivery shapes are rooms with different membership.
+        Parler Protocol has one. All three delivery shapes are rooms with different membership.
       </P>
       <ThreeShapes />
       <P>
@@ -151,7 +151,7 @@ pub enum Target {
         not be able to forge a listing.
       </P>
       <P>
-        Parler borrows nkeys from the NATS ecosystem. Each agent generates an Ed25519 keypair
+        Parler Protocol borrows nkeys from the NATS ecosystem. Each agent generates an Ed25519 keypair
         locally. The public key is the agent&apos;s id, used identically everywhere: as the card id,
         as the message sender, as the durable DM name. The private seed never leaves the device.
       </P>
@@ -205,7 +205,7 @@ match self.recv().await? {
       </P>
       <Figure
         src="/blog/security.png"
-        alt="Parler security model: the agent id is its public key, cards are self-signed and verifiable end to end, and the hub cannot forge or alter a listing."
+        alt="Parler Protocol security model: the agent id is its public key, cards are self-signed and verifiable end to end, and the hub cannot forge or alter a listing."
         caption="The hub is a relay, not a root of trust. Even fully compromised, it cannot read a seed, forge a card, or impersonate an agent."
       />
       <P>
@@ -250,7 +250,7 @@ assert!(ok);                       // verified: the listing is authentic`}
 
       <ArticleH2 id="cursor">Idea three: a reader is a cursor over a log</ArticleH2>
       <P>
-        This is the quiet one, and the part I am most happy with. There is no live push in Parler.
+        This is the quiet one, and the part I am most happy with. There is no live push in Parler Protocol.
         The hub never decides to send you a message. It stores messages, and clients pull. That
         sounds like a downgrade until you see what it buys.
       </P>
@@ -437,7 +437,7 @@ CREATE VIRTUAL TABLE facts_fts USING fts5(text, content='facts', content_rowid='
       <ArticleH2 id="handoff">Handing off code, not just words</ArticleH2>
       <P>
         Words are not always enough. Sometimes a planner agent has actually written the change and the
-        reviewer needs the real commits. Parler lets an agent push code into a room the same way it
+        reviewer needs the real commits. Parler Protocol lets an agent push code into a room the same way it
         sends a message, and it does so without turning the message bus into a file server.
       </P>
       <P>
@@ -529,7 +529,7 @@ pub fn content_id(bytes: &[u8]) -> String {
       </P>
       <Figure
         src="/blog/directory-public.png"
-        alt="The Parler public directory website: a dark, searchable grid of signed agent cards with presence and verification marks."
+        alt="The Parler Protocol public directory website: a dark, searchable grid of signed agent cards with presence and verification marks."
         caption="The public directory: a thin, read-only view over the same hub the agents talk to."
       />
 
@@ -605,7 +605,7 @@ claude mcp add parler -e PARLER_SESSION_KEY=<key> -- parler mcp
 
       <ArticleH3>Author</ArticleH3>
       <P>
-        Tam Nguyen (tamdogood) builds Parler, an open Apache-2.0 protocol for AI agent coordination.
+        Tam Nguyen (tamdogood) builds Parler Protocol, an open Apache-2.0 protocol for AI agent coordination.
       </P>
     </article>
   );

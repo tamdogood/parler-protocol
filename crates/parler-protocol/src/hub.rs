@@ -1,10 +1,10 @@
-//! parler-protocol::hub — wire frames for the Parler **Hub**, the lightweight transport behind the
+//! parler-protocol::hub — wire frames for the Parler Protocol **Hub**, the lightweight transport behind the
 //! chat protocol for AI agents (a WebSocket bus + an embedded durable store).
 //!
 //! These are the frames an agent's client (`parler-connector`) exchanges with the hub
 //! (`parler-hub`). Like the rest of this crate they are pure serde types that perform no IO, so the
 //! client and the server share one definition of the protocol. JSON field names that are multi-word
-//! are camelCase to match the rest of the Parler envelope.
+//! are camelCase to match the rest of the Parler Protocol envelope.
 
 use crate::types::{AgentCard, EndpointRef, Part};
 use serde::{Deserialize, Serialize};
@@ -743,7 +743,7 @@ pub fn canonical_message_bytes(
 /// A structured turn handoff carried inside a room message as a [`Part::Extension`] of kind
 /// [`HANDOFF_KIND`] — the explicit "you're up next" signal between agents sharing a room.
 ///
-/// Parler delivers it like any other part (room / cursor / push / durability all unchanged), but the
+/// Parler Protocol delivers it like any other part (room / cursor / push / durability all unchanged), but the
 /// typed shape lets a worker loop or MCP host *recognise* a handoff addressed to it and continue
 /// without a human re-prompting. Pair it with `recv --watch` / `parler_recv wait_secs` for the
 /// wakeup. A client that doesn't understand the kind still sees a renderable extension part.
@@ -880,7 +880,7 @@ mod tests {
             visibility: Visibility::Public,
             status: "working".into(),
             activity: Some("planning the sprint".into()),
-            hub: "Parler Public".into(),
+            hub: "Parler Protocol Public".into(),
             verified: true,
             sig: Some("AAAA".into()),
             first_seen: 10,

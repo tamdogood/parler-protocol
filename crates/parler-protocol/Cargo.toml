@@ -3,7 +3,7 @@ name = "parler-protocol"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Parler wire contract: message types, subject grammar, and naming — the transport-agnostic standard."
+description = "Parler Protocol wire contract: message types, subject grammar, and naming — the transport-agnostic standard."
 
 [dependencies]
 serde = { workspace = true }

@@ -3,7 +3,7 @@ name = "parler-connector"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Parler connector — the MeshAgent client core (the MeshTransport seam + the WebSocket HubClient + local identity) shared by the CLI, the MCP server, and the Hermes plugin."
+description = "Parler Protocol connector — the MeshAgent client core (the MeshTransport seam + the WebSocket HubClient + local identity) shared by the CLI, the MCP server, and the Hermes plugin."
 
 [dependencies]
 parler-protocol = { workspace = true }

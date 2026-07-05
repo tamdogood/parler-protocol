@@ -1,4 +1,4 @@
-//! `parler connect` — wire every AI agent on this machine to Parler in one command.
+//! `parler connect` — wire every AI agent on this machine to Parler Protocol in one command.
 //!
 //! This is the **single source of truth** for MCP-host setup. The CLI calls it directly; the desktop
 //! app shells out to `parler connect --json`. It writes each host's MCP server config pointing at a
@@ -70,9 +70,9 @@ pub struct Options {
     pub join_secret: Option<String>,
     /// Don't write anything — just print the config to paste yourself.
     pub print: bool,
-    /// List detected agents + their Parler status and exit; write nothing.
+    /// List detected agents + their Parler Protocol status and exit; write nothing.
     pub list: bool,
-    /// Remove Parler from the named hosts (or every configured host when `hosts` is empty). The
+    /// Remove Parler Protocol from the named hosts (or every configured host when `hosts` is empty). The
     /// inverse of the default wire action — the desktop app's "Disconnect" drives this.
     pub remove: bool,
     /// Emit machine-readable JSON (used by the desktop app).
@@ -185,7 +185,7 @@ fn restart_hint(id: &str) -> &'static str {
         "cursor" => "restart Cursor (or toggle the parler server under Settings → MCP)",
         "windsurf" => "restart Windsurf to load it",
         "claude-desktop" => "quit and reopen Claude Desktop",
-        _ => "restart it to load Parler",
+        _ => "restart it to load Parler Protocol",
     }
 }
 
@@ -430,7 +430,7 @@ fn wire(def: &HostDef, env: &[(String, String)], binpath: &str) -> Result<String
     }
 }
 
-/// Remove Parler from a host in place, leaving the user's other servers untouched. `Ok(true)` if an
+/// Remove Parler Protocol from a host in place, leaving the user's other servers untouched. `Ok(true)` if an
 /// entry was actually removed, `Ok(false)` if there was nothing to remove.
 fn unwire(def: &HostDef) -> Result<bool> {
     match &def.wiring {
@@ -780,7 +780,7 @@ fn run_remove(opts: &Options) -> Result<()> {
             println!("{mark} {:<15} {}", r.name, r.detail);
         }
         if reports.iter().any(|r| r.status == "removed") {
-            println!("\nRestart those apps to unload Parler.");
+            println!("\nRestart those apps to unload Parler Protocol.");
         }
         println!();
     }
@@ -963,7 +963,7 @@ fn print_list(as_json: bool) -> Result<()> {
         println!("{}", serde_json::to_string_pretty(&json!({ "hosts": hosts })).unwrap_or_default());
         return Ok(());
     }
-    println!("\nAgents Parler knows how to wire on this machine:\n");
+    println!("\nAgents Parler Protocol knows how to wire on this machine:\n");
     for d in &reg {
         let status = if is_configured(d) {
             "connected"

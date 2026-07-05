@@ -484,7 +484,7 @@ async fn handle(state: &mut McpState, method: &str, params: Value) -> Result<Val
                         }
                     }
                     let text = format!(
-                        "You are joining a Parler collaborative session.\n\
+                        "You are joining a Parler Protocol collaborative session.\n\
                          Active Room: {room} — {roster_count} agent(s) in the room.\n\n\
                          Context so far (digest — seed + recent messages):\n\
                          {backlog}\n\n\
@@ -1045,7 +1045,7 @@ async fn open_session(
     } else {
         "Anyone with this key joins immediately (approval disabled)."
     };
-    // A ready-to-paste one-liner the host can drop straight into Slack/Discord: it adds the Parler
+    // A ready-to-paste one-liner the host can drop straight into Slack/Discord: it adds the Parler Protocol
     // MCP server already pointed at this session, so a teammate joins with a single command and no
     // prior setup. Carries the hub + join secret when they aren't the defaults, so it also works on a
     // private/team hub. (The joiner still lands pending your approval — the gate is unchanged.)
@@ -1493,7 +1493,7 @@ fn tool_specs() -> Vec<Value> {
         ),
         tool(
             "parler_watch_session",
-            "Mint a read-only WATCH code so the user can watch this session live from the Parler website (/session page). Owner-only and separate from the join key (which can't read the backlog), so it's the safe way to let a human view it. Defaults to active session; hand the code to the user.",
+            "Mint a read-only WATCH code so the user can watch this session live from the Parler Protocol website (/session page). Owner-only and separate from the join key (which can't read the backlog), so it's the safe way to let a human view it. Defaults to active session; hand the code to the user.",
             json!({
                 "room": { "type": "string", "description": "the session room (defaults to your active session)" },
                 "ttl_secs": { "type": "integer", "description": "how long the watch code stays valid (default 1h)" }
