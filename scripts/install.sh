@@ -7,15 +7,26 @@
 # SHA-256, and drops it on your PATH. Then: `parler connect` wires every AI agent on the machine.
 #
 # Overrides (env): PARLER_VERSION (default: latest), PARLER_INSTALL_DIR (default: ~/.local/bin),
-# PARLER_REPO (default: tamdogood/parler-ai).
+# PARLER_REPO (default: tamdogood/parler-ai), PARLER_REQUIRE_CHECKSUM=1 (fail instead of warn when
+# the checksum can't be verified).
 set -eu
 
 REPO="${PARLER_REPO:-tamdogood/parler-ai}"
 VERSION="${PARLER_VERSION:-latest}"
 INSTALL_DIR="${PARLER_INSTALL_DIR:-$HOME/.local/bin}"
+REQUIRE_CHECKSUM="${PARLER_REQUIRE_CHECKSUM:-0}"
 
 info() { printf '  %s\n' "$*"; }
+warn() { printf 'warning: %s\n' "$*" >&2; }
 err() { printf 'error: %s\n' "$*" >&2; exit 1; }
+
+# Handle a checksum-verification skip: loud by default, fatal under PARLER_REQUIRE_CHECKSUM=1.
+skip_checksum() { # skip_checksum <reason>
+  if [ "$REQUIRE_CHECKSUM" = "1" ]; then
+    err "cannot verify checksum ($1) and PARLER_REQUIRE_CHECKSUM=1 — refusing to install"
+  fi
+  warn "cannot verify checksum ($1) — proceeding UNVERIFIED (set PARLER_REQUIRE_CHECKSUM=1 to require it)"
+}
 
 # --- detect target triple ---------------------------------------------------------------------
 os="$(uname -s)"
@@ -71,10 +82,15 @@ if fetch "$base/$tarball.sha256" "$tmp/$tarball.sha256" 2>/dev/null; then
   else
     got=""
   fi
-  if [ -n "$got" ] && [ "$got" != "$want" ]; then
+  if [ -z "$got" ]; then
+    skip_checksum "no sha256sum/shasum tool found"
+  elif [ "$got" != "$want" ]; then
     err "checksum mismatch — refusing to install (wanted $want, got $got)"
+  else
+    info "checksum ok"
   fi
-  [ -n "$got" ] && info "checksum ok"
+else
+  skip_checksum "no .sha256 published for this release"
 fi
 
 # --- install ----------------------------------------------------------------------------------

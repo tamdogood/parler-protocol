@@ -36,6 +36,9 @@ enum Cmd {
     /// Wire every AI agent on this machine to Parler in one step (Claude Code, Codex, Cursor, …).
     Connect(ConnectArgs),
     /// Create this agent's identity and point it at a hub (advanced; `connect`/`mcp` do this for you).
+    // Hidden from `--help` (#112): the story is "no init needed" — `parler connect` (or just adding
+    // the MCP server) bootstraps the identity. Kept as a working command for advanced/scripted use.
+    #[command(hide = true)]
     Init(InitArgs),
     /// Mint an invite code/link to hand to another agent (default: a 1:1 DM).
     Invite(InviteArgs),
@@ -658,24 +661,53 @@ async fn cmd_connect(a: ConnectArgs) -> Result<()> {
     Ok(())
 }
 
+/// A throwaway in-memory identity for reachability/`--verify` probes. Minted fresh and **never saved
+/// to disk**, so a probe can't create or re-pin `~/.parler/config.json` to whatever hub it happened
+/// to test (#112) — the old code called `load_or_bootstrap_config()` inside a read-style check. The
+/// hub is a relay, not a root of trust, so a fresh nkey authenticates fine for a read-only dial.
+fn ephemeral_probe_config(hub: &str) -> Result<Config> {
+    Config::create(hub.to_string(), "parler-probe", None)
+}
+
+/// Save/restore `PARLER_JOIN_SECRET` around a probe that must set it per-hub, so the probe doesn't
+/// leak a secret into the process env that later adopt-bare/bootstrap logic would read (#112).
+struct JoinSecretGuard(Option<String>);
+impl JoinSecretGuard {
+    fn capture() -> Self {
+        Self(std::env::var("PARLER_JOIN_SECRET").ok())
+    }
+    /// Set the env to `secret` for the duration of one hub's dial (restored wholesale on drop).
+    fn set(&self, secret: Option<&String>) {
+        match secret {
+            Some(s) => std::env::set_var("PARLER_JOIN_SECRET", s),
+            None => std::env::remove_var("PARLER_JOIN_SECRET"),
+        }
+    }
+}
+impl Drop for JoinSecretGuard {
+    fn drop(&mut self) {
+        match &self.0 {
+            Some(s) => std::env::set_var("PARLER_JOIN_SECRET", s),
+            None => std::env::remove_var("PARLER_JOIN_SECRET"),
+        }
+    }
+}
+
 /// The tail of a bare `parler connect`: dial each hub the agents were wired to **once** (short
 /// timeout) to prove reachability, then return. Not a substitute for `--verify` (which waits for the
 /// agents themselves to come online) — just a fast "is this hub actually up?" so failures aren't silent.
 async fn probe_hubs(wired: &[connect::WiredAgent]) {
     use std::collections::BTreeSet;
+    // Restore PARLER_JOIN_SECRET when we're done — the probe sets it per-hub but must leave the
+    // process env exactly as it found it.
+    let secret_guard = JoinSecretGuard::capture();
     let hubs: BTreeSet<(String, Option<String>)> =
         wired.iter().map(|w| (w.hub.clone(), w.secret.clone())).collect();
     for (hub, secret) in hubs {
         // A gated hub needs the same join secret the agents were handed.
-        match &secret {
-            Some(s) => std::env::set_var("PARLER_JOIN_SECRET", s),
-            None => std::env::remove_var("PARLER_JOIN_SECRET"),
-        }
-        let cfg = match mcp::load_or_bootstrap_config() {
-            Ok(mut c) => {
-                c.hub_url = hub.clone();
-                c
-            }
+        secret_guard.set(secret.as_ref());
+        let cfg = match ephemeral_probe_config(&hub) {
+            Ok(c) => c,
             Err(e) => {
                 println!("  ⚠ couldn't prepare a local identity to test {hub}: {e}");
                 continue;
@@ -751,14 +783,19 @@ async fn verify_dial_in(wired: Vec<connect::WiredAgent>, timeout: Duration) -> R
         by_hub.entry((w.hub, w.secret)).or_default().push(w.name);
     }
     println!("Waiting for your agents to dial in — restart them now (Ctrl-C to stop waiting).");
+    // Restore PARLER_JOIN_SECRET when done; watch the hub with a throwaway identity so verifying
+    // never creates or re-pins the user's `~/.parler/config.json` (#112).
+    let secret_guard = JoinSecretGuard::capture();
     let started = std::time::Instant::now();
     for ((hub, secret), mut names) in by_hub {
-        match &secret {
-            Some(s) => std::env::set_var("PARLER_JOIN_SECRET", s),
-            None => std::env::remove_var("PARLER_JOIN_SECRET"),
-        }
-        let mut cfg = mcp::load_or_bootstrap_config()?;
-        cfg.hub_url = hub.clone();
+        secret_guard.set(secret.as_ref());
+        let cfg = match ephemeral_probe_config(&hub) {
+            Ok(c) => c,
+            Err(e) => {
+                println!("  ✗ couldn't prepare a local identity to watch {hub}: {e}");
+                continue;
+            }
+        };
         let mut ag = match MeshAgent::connect(&cfg).await {
             Ok(ag) => ag,
             Err(e) => {

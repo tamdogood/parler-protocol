@@ -42,11 +42,29 @@ pub struct Config {
 
 /// The Parler home directory: `$PARLER_HOME`, else `~/.parler`.
 pub fn home_dir() -> PathBuf {
-    if let Ok(p) = std::env::var("PARLER_HOME") {
-        return PathBuf::from(p);
+    if let Some(p) = std::env::var("PARLER_HOME").ok().filter(|p| !p.is_empty()) {
+        return expand_tilde(&p);
     }
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
     PathBuf::from(home).join(".parler")
+}
+
+/// Expand a leading `~` (or `~/`) to `$HOME`. The shell only expands `~` in *unquoted* argv, so a
+/// documented `-e PARLER_HOME=~/.parler-bob` (issue #112) arrives here literally and would otherwise
+/// create a `./~` directory. A bare `~` or `~/...` expands; a `~user` form is left untouched (we
+/// don't resolve other users' homes).
+fn expand_tilde(p: &str) -> PathBuf {
+    expand_tilde_with(p, std::env::var("HOME").ok().map(PathBuf::from))
+}
+
+/// The pure core of [`expand_tilde`], with `$HOME` injected so it's testable without touching the
+/// process environment.
+fn expand_tilde_with(p: &str, home: Option<PathBuf>) -> PathBuf {
+    match home {
+        Some(home) if p == "~" => home,
+        Some(home) if p.starts_with("~/") => home.join(&p[2..]),
+        _ => PathBuf::from(p),
+    }
 }
 
 fn config_path() -> PathBuf {
@@ -98,5 +116,22 @@ impl Config {
         parler_auth::write_private_file(&path, body.as_bytes())
             .with_context(|| format!("writing {}", path.display()))?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn expand_tilde_resolves_leading_home() {
+        let home = Some(PathBuf::from("/home/bob"));
+        assert_eq!(expand_tilde_with("~/.parler-bob", home.clone()), PathBuf::from("/home/bob/.parler-bob"));
+        assert_eq!(expand_tilde_with("~", home.clone()), PathBuf::from("/home/bob"));
+        // Absolute paths and mid-string tildes are untouched; ~user is left alone.
+        assert_eq!(expand_tilde_with("/tmp/x", home.clone()), PathBuf::from("/tmp/x"));
+        assert_eq!(expand_tilde_with("~alice/x", home.clone()), PathBuf::from("~alice/x"));
+        // No HOME → leave the literal (don't fabricate a path).
+        assert_eq!(expand_tilde_with("~/x", None), PathBuf::from("~/x"));
     }
 }
