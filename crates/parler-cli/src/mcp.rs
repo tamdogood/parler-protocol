@@ -631,6 +631,30 @@ async fn call_tool(agent: &mut MeshAgent, name: &str, args: &Value) -> Result<St
                 r.blob_id,
             ))
         }
+        "parler_send_file" => {
+            let target = select_target(s("room"), s("to"), s("service"))?
+                .ok_or_else(|| anyhow!("provide exactly one of room / to / service"))?;
+            let target = crate::resolve_target(agent, target).await?;
+            let path = s("path").ok_or_else(|| anyhow!("missing 'path'"))?;
+            let bytes = std::fs::read(&path).map_err(|e| anyhow!("cannot read '{path}': {e}"))?;
+            let name = std::path::Path::new(&path)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .ok_or_else(|| anyhow!("'{path}' has no file name to send"))?
+                .to_string();
+            let media_type = crate::guess_media_type(&name);
+            let r = agent.send_file(target, &name, &bytes, media_type, s("note")).await?;
+            Ok(format!(
+                "sent file '{name}' to '{}' (seq {}, {} bytes).\n\
+                 The peer runs (MCP): parler_fetch id={} out={name}\n\
+                 The peer runs (CLI): parler fetch {} -o {name}",
+                r.room,
+                r.seq,
+                bytes.len(),
+                r.blob_id,
+                r.blob_id,
+            ))
+        }
         "parler_fetch" => {
             let id = s("id").ok_or_else(|| anyhow!("missing 'id'"))?;
             let bytes = agent.fetch_blob(&id).await?;
@@ -1731,8 +1755,20 @@ fn tool_specs() -> Vec<Value> {
             &[],
         ),
         tool(
+            "parler_send_file",
+            "Transfer a file (`path`) to a room/peer/service; the peer fetches it with parler_fetch.",
+            json!({
+                "path": { "type": "string" },
+                "room": { "type": "string" },
+                "to": { "type": "string" },
+                "service": { "type": "string" },
+                "note": { "type": "string" }
+            }),
+            &["path"],
+        ),
+        tool(
             "parler_fetch",
-            "Download a pushed bundle's bytes by blob id to a file. Does NOT apply.",
+            "Download a pushed blob (a code bundle or a file) by blob id to a file. Does NOT apply.",
             json!({
                 "id": { "type": "string" },
                 "out": { "type": "string", "description": "output file (default: <blob>.bundle)" }
@@ -1864,8 +1900,9 @@ mod tests {
     /// session. Pre-diet baseline 11,598 B; post-diet (P0.2) 11,030 B. The UX-accuracy round
     /// (#107/#109/#110) added ~250 B so descriptions match the newly-enforced behavior (one-door
     /// parler_join, name-resolving approve/deny, strict inputs) — the point of those issues. Ceiling
-    /// raised to 12,000 to keep a meaningful guardrail against large regressions.
-    const TOOL_SPECS_BUDGET: usize = 12_000;
+    /// raised to 12,000 to keep a meaningful guardrail against large regressions. Adding the
+    /// `parler_send_file` tool (arbitrary file transfer) grew it ~170 B to 12,169; ceiling → 12,400.
+    const TOOL_SPECS_BUDGET: usize = 12_400;
     /// Just the human-readable descriptions (the part the diet targets; schema scaffolding is
     /// load-bearing). Pre-diet 5,261 B → post-diet (P0.2) 4,304 B; P1.2 adds ~230 B of cheap-path
     /// steering (name-based `to`/`card`, compact discover/roster, `detail`) that earns its bytes.
@@ -2962,6 +2999,43 @@ mod tests {
         assert!(verify_out.status.success());
         let bob_sha = String::from_utf8(verify_out.stdout).unwrap().trim().to_string();
         assert_eq!(bob_sha, commit_sha);
+    }
+
+    #[tokio::test]
+    async fn test_mcp_send_file_recv_fetch_e2e() {
+        let hub = start_hub().await;
+        let mut alice = state(&hub, "alice").await;
+        let mut bob = state(&hub, "bob").await;
+        let inv = alice.agent.invite(RoomKind::Channel, Some("files".into()), None, None).await.unwrap();
+        bob.agent.join(&inv.code).await.unwrap();
+
+        // Alice writes a file and transfers it via the MCP tool.
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("report.txt");
+        let body: &[u8] = b"the quick brown fox\x00\x01\x02 binary too";
+        std::fs::write(&src, body).unwrap();
+        let send_args = json!({ "room": inv.room, "path": src.to_str().unwrap(), "note": "here's the report" });
+        let send_res = call_tool(&mut alice.agent, "parler_send_file", &send_args).await.unwrap();
+        assert!(send_res.contains("sent file 'report.txt'"), "{send_res}");
+
+        // Pull the blob id out of the "parler_fetch id=<BLOB> out=..." hint.
+        let idx = send_res.find("id=").unwrap() + 3;
+        let rest = &send_res[idx..];
+        let end = rest.find(|c: char| !c.is_ascii_alphanumeric()).unwrap_or(rest.len());
+        let blob_id = &rest[..end];
+
+        // Bob sees the file reference (and the note) on recv.
+        let (msgs, _) = bob.agent.pull(&inv.room, None, None).await.unwrap();
+        let rendered = msgs.iter().map(crate::render_message).collect::<Vec<_>>().join("\n");
+        assert!(rendered.contains("📎 report.txt"), "recv should show the file: {rendered}");
+        assert!(rendered.contains("here's the report"), "recv should show the note: {rendered}");
+
+        // Bob downloads the exact bytes via parler_fetch.
+        let out = dir.path().join("got.txt");
+        let fetch_args = json!({ "id": blob_id, "out": out.to_str().unwrap() });
+        let fetch_res = call_tool(&mut bob.agent, "parler_fetch", &fetch_args).await.unwrap();
+        assert!(fetch_res.contains("wrote"), "{fetch_res}");
+        assert_eq!(std::fs::read(&out).unwrap(), body.to_vec());
     }
 
     #[test]

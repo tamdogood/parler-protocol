@@ -9,7 +9,7 @@ use anyhow::{bail, Result};
 use parler_auth::Identity;
 use parler_protocol::{
     canonical_card_bytes, canonical_message_bytes, is_message_sig_part, AgentCard, AgentSkill,
-    BundleRef, ClientFrame, DirectoryEntry, DiscoverScope, EndpointKind, Fact, JoinRequest,
+    BundleRef, ClientFrame, DirectoryEntry, DiscoverScope, EndpointKind, Fact, FileRef, JoinRequest,
     MessageSig, Part, RecallHit, RoomInfo, RoomKind, RosterEntry, ServerFrame, StoredMessage, Target,
     Visibility,
 };
@@ -68,6 +68,12 @@ pub struct PushReceipt {
     pub blob_id: String,
     pub room: String,
     pub seq: i64,
+}
+
+/// The trailing path component of `name`, stripping any directory prefix (either separator). Keeps a
+/// file's advertised name a bare basename so it can't smuggle a path into a peer's save suggestion.
+fn basename(name: &str) -> &str {
+    name.rsplit(['/', '\\']).next().filter(|s| !s.is_empty()).unwrap_or(name)
 }
 
 /// A connected, authenticated agent on the mesh.
@@ -332,25 +338,7 @@ impl MeshAgent {
         meta: BundleMeta,
         note: Option<String>,
     ) -> Result<PushReceipt> {
-        let blob_id = parler_auth::content_id(bundle);
-        let put = ClientFrame::PutBlob {
-            target: target.clone(),
-            sha256: blob_id.clone(),
-            size: bundle.len() as u64,
-            media_type: meta.media_type.clone(),
-        };
-        let stored = match self.transport.upload_blob(put.clone(), bundle).await {
-            Err(e) if self.reconnectable(&e) => {
-                self.reconnect().await?;
-                self.transport.upload_blob(put, bundle).await
-            }
-            other => other,
-        }?;
-        match stored {
-            ServerFrame::BlobStored { id, .. } if id == blob_id => {}
-            ServerFrame::BlobStored { id, .. } => bail!("hub stored a different blob id: {id}"),
-            other => bail!("unexpected reply to put_blob: {other:?}"),
-        }
+        let blob_id = self.put_blob(&target, bundle, meta.media_type.clone()).await?;
         let bref = BundleRef {
             blob: blob_id.clone(),
             vcs: meta.vcs,
@@ -369,6 +357,71 @@ impl MeshAgent {
         parts.push(bref.to_part());
         let (msg_id, seq, room) = self.send(target, parts, None, None).await?;
         Ok(PushReceipt { msg_id, blob_id, room, seq })
+    }
+
+    /// Transfer an arbitrary **file** to `target`: upload the bytes to the hub's content-addressed
+    /// blob store (bound to the room `target` resolves to), then post a room message carrying a
+    /// `com.parler.file` reference so peers see it through the ordinary `recv` and can pull the bytes
+    /// with [`MeshAgent::fetch_blob`]. The download path is identical to a bundle's — it's the same
+    /// content-addressed blob — so the same file sent to several agents (or re-sent) is stored once.
+    /// `name` is the file's basename (what a receiver saves it back as); `note` is an optional text
+    /// part shown alongside the reference.
+    pub async fn send_file(
+        &mut self,
+        target: Target,
+        name: &str,
+        bytes: &[u8],
+        media_type: Option<String>,
+        note: Option<String>,
+    ) -> Result<PushReceipt> {
+        let blob_id = self.put_blob(&target, bytes, media_type.clone()).await?;
+        let fref = FileRef {
+            blob: blob_id.clone(),
+            name: basename(name).to_string(),
+            size: bytes.len() as u64,
+            media_type,
+            summary: None,
+        };
+        let mut parts = Vec::new();
+        if let Some(n) = note {
+            if !n.is_empty() {
+                parts.push(Part::text(n));
+            }
+        }
+        parts.push(fref.to_part());
+        let (msg_id, seq, room) = self.send(target, parts, None, None).await?;
+        Ok(PushReceipt { msg_id, blob_id, room, seq })
+    }
+
+    /// Upload `bytes` to the hub's content-addressed blob store (bound to the room `target` resolves
+    /// to) and return their content id. The transport reconnects once on a droppable error. Shared by
+    /// [`MeshAgent::push`] and [`MeshAgent::send_file`] — the two differ only in the reference part
+    /// they post afterward.
+    async fn put_blob(
+        &mut self,
+        target: &Target,
+        bytes: &[u8],
+        media_type: Option<String>,
+    ) -> Result<String> {
+        let blob_id = parler_auth::content_id(bytes);
+        let put = ClientFrame::PutBlob {
+            target: target.clone(),
+            sha256: blob_id.clone(),
+            size: bytes.len() as u64,
+            media_type,
+        };
+        let stored = match self.transport.upload_blob(put.clone(), bytes).await {
+            Err(e) if self.reconnectable(&e) => {
+                self.reconnect().await?;
+                self.transport.upload_blob(put, bytes).await
+            }
+            other => other,
+        }?;
+        match stored {
+            ServerFrame::BlobStored { id, .. } if id == blob_id => Ok(blob_id),
+            ServerFrame::BlobStored { id, .. } => bail!("hub stored a different blob id: {id}"),
+            other => bail!("unexpected reply to put_blob: {other:?}"),
+        }
     }
 
     /// Download a blob's bytes by its content id (as carried in a `com.parler.bundle` part).

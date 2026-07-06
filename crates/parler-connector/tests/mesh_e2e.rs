@@ -5,7 +5,7 @@ use parler_connector::{
     verify_message, BundleMeta, Config, HubClient, JoinOutcome, MeshAgent, MeshTransport, SigStatus,
 };
 use parler_protocol::{
-    BundleRef, ClientFrame, EndpointRef, Part, RoomKind, ServerFrame, StoredMessage, Target,
+    BundleRef, ClientFrame, EndpointRef, FileRef, Part, RoomKind, ServerFrame, StoredMessage, Target,
 };
 use std::sync::Arc;
 use std::time::Duration;
@@ -265,6 +265,50 @@ async fn code_handoff_push_recv_fetch_round_trips() {
     // A non-member of the room cannot fetch the blob.
     let mut eve = agent(&hub, "eve", None).await;
     assert!(eve.fetch_blob(&bref.blob).await.is_err());
+}
+
+#[tokio::test]
+async fn file_transfer_send_recv_fetch_round_trips() {
+    let hub = start_hub().await;
+    let mut alice = agent(&hub, "alice", None).await;
+    let mut bob = agent(&hub, "bob", None).await;
+    let inv = alice.invite(RoomKind::Channel, Some("files".into()), None, None).await.unwrap();
+    bob.join(&inv.code).await.unwrap();
+
+    // Arbitrary bytes (incl. NULs) exercise the raw binary transport, not a text path.
+    let file = b"report v2\x00\x01\x02\xff - binary, not text".to_vec();
+    let receipt = alice
+        .send_file(
+            Target::Room { room: inv.room.clone() },
+            // A directory prefix must be stripped to a bare basename on the wire.
+            "reports/q3.bin",
+            &file,
+            Some("application/octet-stream".into()),
+            Some("here's the file".into()),
+        )
+        .await
+        .unwrap();
+
+    // Bob sees the transfer as an ordinary message carrying a file reference (+ the note).
+    let (msgs, _) = bob.pull(&inv.room, None, None).await.unwrap();
+    assert_eq!(texts(&msgs), vec!["here's the file"]);
+    let fref = msgs
+        .iter()
+        .flat_map(|m| &m.parts)
+        .find_map(FileRef::from_part)
+        .expect("a com.parler.file part");
+    assert_eq!(fref.blob, receipt.blob_id);
+    assert_eq!(fref.name, "q3.bin", "the name is a bare basename, no directory prefix");
+    assert_eq!(fref.size, file.len() as u64);
+    assert_eq!(fref.media_type.as_deref(), Some("application/octet-stream"));
+
+    // Bob fetches the bytes by content id and they match exactly.
+    let got = bob.fetch_blob(&fref.blob).await.unwrap();
+    assert_eq!(got, file);
+
+    // A non-member of the room cannot fetch the file's blob.
+    let mut eve = agent(&hub, "eve", None).await;
+    assert!(eve.fetch_blob(&fref.blob).await.is_err());
 }
 
 // ---- real-time push delivery ----

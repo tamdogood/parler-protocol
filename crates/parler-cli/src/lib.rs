@@ -11,8 +11,8 @@ use anyhow::{bail, Result};
 use clap::{Args, Parser, Subcommand};
 use parler_connector::{verify_message, BundleMeta, Config, MeshAgent, SigStatus};
 use parler_protocol::{
-    is_message_sig_part, AgentSkill, BundleRef, DirectoryEntry, DiscoverScope, HandoffRef, Part,
-    RoomKind, StoredMessage, Target, Visibility,
+    is_message_sig_part, AgentSkill, BundleRef, DirectoryEntry, DiscoverScope, FileRef, HandoffRef,
+    Part, RoomKind, StoredMessage, Target, Visibility,
 };
 use std::path::Path;
 use std::sync::Arc;
@@ -70,7 +70,9 @@ enum Cmd {
     Handoff(HandoffArgs),
     /// Hand off code: bundle a git ref and push it to a room/peer/service.
     Push(PushArgs),
-    /// Download a pushed bundle's bytes by its blob id.
+    /// Transfer a file to a room/peer/service (content-addressed; the peer runs `parler fetch`).
+    SendFile(SendFileArgs),
+    /// Download a pushed blob's bytes by its blob id (a code bundle or a file).
     Fetch(FetchArgs),
     /// Apply a pushed bundle into the current git repo (imports into refs/parler/*; never merges).
     Apply(ApplyArgs),
@@ -366,10 +368,28 @@ struct PushArgs {
 }
 
 #[derive(Args)]
+struct SendFileArgs {
+    /// Send to a channel room (one-to-many).
+    #[arg(long)]
+    room: Option<String>,
+    /// Send a DM to a peer agent id (one-to-one).
+    #[arg(long)]
+    to: Option<String>,
+    /// Send to a service queue (many-to-one).
+    #[arg(long)]
+    service: Option<String>,
+    /// An optional note posted alongside the file.
+    #[arg(long)]
+    note: Option<String>,
+    /// The path of the file to send.
+    path: String,
+}
+
+#[derive(Args)]
 struct FetchArgs {
-    /// The blob id (from a `com.parler.bundle` message).
+    /// The blob id (from a `com.parler.bundle` or `com.parler.file` message).
     blob: String,
-    /// Output file (default: <blob-prefix>.bundle).
+    /// Output file (default: <blob-prefix>.bin).
     #[arg(long, short = 'o')]
     out: Option<String>,
 }
@@ -483,6 +503,7 @@ pub async fn run() -> Result<()> {
         Cmd::Send(a) => cmd_send(a).await,
         Cmd::Handoff(a) => cmd_handoff(a).await,
         Cmd::Push(a) => cmd_push(a).await,
+        Cmd::SendFile(a) => cmd_send_file(a).await,
         Cmd::Fetch(a) => cmd_fetch(a).await,
         Cmd::Apply(a) => cmd_apply(a).await,
         Cmd::Recv(a) => cmd_recv(a).await,
@@ -1188,10 +1209,55 @@ async fn cmd_push(a: PushArgs) -> Result<()> {
     Ok(())
 }
 
+async fn cmd_send_file(a: SendFileArgs) -> Result<()> {
+    let target = target_from(a.room, a.to, a.service)?;
+    let path = Path::new(&a.path);
+    let bytes = match std::fs::read(path) {
+        Ok(b) => b,
+        Err(e) => bail!("cannot read '{}': {e}", a.path),
+    };
+    let name = match path.file_name().and_then(|n| n.to_str()) {
+        Some(n) => n.to_string(),
+        None => bail!("'{}' has no file name to send", a.path),
+    };
+    let media_type = guess_media_type(&name);
+    let mut ag = connect().await?;
+    let target = resolve_target(&mut ag, target).await?;
+    let r = ag.send_file(target, &name, &bytes, media_type, a.note).await?;
+    println!("✓ sent file '{name}' to '{}' (seq {}, {} bytes)", r.room, r.seq, bytes.len());
+    println!("  blob: {}", r.blob_id);
+    println!("  peer: parler fetch {} -o {name}", r.blob_id);
+    Ok(())
+}
+
+/// Best-effort IANA media type from a file name's extension, for the handful of common types worth
+/// labeling. `None` when unknown — the transfer works either way; this is only a display/save hint.
+fn guess_media_type(name: &str) -> Option<String> {
+    let ext = Path::new(name).extension()?.to_str()?.to_ascii_lowercase();
+    let mt = match ext.as_str() {
+        "txt" | "log" => "text/plain",
+        "md" => "text/markdown",
+        "json" => "application/json",
+        "csv" => "text/csv",
+        "html" | "htm" => "text/html",
+        "pdf" => "application/pdf",
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "svg" => "image/svg+xml",
+        "zip" => "application/zip",
+        "gz" | "tgz" => "application/gzip",
+        "tar" => "application/x-tar",
+        "wasm" => "application/wasm",
+        _ => return None,
+    };
+    Some(mt.to_string())
+}
+
 async fn cmd_fetch(a: FetchArgs) -> Result<()> {
     let mut ag = connect().await?;
     let bytes = ag.fetch_blob(&a.blob).await?;
-    let out = a.out.unwrap_or_else(|| format!("{}.bundle", short(&a.blob)));
+    let out = a.out.unwrap_or_else(|| format!("{}.bin", short(&a.blob)));
     std::fs::write(&out, &bytes)?;
     println!("✓ wrote {} bytes to {out}", bytes.len());
     Ok(())
@@ -1408,6 +1474,12 @@ pub fn render_parts(parts: &[Part]) -> String {
             let tip = b.tip.map(|t| format!(" @{}", short(&t))).unwrap_or_default();
             // The blob id is shown in full so the `parler apply` command copy-pastes and works.
             out.push(format!("📦 {sum}{tip} ({} bytes) — parler apply {}", b.size, b.blob));
+            continue;
+        }
+        if let Some(f) = FileRef::from_part(p) {
+            let sum = f.summary.map(|s| format!(" — {s}")).unwrap_or_default();
+            // The blob id is shown in full so the `parler fetch` command copy-pastes and works.
+            out.push(format!("📎 {} ({} bytes){sum} — parler fetch {} -o {}", f.name, f.size, f.blob, f.name));
             continue;
         }
         if let Some(h) = HandoffRef::from_part(p) {

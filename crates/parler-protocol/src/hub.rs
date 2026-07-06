@@ -613,6 +613,10 @@ fn json_string_chars(v: &serde_json::Value) -> usize {
 /// The reverse-DNS [`Part`] kind that references a code/artifact bundle handed off through a room.
 pub const BUNDLE_KIND: &str = "com.parler.bundle";
 
+/// The reverse-DNS [`Part`] kind that references an arbitrary **file** handed off through a room.
+/// Files ride the exact same content-addressed blob transport as [`BUNDLE_KIND`]. See [`FileRef`].
+pub const FILE_KIND: &str = "com.parler.file";
+
 /// The reverse-DNS [`Part`] kind that carries a structured turn handoff — an explicit "you're up
 /// next" between agents sharing a room. See [`HandoffRef`].
 pub const HANDOFF_KIND: &str = "com.parler.handoff";
@@ -661,6 +665,51 @@ impl BundleRef {
     pub fn from_part(part: &Part) -> Option<BundleRef> {
         match part {
             Part::Extension { kind, fields } if kind == BUNDLE_KIND => {
+                serde_json::from_value(serde_json::Value::Object(fields.clone())).ok()
+            }
+            _ => None,
+        }
+    }
+}
+
+/// A reference to a content-addressed **file** carried inside a room message as a [`Part::Extension`]
+/// of kind [`FILE_KIND`] — the plain-file sibling of [`BundleRef`].
+///
+/// The bytes live in the hub's blob store under `blob` (their SHA-256) and are pulled with
+/// [`ClientFrame::GetBlob`]; the message only points at them, so a file transfer rides the ordinary
+/// `send`/`recv`/cursor/durability/reconnect machinery with no new wire frame. Unlike a code bundle
+/// it carries the original `name` so a receiver can save it back to disk, and no VCS/commit fields.
+/// Build one with [`FileRef::to_part`]; recover it with [`FileRef::from_part`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FileRef {
+    /// Content id (lowercase-hex SHA-256) of the bytes — the key passed to [`ClientFrame::GetBlob`].
+    pub blob: String,
+    /// The original file name (basename only), so a receiver can save it back with the same name.
+    pub name: String,
+    /// Byte length of the file.
+    pub size: u64,
+    /// IANA media type (e.g. `image/png`, `application/pdf`), when known.
+    #[serde(default, rename = "mediaType", skip_serializing_if = "Option::is_none")]
+    pub media_type: Option<String>,
+    /// An optional one-line human description shown alongside the reference.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+}
+
+impl FileRef {
+    /// Encode as the `com.parler.file` extension [`Part`].
+    pub fn to_part(&self) -> Part {
+        let fields = match serde_json::to_value(self) {
+            Ok(serde_json::Value::Object(m)) => m,
+            _ => serde_json::Map::new(),
+        };
+        Part::Extension { kind: FILE_KIND.to_string(), fields }
+    }
+
+    /// Recover a [`FileRef`] from a part — `Some` iff it is a well-formed `com.parler.file` extension.
+    pub fn from_part(part: &Part) -> Option<FileRef> {
+        match part {
+            Part::Extension { kind, fields } if kind == FILE_KIND => {
                 serde_json::from_value(serde_json::Value::Object(fields.clone())).ok()
             }
             _ => None,
@@ -1159,6 +1208,42 @@ mod tests {
         assert_eq!(BundleRef::from_part(&back), Some(b));
         // …and a plain part is not a bundle ref.
         assert_eq!(BundleRef::from_part(&Part::text("hi")), None);
+    }
+
+    #[test]
+    fn file_ref_round_trips_through_a_part() {
+        let f = FileRef {
+            blob: "abc123".into(),
+            name: "report.pdf".into(),
+            size: 4096,
+            media_type: Some("application/pdf".into()),
+            summary: Some("Q3 numbers".into()),
+        };
+        let part = f.to_part();
+        match &part {
+            Part::Extension { kind, .. } => assert_eq!(kind, FILE_KIND),
+            _ => panic!("expected an extension part"),
+        }
+        // Survives a JSON wire round-trip as a Part, camelCase `mediaType` intact…
+        let j = serde_json::to_value(&part).unwrap();
+        assert_eq!(j["kind"], FILE_KIND);
+        assert_eq!(j["name"], "report.pdf");
+        assert_eq!(j["mediaType"], "application/pdf");
+        let back: Part = serde_json::from_value(j).unwrap();
+        assert_eq!(FileRef::from_part(&back), Some(f));
+        // …and neither a plain part nor a sibling bundle part is a file ref.
+        assert_eq!(FileRef::from_part(&Part::text("hi")), None);
+        let bundle_part = BundleRef {
+            blob: "x".into(),
+            vcs: "git".into(),
+            tip: None,
+            base: None,
+            summary: None,
+            size: 1,
+            media_type: None,
+        }
+        .to_part();
+        assert_eq!(FileRef::from_part(&bundle_part), None);
     }
 
     #[test]
