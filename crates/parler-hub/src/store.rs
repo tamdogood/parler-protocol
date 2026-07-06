@@ -197,6 +197,14 @@ CREATE TABLE IF NOT EXISTS blob_rooms (
   created INTEGER NOT NULL,
   PRIMARY KEY (blob, room)
 );
+
+-- The self-hosted "owned email list": signups from the website's waitlist form (POST /api/waitlist).
+-- `email` is the normalized (trimmed, lowercased) address and the PRIMARY KEY, so `INSERT OR IGNORE`
+-- de-dups a re-submit without leaking whether the address was already present.
+CREATE TABLE IF NOT EXISTS waitlist (
+  email      TEXT PRIMARY KEY,
+  created_at INTEGER NOT NULL
+);
 "#;
 
 /// Self-reported presence older than this (epoch-ms gap to "now") reads as `offline`. Presence is
@@ -1111,6 +1119,27 @@ impl Store {
             Some((scope, exp)) if now <= exp => Ok(scope.strip_prefix("watch:").map(|s| s.to_string())),
             _ => Ok(None),
         }
+    }
+
+    // ---- waitlist (the self-hosted "owned email list") ----
+
+    /// Record a waitlist signup. `email` must already be normalized/validated by the caller (the
+    /// `POST /api/waitlist` handler); `INSERT OR IGNORE` makes a re-submit a silent no-op rather than an
+    /// error, so the handler can answer `200 ok` either way without leaking whether the address was new.
+    pub fn waitlist_add(&self, email: &str, now: i64) -> Result<()> {
+        let conn = self.w();
+        conn.execute(
+            "INSERT OR IGNORE INTO waitlist (email, created_at) VALUES (?1, ?2)",
+            params![email, now],
+        )?;
+        Ok(())
+    }
+
+    /// How many addresses are on the waitlist. Only used by tests to assert the insert-or-ignore
+    /// behavior (a duplicate submit must not add a second row).
+    pub fn waitlist_count(&self) -> Result<i64> {
+        let conn = self.r();
+        Ok(conn.query_row("SELECT COUNT(*) FROM waitlist", [], |r| r.get(0))?)
     }
 
     // ---- blobs (code handoff) ----
@@ -2147,6 +2176,20 @@ mod tests {
         // Eve cannot re-request her way in past a denial.
         assert!(s.redeem_invite("KEY", "U_EVE", 4).is_err());
         assert!(s.pending_join_requests("room.s", "U_ALICE").unwrap().is_empty());
+    }
+
+    #[test]
+    fn waitlist_add_is_insert_or_ignore() {
+        let s = Store::open(None).unwrap();
+        assert_eq!(s.waitlist_count().unwrap(), 0);
+        s.waitlist_add("a@example.com", 1).unwrap();
+        assert_eq!(s.waitlist_count().unwrap(), 1);
+        // A duplicate address is silently ignored — still exactly one row (no error, no leak).
+        s.waitlist_add("a@example.com", 2).unwrap();
+        assert_eq!(s.waitlist_count().unwrap(), 1);
+        // A distinct address adds a row.
+        s.waitlist_add("b@example.com", 3).unwrap();
+        assert_eq!(s.waitlist_count().unwrap(), 2);
     }
 
     #[test]

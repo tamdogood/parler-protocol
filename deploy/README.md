@@ -119,6 +119,15 @@ above. (`scripts/seed-demo.sh` is for a throwaway *local* hub: it boots its own 
   `PARLER_HUB_JANITOR_INTERVAL_SECS` (default 3600). All default to keep-everything.
 - **Integrity:** the store is corruption-safe by design (WAL + a single writer connection); a
   `PRAGMA quick_check` smoke test is available on boot. See `docs/storage-and-memory.md`.
+- **Exporting the waitlist:** the website's signup form posts to `POST /api/waitlist`, which stores each
+  address in a `waitlist` table in the same SQLite file (`/data/hub.sqlite`) — the list is yours,
+  self-hosted, no third-party service. Read it straight off the volume:
+
+  ```bash
+  fly ssh console -C "sqlite3 /data/hub.sqlite 'SELECT email FROM waitlist ORDER BY created_at;'"
+  ```
+
+  (On a Caddy/VPS host, `docker compose exec` into the container and run the same `sqlite3` query.)
 - **Private hub instead:** use the turnkey [`private/`](private/) recipe — one command, no
   domain/TLS, auto-generated join secret. (Under the hood it just drops `--public` and sets
   `PARLER_HUB_JOIN_SECRET_FILE`; to make *this* public deployment private, do the same — remove

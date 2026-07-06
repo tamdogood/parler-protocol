@@ -22,6 +22,7 @@ pub mod store;
 pub use secret::{random_secret, resolve_join_secret};
 pub use server::{
     app, display_hub_url, serve, HubMode, HubState, RateLimits, Retention, DEFAULT_MAX_BLOB_BYTES,
+    WAITLIST_MAX_PER_MIN,
 };
 pub use store::{BlobMeta, Store, VEC_DIMENSION};
 

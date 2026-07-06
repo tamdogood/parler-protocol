@@ -18,9 +18,15 @@ async fn start_hub() -> SocketAddr {
 /// Like [`start_hub`], but override the per-IP HTTP request budget (`0` keeps the default). Used by the
 /// rate-limit test to drive a low ceiling deterministically.
 async fn start_hub_with_http_limit(max_http_per_min: u32) -> SocketAddr {
+    start_hub_full(max_http_per_min).await.0
+}
+
+/// Boot an in-memory hub and return both its address and a handle to its store, so a test can assert
+/// what a POST actually persisted (the store is cheaply cloneable and shares the same connection).
+async fn start_hub_full(max_http_per_min: u32) -> (SocketAddr, parler_hub::Store) {
     let store = parler_hub::Store::open(None).expect("open in-memory store");
     let mut state = parler_hub::HubState::new(
-        store,
+        store.clone(),
         "parler://smoke".into(),
         "Smoke Hub".into(),
         parler_hub::HubMode::Private,
@@ -34,7 +40,7 @@ async fn start_hub_with_http_limit(max_http_per_min: u32) -> SocketAddr {
     tokio::spawn(async move {
         let _ = parler_hub::serve(listener, state).await;
     });
-    addr
+    (addr, store)
 }
 
 /// Minimal HTTP/1.1 GET. Sends `Connection: close` so the server hangs up after the response and
@@ -42,6 +48,28 @@ async fn start_hub_with_http_limit(max_http_per_min: u32) -> SocketAddr {
 async fn get(addr: SocketAddr, path: &str) -> (u16, String) {
     let mut stream = tokio::net::TcpStream::connect(addr).await.expect("connect");
     let req = format!("GET {path} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n");
+    stream.write_all(req.as_bytes()).await.expect("write request");
+    let mut buf = Vec::new();
+    stream.read_to_end(&mut buf).await.expect("read response");
+    let raw = String::from_utf8_lossy(&buf).into_owned();
+    let (head, body) = raw.split_once("\r\n\r\n").unwrap_or((raw.as_str(), ""));
+    let status = head
+        .lines()
+        .next()
+        .and_then(|l| l.split_whitespace().nth(1))
+        .and_then(|c| c.parse().ok())
+        .unwrap_or(0);
+    (status, body.to_string())
+}
+
+/// Minimal HTTP/1.1 POST with a JSON body. Same dependency-free client shape as [`get`]. Returns
+/// `(status_code, body)`.
+async fn post_json(addr: SocketAddr, path: &str, body: &str) -> (u16, String) {
+    let mut stream = tokio::net::TcpStream::connect(addr).await.expect("connect");
+    let req = format!(
+        "POST {path} HTTP/1.1\r\nHost: {addr}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
     stream.write_all(req.as_bytes()).await.expect("write request");
     let mut buf = Vec::new();
     stream.read_to_end(&mut buf).await.expect("read response");
@@ -157,4 +185,56 @@ async fn a2a_directory_is_a_json_array() {
     let (status, body) = get(addr, "/a2a/directory").await;
     assert_eq!(status, 200, "/a2a/directory should be 200");
     assert!(body.trim_start().starts_with('['), "/a2a/directory should be a JSON array, got: {body}");
+}
+
+#[tokio::test]
+async fn waitlist_accepts_a_valid_signup_and_persists_it() {
+    let (addr, store) = start_hub_full(0).await;
+    await_health(addr).await;
+    let (status, body) = post_json(addr, "/api/waitlist", r#"{"email":"Alice@Example.com"}"#).await;
+    assert_eq!(status, 200, "a valid signup should be 200, got body: {body}");
+    assert!(body.contains("\"ok\":true"), "expected ok:true, got {body}");
+    // The address is persisted, normalized (trim + lowercase).
+    assert_eq!(store.waitlist_count().unwrap(), 1, "the signup was stored");
+}
+
+#[tokio::test]
+async fn waitlist_duplicate_submit_stays_ok_and_single_row() {
+    let (addr, store) = start_hub_full(0).await;
+    await_health(addr).await;
+    // Two submits of the same address (bit-identical here; normalization is covered by unit tests).
+    for _ in 0..2 {
+        let (status, body) = post_json(addr, "/api/waitlist", r#"{"email":"dup@example.com"}"#).await;
+        assert_eq!(status, 200, "a duplicate must not leak membership — still 200: {body}");
+        assert!(body.contains("\"ok\":true"), "expected ok:true, got {body}");
+    }
+    // INSERT OR IGNORE ⇒ still exactly one row.
+    assert_eq!(store.waitlist_count().unwrap(), 1, "a duplicate must not add a second row");
+}
+
+#[tokio::test]
+async fn waitlist_rejects_an_invalid_email() {
+    let (addr, store) = start_hub_full(0).await;
+    await_health(addr).await;
+    let (status, body) = post_json(addr, "/api/waitlist", r#"{"email":"not-an-email"}"#).await;
+    assert_eq!(status, 400, "an invalid address should be 400, got: {body}");
+    assert!(body.contains("\"ok\":false"), "expected ok:false, got {body}");
+    assert!(body.contains("invalid email"), "expected the invalid-email error, got {body}");
+    assert_eq!(store.waitlist_count().unwrap(), 0, "an invalid address is never stored");
+}
+
+#[tokio::test]
+async fn waitlist_flood_from_one_ip_is_rate_limited() {
+    // All requests come from 127.0.0.1 (no proxy headers) so they share one waitlist bucket. The tight
+    // per-IP signup budget trips well before the general front-door limit, so a distinct valid address
+    // each time still gets throttled once over budget — proving the dedicated waitlist window fires.
+    let (addr, _store) = start_hub_full(0).await;
+    await_health(addr).await;
+    let mut statuses = Vec::new();
+    for i in 0..(parler_hub::WAITLIST_MAX_PER_MIN + 3) {
+        let body = format!(r#"{{"email":"flood{i}@example.com"}}"#);
+        statuses.push(post_json(addr, "/api/waitlist", &body).await.0);
+    }
+    assert!(statuses.contains(&429), "a signup flood must be throttled, got {statuses:?}");
+    assert_eq!(statuses.last(), Some(&429), "requests stay throttled once over budget: {statuses:?}");
 }

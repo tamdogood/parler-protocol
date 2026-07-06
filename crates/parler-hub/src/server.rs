@@ -18,7 +18,7 @@ use axum::extract::{ConnectInfo, Path, Query, Request, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{Html, IntoResponse};
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use parler_protocol::{
     canonical_card_bytes, is_message_sig_part, normalize_mentions, token, ClientFrame, DirectoryEntry,
@@ -62,6 +62,12 @@ pub const DEFAULT_MAX_CONNECTIONS: usize = 1024;
 /// single source. 600/min (10/s) sits far above what a real agent or a session viewer needs while
 /// still throttling a flood. `0` disables it. In-memory, resets on restart.
 pub const DEFAULT_MAX_HTTP_PER_MIN: u32 = 600;
+
+/// Per-client-IP budget for waitlist signups (`POST /api/waitlist`) over a fixed 60s window, on top of
+/// the whole-front-door [`DEFAULT_MAX_HTTP_PER_MIN`] guard. A real human submits the form once; a
+/// conservative allowance here throttles a single source from filling the `waitlist` table with junk
+/// addresses. In-memory, resets on restart. Same fixed-window shape as the other rate guards.
+pub const WAITLIST_MAX_PER_MIN: u32 = 10;
 
 /// How long an unauthenticated socket may stay open before it must complete the handshake. Bounds
 /// slow-loris connections that open a socket and never authenticate.
@@ -219,6 +225,10 @@ pub struct HubState {
     rate: Mutex<HashMap<String, AgentRate>>,
     /// In-memory per-IP HTTP rate windows (resets on restart), pruned by the janitor alongside `rate`.
     http_rate: Mutex<HashMap<IpAddr, Window>>,
+    /// In-memory per-IP windows for the tighter waitlist-signup budget ([`WAITLIST_MAX_PER_MIN`]),
+    /// separate from `http_rate` so a signup flood is bounded independently of general API reads.
+    /// Pruned by the janitor alongside `http_rate`.
+    waitlist_rate: Mutex<HashMap<IpAddr, Window>>,
     /// Live connection count, for the `max_connections` ceiling.
     conn_count: AtomicUsize,
     /// Live push subscribers: agent id → its subscribed connections. A message appended to a room is
@@ -271,6 +281,7 @@ impl HubState {
             retention: Retention::default(),
             rate: Mutex::new(HashMap::new()),
             http_rate: Mutex::new(HashMap::new()),
+            waitlist_rate: Mutex::new(HashMap::new()),
             conn_count: AtomicUsize::new(0),
             subscribers: Mutex::new(HashMap::new()),
             notifiers: Mutex::new(HashMap::new()),
@@ -405,6 +416,23 @@ impl HubState {
         w.count += 1;
         true
     }
+
+    /// Charge one waitlist signup against `ip`'s tighter fixed 60s window; `true` if within
+    /// [`WAITLIST_MAX_PER_MIN`]. Same fixed-window shape as [`http_rate_allows`], but keyed into the
+    /// separate `waitlist_rate` map so a signup flood is bounded on its own budget.
+    fn waitlist_rate_allows(&self, ip: IpAddr, now: i64) -> bool {
+        let mut map = self.waitlist_rate.lock();
+        let w = map.entry(ip).or_default();
+        if now - w.start >= 60_000 {
+            w.start = now;
+            w.count = 0;
+        }
+        if w.count >= WAITLIST_MAX_PER_MIN {
+            return false;
+        }
+        w.count += 1;
+        true
+    }
 }
 
 /// Resolve the client IP to rate-limit a request by. Behind the reference Fly deployment the edge sets
@@ -471,6 +499,9 @@ pub fn app(state: Arc<HubState>) -> Router {
         .route("/api/directory", get(api_directory))
         .route("/api/agents/:id", get(api_agent))
         .route("/api/session", get(api_session))
+        // The website's waitlist form posts signups here (self-hosted "owned email list"). CORS-open
+        // like the reads above, since the form posts cross-origin from the marketing site.
+        .route("/api/waitlist", post(api_waitlist))
         // A2A interoperability (discovery): project our signed cards into A2A AgentCard JSON so the
         // A2A ecosystem can find a Parler Protocol agent at the standard well-known location. See
         // `docs/a2a-interop.md`.
@@ -546,8 +577,9 @@ fn prune_rate_windows(state: &HubState, now: i64) {
         map.retain(|_, ar| now - ar.sends.start < MAX_WINDOW_MS || now - ar.blobs.start < MAX_WINDOW_MS);
     }
     // Per-IP HTTP windows are 60s; drop any whose window has fully elapsed so the map stays sized to
-    // recently-active sources rather than every IP that ever hit the hub.
+    // recently-active sources rather than every IP that ever hit the hub. Same for the waitlist window.
     state.http_rate.lock().retain(|_, w| now - w.start < 60_000);
+    state.waitlist_rate.lock().retain(|_, w| now - w.start < 60_000);
 }
 
 /// One synchronous janitor pass over the store; returns the content ids whose disk bytes to unlink.
@@ -1006,6 +1038,77 @@ fn viewer_message(m: &StoredMessage) -> serde_json::Value {
         "from": { "name": m.from.name, "role": m.from.role },
         "parts": parts,
     })
+}
+
+// ---- waitlist signup (the self-hosted "owned email list") ----
+
+#[derive(Debug, Deserialize)]
+struct WaitlistBody {
+    email: String,
+}
+
+/// Normalize a submitted address for storage/comparison: trim surrounding whitespace, lowercase.
+fn normalize_email(email: &str) -> String {
+    email.trim().to_ascii_lowercase()
+}
+
+/// Dependency-free, deliberately-lenient email validity check on an already-[`normalize_email`]d
+/// address. Not RFC 5322 (that's a fool's errand): just enough to reject obvious garbage before it
+/// reaches the list. Valid = 3..=254 chars, exactly one `@` with a non-empty local part and a domain
+/// that contains a `.`, and no whitespace or control characters anywhere.
+fn valid_email(email: &str) -> bool {
+    let len = email.chars().count();
+    if !(3..=254).contains(&len) {
+        return false;
+    }
+    if email.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        return false;
+    }
+    let mut parts = email.split('@');
+    let (Some(local), Some(domain), None) = (parts.next(), parts.next(), parts.next()) else {
+        return false; // zero, or more than one, `@`
+    };
+    !local.is_empty() && domain.contains('.') && !domain.starts_with('.') && !domain.ends_with('.')
+}
+
+/// `POST /api/waitlist` — the website's waitlist form posts `{ "email": "..." }` here to join the
+/// hub-operator's self-hosted "owned email list". Additive, unauthenticated, CORS-open (the form posts
+/// cross-origin from the marketing site). To avoid leaking list membership, **any** valid address
+/// returns `200 {"ok":true}` whether it was new or already present (`INSERT OR IGNORE`); an invalid
+/// address is `400`. A tighter per-IP window than the general front-door guard bounds signup floods.
+async fn api_waitlist(
+    State(state): State<Arc<HubState>>,
+    headers: HeaderMap,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    Json(body): Json<WaitlistBody>,
+) -> impl IntoResponse {
+    if let Some(ip) = client_ip(&headers, Some(peer.ip())) {
+        if !state.waitlist_rate_allows(ip, now_ms()) {
+            return (
+                StatusCode::TOO_MANY_REQUESTS,
+                [(axum::http::header::RETRY_AFTER, "60")],
+                Json(serde_json::json!({ "ok": false, "error": "rate limited" })),
+            )
+                .into_response();
+        }
+    }
+    let email = normalize_email(&body.email);
+    if !valid_email(&email) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "ok": false, "error": "invalid email" })),
+        )
+            .into_response();
+    }
+    match state.store.waitlist_add(&email, now_ms()) {
+        // `200 ok` for a new *or* already-present address — never leak which it was.
+        Ok(()) => Json(serde_json::json!({ "ok": true })).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "ok": false, "error": e.to_string() })),
+        )
+            .into_response(),
+    }
 }
 
 /// Hub-scope reads (private directory) are allowed when the hub mode is `public`, or the request
@@ -2123,6 +2226,46 @@ mod tests {
         for _ in 0..1000 {
             assert!(state.http_rate_allows(ip, 1), "a 0 budget never throttles");
         }
+    }
+
+    #[test]
+    fn waitlist_rate_allows_enforces_the_tight_per_ip_budget() {
+        let store = Store::open(None).unwrap();
+        let state = HubState::new(store, "parler://x".into(), "T".into(), HubMode::Public);
+        let ip: IpAddr = "1.1.1.1".parse().unwrap();
+        let now = 10_000_000i64;
+        // The first WAITLIST_MAX_PER_MIN signups pass; the next in the same window is throttled.
+        for _ in 0..WAITLIST_MAX_PER_MIN {
+            assert!(state.waitlist_rate_allows(ip, now));
+        }
+        assert!(!state.waitlist_rate_allows(ip, now), "over-budget signup is refused");
+        // A new 60s window resets the counter.
+        assert!(state.waitlist_rate_allows(ip, now + 60_000), "the window rolls after 60s");
+    }
+
+    #[test]
+    fn email_validation_normalizes_and_rejects_garbage() {
+        // Valid, after trim + lowercase normalization.
+        assert!(valid_email(&normalize_email("  Alice@Example.COM ")));
+        assert_eq!(normalize_email("  Alice@Example.COM "), "alice@example.com");
+        assert!(valid_email("a@b.co"));
+        assert!(valid_email("user.name+tag@sub.example.org"));
+        // Invalid: no @, no dot in domain, empty local/domain, too short, whitespace/control, multi-@.
+        assert!(!valid_email("no-at-sign.com"));
+        assert!(!valid_email("nodot@localhost"));
+        assert!(!valid_email("@example.com"));
+        assert!(!valid_email("user@"));
+        assert!(!valid_email("a@b"));
+        assert!(!valid_email("a b@example.com"));
+        assert!(!valid_email("a@b.com\n"));
+        assert!(!valid_email("two@@example.com"));
+        // Leading/trailing dot in the domain is rejected.
+        assert!(!valid_email("user@.example.com"));
+        assert!(!valid_email("user@example.com."));
+        // 254-char boundary: at the limit is fine, one over is not.
+        let local = "a".repeat(240);
+        assert!(valid_email(&format!("{local}@example.com"))); // 252 chars
+        assert!(!valid_email(&format!("{}@example.com", "a".repeat(250)))); // 262 chars
     }
 
     #[test]
