@@ -781,16 +781,19 @@ fn maybe_start_local_hub(port: u16) {
 async fn verify_dial_in(wired: Vec<connect::WiredAgent>, timeout: Duration) -> Result<()> {
     use std::collections::BTreeMap;
     // One dial per (hub, secret); a gated hub needs the same join secret the agents were given.
-    let mut by_hub: BTreeMap<(String, Option<String>), Vec<String>> = BTreeMap::new();
+    // Each pending agent carries its display name (for output) and its `PARLER_HOME` — the id is
+    // read from there, not matched by name, so a same-named stranger on the shared hub can't be
+    // mistaken for a freshly-wired agent (#103).
+    let mut by_hub: BTreeMap<(String, Option<String>), Vec<connect::WiredAgent>> = BTreeMap::new();
     for w in wired {
-        by_hub.entry((w.hub, w.secret)).or_default().push(w.name);
+        by_hub.entry((w.hub.clone(), w.secret.clone())).or_default().push(w);
     }
     println!("Waiting for your agents to dial in — restart them now (Ctrl-C to stop waiting).");
     // Restore PARLER_JOIN_SECRET when done; watch the hub with a throwaway identity so verifying
     // never creates or re-pins the user's `~/.parler/config.json` (#112).
     let secret_guard = JoinSecretGuard::capture();
     let started = std::time::Instant::now();
-    for ((hub, secret), mut names) in by_hub {
+    for ((hub, secret), mut pending) in by_hub {
         secret_guard.set(secret.as_ref());
         let cfg = match ephemeral_probe_config(&hub) {
             Ok(c) => c,
@@ -809,28 +812,43 @@ async fn verify_dial_in(wired: Vec<connect::WiredAgent>, timeout: Duration) -> R
                 continue;
             }
         };
-        while !names.is_empty() && started.elapsed() < timeout {
+        while !pending.is_empty() && started.elapsed() < timeout {
             let seen = ag
                 .discover(DiscoverScope::Hub, None, None, None, None, Some(500))
                 .await
                 .unwrap_or_default();
-            names.retain(|n| {
-                let online = seen.iter().any(|e| e.card.name.eq_ignore_ascii_case(n));
+            let online_ids: Vec<&str> = seen.iter().map(|e| e.card.id.as_str()).collect();
+            pending.retain(|w| {
+                // Match on the wired identity's id (read from its PARLER_HOME once `parler mcp` has
+                // launched and minted/saved it), never on name — an id is the agent's public key, so
+                // this can't confirm a same-named stranger that happens to be online (#103). If the
+                // agent hasn't booted yet its config.json is absent → `None` → still pending.
+                let online = wired_agent_id(&w.home).is_some_and(|id| online_ids.contains(&id.as_str()));
                 if online {
-                    println!("  ✓ {n} dialed in ({}s)", started.elapsed().as_secs());
+                    println!("  ✓ {} dialed in ({}s)", w.name, started.elapsed().as_secs());
                 }
                 !online
             });
-            if names.is_empty() {
+            if pending.is_empty() {
                 break;
             }
             tokio::time::sleep(Duration::from_secs(2)).await;
         }
-        for n in &names {
-            println!("  ⏳ {n} hasn't dialed in after {}s — restart it, run `parler doctor` to troubleshoot, or check later: parler connect --list", timeout.as_secs());
+        for w in &pending {
+            println!("  ⏳ {} hasn't dialed in after {}s — restart it, run `parler doctor` to troubleshoot, or check later: parler connect --list", w.name, timeout.as_secs());
         }
     }
     Ok(())
+}
+
+/// Read the wired agent's id from `<home>/config.json` — the file `parler mcp` writes when it mints
+/// or loads its identity on launch. `None` when the agent hasn't started yet (no config), the file
+/// is unreadable, or it has no `id` field. Kept a pure path→id function (no process env) so it's
+/// testable with a tempdir and the `--verify` match stays deterministic.
+fn wired_agent_id(home: &std::path::Path) -> Option<String> {
+    let text = std::fs::read_to_string(home.join("config.json")).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&text).ok()?;
+    v.get("id").and_then(|id| id.as_str()).map(str::to_string)
 }
 
 fn cmd_init(a: InitArgs) -> Result<()> {
@@ -2054,5 +2072,80 @@ mod tests {
         } else {
             std::env::remove_var("PARLER_HOME");
         }
+    }
+
+    /// Write a `config.json` with the given id into `home` — mirrors what `parler mcp` persists on
+    /// launch, without touching the process-global `PARLER_HOME` (so it can't race a parallel test).
+    fn write_config_json(home: &std::path::Path, id: &str) {
+        let body = serde_json::json!({ "hub_url": "ws://h", "id": id, "seed": "x", "name": "claude-code-tam" });
+        std::fs::write(home.join("config.json"), body.to_string()).unwrap();
+    }
+
+    #[test]
+    fn wired_agent_id_reads_the_saved_id_or_none() {
+        // A pure path→id read: present after `parler mcp` saves its config, `None` before it launches.
+        let home = tempfile::tempdir().unwrap();
+        assert_eq!(wired_agent_id(home.path()), None, "no config yet → not booted → None");
+        write_config_json(home.path(), "UWIREDID123");
+        assert_eq!(wired_agent_id(home.path()).as_deref(), Some("UWIREDID123"));
+    }
+
+    #[tokio::test]
+    async fn verify_matches_the_wired_id_not_a_same_named_stranger() {
+        // #103 AC2: on the shared hub, a stranger can register the same display name. `--verify` must
+        // confirm the *wired identity's id* (read from its PARLER_HOME), never a same-named card — an
+        // id is the agent's public key, so name collisions can't spoof a dial-in.
+        let hub_url = start_hub().await;
+
+        // The wired agent: its identity is saved under a per-host PARLER_HOME (what `parler connect`
+        // points the host at, and what `parler mcp` writes on first launch), then it registers.
+        let home = tempfile::tempdir().unwrap();
+        let wired_cfg = Config::create(&hub_url, "claude-code-tam", None).unwrap();
+        let wired_id = wired_cfg.identity.id.clone();
+        write_config_json(home.path(), &wired_id);
+        let mut wired_agent = MeshAgent::connect(&wired_cfg).await.unwrap();
+        wired_agent.register(Visibility::Private, vec![], vec![], None).await.unwrap();
+
+        // A stranger with the *same name* but a different identity, also online.
+        let stranger_cfg = Config::create(&hub_url, "claude-code-tam", None).unwrap();
+        assert_ne!(stranger_cfg.identity.id, wired_id, "distinct identities");
+        let mut stranger = MeshAgent::connect(&stranger_cfg).await.unwrap();
+        stranger.register(Visibility::Private, vec![], vec![], None).await.unwrap();
+
+        // What `--verify` sees: the whole directory (two cards sharing the name "claude-code-tam").
+        let mut watcher = MeshAgent::connect(&ephemeral_probe_config(&hub_url).unwrap()).await.unwrap();
+        let seen = watcher.discover(DiscoverScope::Hub, None, None, None, None, Some(500)).await.unwrap();
+        let online_ids: Vec<&str> = seen.iter().map(|e| e.card.id.as_str()).collect();
+        assert!(online_ids.iter().filter(|id| **id == wired_id || **id == stranger_cfg.identity.id).count() == 2, "both same-named cards are online");
+
+        // The id read from the wired home matches the wired identity, and only that id is confirmed.
+        let read = wired_agent_id(home.path());
+        assert_eq!(read.as_deref(), Some(wired_id.as_str()), "id comes from the wired home, not the name");
+        assert!(online_ids.contains(&wired_id.as_str()), "the wired id confirms");
+        // The name-based check the old code used would have matched the stranger too — prove the
+        // id-based check does not confirm the stranger's id via the wired home.
+        assert_ne!(read.as_deref(), Some(stranger_cfg.identity.id.as_str()), "the stranger is never confirmed as the wired agent");
+    }
+
+    #[tokio::test]
+    async fn ambiguous_name_resolution_errors_with_the_candidates() {
+        // #103 AC3: DM-by-name must refuse to silently pick one of several same-named agents. It
+        // errors listing every candidate with its id so the sender can disambiguate.
+        let hub_url = start_hub().await;
+        let a_cfg = Config::create(&hub_url, "claude-code", None).unwrap();
+        let mut a = MeshAgent::connect(&a_cfg).await.unwrap();
+        a.register(Visibility::Private, vec![], vec![], None).await.unwrap();
+        let b_cfg = Config::create(&hub_url, "claude-code", None).unwrap();
+        let mut b = MeshAgent::connect(&b_cfg).await.unwrap();
+        b.register(Visibility::Private, vec![], vec![], None).await.unwrap();
+
+        let mut sender = MeshAgent::connect(&ephemeral_probe_config(&hub_url).unwrap()).await.unwrap();
+        let err = resolve_target(&mut sender, Target::Dm { agent: "claude-code".into() })
+            .await
+            .expect_err("ambiguous name must error, never silently pick one");
+        let msg = err.to_string();
+        assert!(msg.contains("matches more than one agent"), "actionable error: {msg}");
+        assert!(msg.contains(&a_cfg.identity.id), "lists the first candidate id: {msg}");
+        assert!(msg.contains(&b_cfg.identity.id), "lists the second candidate id: {msg}");
     }
 }

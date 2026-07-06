@@ -93,12 +93,17 @@ pub struct Options {
 /// the agent actually dial its hub.
 #[derive(Debug, Clone)]
 pub struct WiredAgent {
-    /// The display name written as `PARLER_NAME` (what the directory will show).
+    /// The display name written as `PARLER_NAME` (what the directory will show). Used only to label
+    /// `--verify` output — the dial-in match is on the wired identity's **id**, not this name (#103).
     pub name: String,
     /// The hub URL written as `PARLER_HUB`.
     pub hub: String,
     /// The join secret written alongside, when the hub is gated.
     pub secret: Option<String>,
+    /// The `PARLER_HOME` written for this host. `parler mcp` mints/loads its identity here on launch,
+    /// so `--verify` reads the wired agent's id from `<home>/config.json` and matches dial-in by that
+    /// id — never by name, which is ambiguous on the shared hub (#103).
+    pub home: PathBuf,
 }
 
 /// How a given MCP host stores its server config — the knowledge that used to be scattered across
@@ -644,9 +649,13 @@ pub fn run(opts: Options) -> Result<Vec<WiredAgent>> {
                     match wire(def, &env, &binpath) {
                         Ok(where_) => {
                             wired.push(WiredAgent {
-                                name: opts.name.clone().unwrap_or_else(|| def.id.to_string()),
+                                // The name is only a label for `--verify` output; the dial-in match is
+                                // by id read from `home`. Use the same default the env block carries so
+                                // the label reads true.
+                                name: opts.name.clone().unwrap_or_else(|| default_agent_name(def.id)),
                                 hub: host_hub.clone(),
                                 secret: host_secret.clone(),
+                                home: env_home(&env),
                             });
                             reports.push(Report {
                                 id: def.id.into(),
@@ -808,6 +817,15 @@ fn env_for(id: &str, opts: &Options, hub_url: &str, secret: Option<&str>, adopt_
         v.push(("PARLER_JOIN_SECRET".to_string(), s.to_string()));
     }
     v
+}
+
+/// Pull the `PARLER_HOME` path out of an [`env_for`] block — where `parler mcp` will mint/load this
+/// host's identity, so `--verify` can read the wired agent's id from `<home>/config.json`.
+fn env_home(env: &[(String, String)]) -> PathBuf {
+    env.iter()
+        .find(|(k, _)| k == "PARLER_HOME")
+        .map(|(_, v)| PathBuf::from(v))
+        .unwrap_or_else(parler_root)
 }
 
 /// The default `PARLER_NAME` for a wired host: `<host>-<user>` (e.g. `claude-code-tam`), so the
