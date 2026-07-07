@@ -1718,10 +1718,10 @@ fn tool_specs() -> Vec<Value> {
         ),
         tool(
             "parler_remember",
-            "Save fact to shared memory. Re-saving with key overwrites (idempotent) — e.g. key=\"session-digest\" keeps rolling recap. Optionally scope to room or pass embedding.",
+            "Save a fact. LOG reflex: after a decision, record what matters. Same key overwrites in place (idempotent); omit key to append a note. Reuse a small key vocabulary: status, strategy, progress, knowledge, session-digest. Optionally scope to a room or embedding.",
             json!({
                 "text": { "type": "string" },
-                "key": { "type": "string" },
+                "key": { "type": "string", "description": "stable key for idempotent state; omit to append a note" },
                 "room": { "type": "string" },
                 "embedding": { "type": "array", "items": { "type": "number" }, "description": "embedding vector (float32 array, must match hub dimension)" },
                 "embedding_model": { "type": "string", "description": "which model produced the embedding (e.g. text-embedding-3-small)" }
@@ -1730,7 +1730,7 @@ fn tool_specs() -> Vec<Value> {
         ),
         tool(
             "parler_recall",
-            "Recall saved facts (BM25 full-text; hybrid BM25 + vector KNN when embedding is given). Cheaper than re-reading history for state saved with parler_remember.",
+            "Recall saved facts. PLAN reflex: pull what you need before acting, instead of re-reading history. BM25, or hybrid BM25 + vector KNN with an embedding. Query a key term or free text.",
             json!({
                 "query": { "type": "string" },
                 "room": { "type": "string" },
@@ -1954,7 +1954,7 @@ mod tests {
         );
         assert!(
             bytes <= TOOL_SPECS_BUDGET,
-            "tool specs {bytes} B exceed budget {TOOL_SPECS_BUDGET} B — trim descriptions"
+            "tool specs {bytes} B exceed budget {TOOL_SPECS_BUDGET} B, trim descriptions"
         );
         assert!(
             desc_bytes <= TOOL_DESC_BUDGET,

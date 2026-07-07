@@ -1,0 +1,85 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="640" viewBox="0 0 1280 640" fill="none" role="img" aria-label="An agent's LOG and PLAN reflex around two memory tools: after a decision it writes a fact with parler_remember, before acting it reads with parler_recall, and facts are filed under a small typed-key vocabulary.">
+  <defs>
+    <radialGradient id="glowBlue" cx="14%" cy="-8%" r="72%">
+      <stop offset="0%" stop-color="#3b9eff" stop-opacity="0.20"/>
+      <stop offset="70%" stop-color="#3b9eff" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="glowViolet" cx="10%" cy="104%" r="62%">
+      <stop offset="0%" stop-color="#9281f7" stop-opacity="0.16"/>
+      <stop offset="70%" stop-color="#9281f7" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="glowGreen" cx="90%" cy="22%" r="64%">
+      <stop offset="0%" stop-color="#3ecf8e" stop-opacity="0.15"/>
+      <stop offset="70%" stop-color="#3ecf8e" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="loopStroke" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#3b9eff" stop-opacity="0.9"/>
+      <stop offset="100%" stop-color="#3ecf8e" stop-opacity="0.9"/>
+    </linearGradient>
+    <marker id="arrow" viewBox="0 0 10 10" refX="7" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="#9aa3b2"/>
+    </marker>
+  </defs>
+
+  <rect width="1280" height="640" fill="#000000"/>
+  <rect width="1280" height="640" fill="url(#glowBlue)"/>
+  <rect width="1280" height="640" fill="url(#glowViolet)"/>
+  <rect width="1280" height="640" fill="url(#glowGreen)"/>
+
+  <!-- faint grid -->
+  <g stroke="#ffffff" stroke-opacity="0.035">
+    <path d="M0 160 H1280 M0 320 H1280 M0 480 H1280"/>
+    <path d="M320 0 V640 M640 0 V640 M960 0 V640"/>
+  </g>
+
+  <!-- kicker -->
+  <text x="96" y="92" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="19" letter-spacing="3" fill="#3b9eff">METAMEMORY / THE REFLEX</text>
+
+  <!-- the reflex loop, center -->
+  <g transform="translate(640 340)">
+    <!-- loop ring -->
+    <circle r="132" fill="none" stroke="url(#loopStroke)" stroke-width="2.5" stroke-dasharray="6 7" opacity="0.85"/>
+    <!-- arrowheads on the ring direction -->
+    <path d="M 0 -132 A 132 132 0 0 1 93 -93" fill="none" stroke="url(#loopStroke)" stroke-width="2.5" marker-end="url(#arrow)"/>
+    <path d="M 0 132 A 132 132 0 0 1 -93 93" fill="none" stroke="url(#loopStroke)" stroke-width="2.5" marker-end="url(#arrow)"/>
+
+    <text x="0" y="-6" text-anchor="middle" font-family="Georgia, 'Times New Roman', serif" font-size="26" fill="#e6e9ef">record after,</text>
+    <text x="0" y="30" text-anchor="middle" font-family="Georgia, 'Times New Roman', serif" font-size="26" fill="#e6e9ef">recall before</text>
+  </g>
+
+  <!-- LOG node (blue, top-left of loop) -->
+  <g transform="translate(300 214)">
+    <rect x="-118" y="-46" width="236" height="92" rx="16" fill="#0a0d12" stroke="#3b9eff" stroke-opacity="0.55"/>
+    <text x="-96" y="-14" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="15" letter-spacing="2" fill="#3b9eff">LOG</text>
+    <text x="-96" y="18" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="17" fill="#e6e9ef">parler_remember</text>
+    <text x="-96" y="38" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12.5" fill="#8b93a1">write a fact</text>
+  </g>
+  <path d="M 405 250 C 470 275 500 285 528 300" fill="none" stroke="#3b9eff" stroke-opacity="0.5" stroke-width="2" marker-end="url(#arrow)"/>
+
+  <!-- PLAN node (green, bottom-right of loop) -->
+  <g transform="translate(980 466)">
+    <rect x="-118" y="-46" width="236" height="92" rx="16" fill="#0a0d12" stroke="#3ecf8e" stroke-opacity="0.55"/>
+    <text x="-96" y="-14" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="15" letter-spacing="2" fill="#3ecf8e">PLAN</text>
+    <text x="-96" y="18" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="17" fill="#e6e9ef">parler_recall</text>
+    <text x="-96" y="38" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12.5" fill="#8b93a1">read before you re-read</text>
+  </g>
+  <path d="M 875 430 C 810 405 780 395 752 380" fill="none" stroke="#3ecf8e" stroke-opacity="0.5" stroke-width="2" marker-end="url(#arrow)"/>
+
+  <!-- typed-key vocabulary column, right -->
+  <g transform="translate(1016 150)" font-family="ui-monospace, SFMono-Regular, Menlo, monospace">
+    <text x="0" y="0" font-size="13" letter-spacing="2" fill="#9281f7">key vocabulary</text>
+    <g font-size="14.5" fill="#b6bdc9">
+      <rect x="-10" y="16" width="184" height="30" rx="8" fill="#0a0d12" stroke="#ffffff" stroke-opacity="0.08"/>
+      <text x="6" y="36">status</text>
+      <rect x="-10" y="54" width="184" height="30" rx="8" fill="#0a0d12" stroke="#ffffff" stroke-opacity="0.08"/>
+      <text x="6" y="74">strategy</text>
+      <rect x="-10" y="92" width="184" height="30" rx="8" fill="#0a0d12" stroke="#ffffff" stroke-opacity="0.08"/>
+      <text x="6" y="112">progress</text>
+      <rect x="-10" y="130" width="184" height="30" rx="8" fill="#0a0d12" stroke="#ffffff" stroke-opacity="0.08"/>
+      <text x="6" y="150">knowledge</text>
+    </g>
+  </g>
+
+  <!-- footer note -->
+  <text x="96" y="588" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="14.5" fill="#8b93a1">no new storage &#183; no protocol change &#183; no retraining &#183; two tool descriptions</text>
+</svg>

@@ -398,6 +398,16 @@ taxonomy**, and a consistent **retrieval** stack. Summary of the current finding
   ("this fact was true *as of*…") matters for agents that reason over changing state. Parler Protocol's `facts`
   already keep `ts`; a future `valid_from`/`superseded_by` is the cheap nod to bitemporality **without**
   adopting a graph DB.
+* **AutoMem (Wu et al., 2026)** — treats **memory management as its own trainable skill** ("metamemory").
+  The agent runs a **LOG/PLAN reflex** — after each step, *what is worth recording?*; before each action,
+  *what must I recall?* — over a small set of **typed memory files** (`status`, `strategy`, `progress`,
+  `knowledge`, …) with first-class memory actions (append, search, keyed upsert). Optimizing *only* the
+  memory scaffold, leaving task behavior untouched, yielded **2–4× on long-horizon tasks** and let a 32B
+  model rival frontier systems. *Lesson:* the cheap, model-agnostic win is **discipline and structure, not
+  more storage** — a stable key vocabulary plus a "record-after / recall-before" habit. Parler Protocol's
+  `remember`/`recall` already supply the actions (unkeyed `remember` = append, keyed `remember` = upsert,
+  `recall` = search); we now bake the reflex and a typed-key convention into the tool copy itself (see the
+  `parler_remember`/`parler_recall` descriptions in `crates/parler-cli/src/mcp.rs`).
 
 ### Net guidance for Parler Protocol
 1. **Keep the hub a thin, fast store; keep intelligence in the clients.** Extraction, summarization,
@@ -409,6 +419,16 @@ taxonomy**, and a consistent **retrieval** stack. Summary of the current finding
 4. **Add lightweight temporality to facts** (supersede/`valid_from`) before reaching for a graph DB.
    Knowledge-graph memory (Graphiti/Cognee) is powerful but is a *much* larger build; it is not
    warranted yet and would break the low-ops, single-file ethos.
+5. **Scaffold metamemory as a client-side habit** (AutoMem). The tool descriptions now nudge a LOG/PLAN
+   reflex ("record after a decision, recall before acting") and a small, stable key vocabulary
+   (`status`/`strategy`/`progress`/`knowledge`/`session-digest`). This is **purely additive** — keys are
+   already free strings, no protocol change — but it turns the flat fact bag into typed, deduped state that
+   `recall` can target, which is where AutoMem's 2–4× came from. The heavier follow-ons AutoMem implies —
+   an offline "scaffold-evolution" loop (a strong model reviews real mesh transcripts and proposes better
+   memory conventions/tool copy, gated on a retrieval metric) and consolidation of episodic notes into
+   keyed summaries — line up with our existing loop-engineering harness and the retention work in §3.4.
+   Its proficiency/LoRA-training half is **out of scope**: Parler is an MCP client to whatever model the
+   user runs; it neither owns nor trains weights.
 
 ---
 
@@ -545,6 +565,7 @@ Agent memory landscape & frameworks:
 - [Survey of AI Agent Memory Frameworks — Graphlit](https://www.graphlit.com/blog/survey-of-ai-agent-memory-frameworks)
 - [Agent Memory Techniques (Letta/Mem0/Zep/Graphiti, LoCoMo) — NirDiamant](https://github.com/NirDiamant/Agent_Memory_Techniques)
 - [Agent Memory Systems & Knowledge Graphs: Letta, Mem0, Graphiti, Cognee](https://codepointer.substack.com/p/agent-memory-systems-and-knowledge)
+- [AutoMem: Automated Learning of Memory as a Cognitive Skill — Wu, Zhu, Zhang, Wang, Yeung-Levy, 2026 (arXiv:2607.01224)](https://arxiv.org/abs/2607.01224)
 
 SQLite + vector / hybrid search:
 - [Hybrid full-text + vector search with SQLite — Simon Willison](https://simonwillison.net/2024/Oct/4/hybrid-full-text-search-and-vector-search-with-sqlite/)

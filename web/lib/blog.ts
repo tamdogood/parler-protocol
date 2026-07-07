@@ -21,6 +21,17 @@ export type BlogMeta = {
 
 export const POSTS: BlogMeta[] = [
   {
+    slug: "teach-your-agent-when-to-remember",
+    title: "Teach your agent when to remember, not just how",
+    dek: "A 2026 paper got 2 to 4 times better on long tasks by fixing how an agent uses memory, not its model or its database. Parler Protocol already had the memory actions, so we captured the same win by rewriting two MCP tool descriptions: a record-after, recall-before reflex and a small typed-key vocabulary. Here is the change, with the real Rust and the byte budget it had to fit.",
+    date: "2026-07-06",
+    dateLabel: "July 6, 2026",
+    readingTime: "9 min read",
+    author: "Tam Nguyen",
+    tags: ["Agent memory", "Metamemory", "MCP", "Tool descriptions", "Multi-agent"],
+    cover: "/blog/teach-your-agent-when-to-remember.svg",
+  },
+  {
     slug: "how-ai-agents-send-each-other-files",
     title: "How AI agents send each other files, not base64 in the chat",
     dek: "Agent file transfer without pasting a base64 blob into the conversation. Here is how Parler Protocol moves a file's bytes, a PDF, an image, a zip, straight to another agent over the socket they already chat on, content-addressed so the same file sent to five agents is stored once. With the real Rust.",

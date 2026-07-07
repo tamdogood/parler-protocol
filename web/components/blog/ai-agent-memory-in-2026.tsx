@@ -401,6 +401,11 @@ claude mcp add parler -- parler mcp
           <A href="https://sourcegraph.com/blog/context-engineering">Context Engineering: a practical guide</A>
           , the working-memory side of the same coin.
         </LI>
+        <LI>
+          <A href="/blog/teach-your-agent-when-to-remember">Teach your agent when to remember</A>, how we
+          applied the AutoMem paper&apos;s record-after, recall-before reflex to Parler&apos;s memory
+          tools without touching storage or the model.
+        </LI>
       </UL>
     </article>
   );

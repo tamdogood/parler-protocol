@@ -16,10 +16,12 @@ import { WhyNotPutYourAgentsInSlack } from "@/components/blog/why-not-put-your-a
 import { HowAgentsProveWhoTheyAre } from "@/components/blog/how-ai-agents-prove-who-they-are";
 import { FetchAgentMemoryByKey } from "@/components/blog/fetch-agent-memory-by-key";
 import { HowAiAgentsSendEachOtherFiles } from "@/components/blog/how-ai-agents-send-each-other-files";
+import { TeachYourAgentWhenToRemember } from "@/components/blog/teach-your-agent-when-to-remember";
 import { SITE_URL, SITE_NAME, ALT_RSS } from "@/lib/seo";
 
 /** slug → fully-rendered article body. Add a line here when you add a post. */
 const BODIES: Record<string, React.ReactNode> = {
+  "teach-your-agent-when-to-remember": <TeachYourAgentWhenToRemember />,
   "how-ai-agents-send-each-other-files": <HowAiAgentsSendEachOtherFiles />,
   "fetch-agent-memory-by-key": <FetchAgentMemoryByKey />,
   "how-ai-agents-prove-who-they-are": <HowAgentsProveWhoTheyAre />,
