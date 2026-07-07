@@ -14,6 +14,12 @@ shared onboarding map (what Parler Protocol is, the crate/architecture layout, b
   `parler-connector`, `parler-cli`, and `web/`. Update and test all of them, not just one crate.
 - **Don't weaken the security model** (self-signed cards, seed never leaves device, private-by-
   default, join-secret for public-URL private hubs). See the security section in `AGENTS.md`.
+- **Docs track code — no drift.** Any change to user-facing behavior (CLI commands/flags, MCP
+  tools, wire protocol, setup/config, REST API, security model) is not done until the docs match.
+  Grep the affected surface across `README.md`, `AGENTS.md`, `docs/`, and `web/` for the changed
+  name/flag/behavior, update every hit in the same PR, and leave no instruction describing the old
+  behavior. If nothing user-facing changed, say so; otherwise treat the doc update as part of the
+  task, not a follow-up.
 
 ## How to work here
 

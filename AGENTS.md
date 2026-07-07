@@ -117,6 +117,11 @@ per session, whatever tool you are. The bullets below are the load-bearing summa
   other tools follow the doc by hand.
 - **Protocol is a contract.** Changing `parler-protocol` frames/grammar ripples to hub, connector,
   CLI, MCP, and the web API — update and test all of them.
+- **Docs track code — no drift.** Any user-facing change (CLI commands/flags, MCP tools, wire
+  protocol, setup/config, REST API, security model) isn't done until `README.md`, `AGENTS.md`,
+  `docs/`, and `web/` match it — grep the changed name/flag/behavior across all of them and update
+  every hit in the same PR. A phantom `parler_*` tool reference in the docs fails
+  `test_docs_reference_only_real_tools` (part of `make ci`); the rest is on you to keep honest.
 - **Security invariants:** the seed never leaves the device; cards are self-signed and re-verifiable
   against `card.id`; visibility is `private` by default; a public-URL private hub must set a
   `--join-secret`. Don't weaken these. Vulns → [`SECURITY.md`](SECURITY.md).
