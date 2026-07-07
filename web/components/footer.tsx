@@ -17,6 +17,9 @@ export function Footer() {
           >
             GitHub
           </a>
+          <a href="/docs" className="text-fog transition-colors hover:text-frost">
+            Docs
+          </a>
           <a href="/blog" className="text-fog transition-colors hover:text-frost">
             Blog
           </a>

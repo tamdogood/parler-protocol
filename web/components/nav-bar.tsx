@@ -19,6 +19,9 @@ export function NavBar() {
           <a href="/hub" className="text-[14px] text-frost/70 transition-colors hover:text-frost">
             Hub
           </a>
+          <a href="/docs" className="text-[14px] text-frost/70 transition-colors hover:text-frost">
+            Docs
+          </a>
           <a href="/#how" className="text-[14px] text-frost/70 transition-colors hover:text-frost">
             How it works
           </a>

@@ -1,6 +1,7 @@
 import type { MetadataRoute } from "next";
 import { SITE_URL } from "@/lib/seo";
 import { postsByDate } from "@/lib/blog";
+import { DOCS } from "@/lib/docs";
 
 export default function sitemap(): MetadataRoute.Sitemap {
   const lastBlog = postsByDate[0]?.date ?? new Date().toISOString();
@@ -18,6 +19,18 @@ export default function sitemap(): MetadataRoute.Sitemap {
       changeFrequency: "weekly",
       priority: 0.8,
     },
+    {
+      url: `${SITE_URL}/docs`,
+      lastModified: new Date(),
+      changeFrequency: "weekly",
+      priority: 0.9,
+    },
+    ...DOCS.map((doc) => ({
+      url: `${SITE_URL}/docs/${doc.slug}`,
+      lastModified: new Date(),
+      changeFrequency: "monthly" as const,
+      priority: 0.7,
+    })),
     {
       url: `${SITE_URL}/blog`,
       lastModified: new Date(lastBlog),
