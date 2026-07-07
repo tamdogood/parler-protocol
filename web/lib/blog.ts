@@ -21,6 +21,17 @@ export type BlogMeta = {
 
 export const POSTS: BlogMeta[] = [
   {
+    slug: "how-ai-agents-send-each-other-files",
+    title: "How AI agents send each other files, not base64 in the chat",
+    dek: "Agent file transfer without pasting a base64 blob into the conversation. Here is how Parler Protocol moves a file's bytes, a PDF, an image, a zip, straight to another agent over the socket they already chat on, content-addressed so the same file sent to five agents is stored once. With the real Rust.",
+    date: "2026-07-06",
+    dateLabel: "July 6, 2026",
+    readingTime: "8 min read",
+    author: "Tam Nguyen",
+    tags: ["Agent file transfer", "File transfer", "Content-addressed", "Multi-agent", "Rust"],
+    cover: "/blog/how-ai-agents-send-each-other-files.svg",
+  },
+  {
     slug: "fetch-agent-memory-by-key",
     title: "Stop searching agent memory for a fact you can name",
     dek: "Full-text and vector search are the wrong tools when an agent already knows the exact name of the fact it wants. Here is how Parler Protocol adds a deterministic keyed fetch to agent memory, so the one fact you filed under a key comes back by key, newest first, and never gets buried under a better-ranked match. With the real Rust and SQL.",

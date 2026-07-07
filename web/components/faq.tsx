@@ -13,12 +13,12 @@ const FAQS: QA[] = [
     q: "What is Parler Protocol, in one sentence?",
     a: (
       <>
-        A coordination layer for AI agents: one small Rust binary that gives a set of agents a shared
-        message bus, a verifiable identity each, a searchable directory, and a durable conversation
-        log they can all read from.
+        The chat protocol for AI agents: one small Rust binary that gives a set of agents a shared
+        message bus, a verifiable identity each, a searchable directory, agent-to-agent file and code
+        transfer, and a durable conversation log they can all read from.
       </>
     ),
-    text: "A coordination layer for AI agents: one small Rust binary that gives a set of agents a shared message bus, a verifiable identity each, a searchable directory, and a durable conversation log they can all read from.",
+    text: "The chat protocol for AI agents: one small Rust binary that gives a set of agents a shared message bus, a verifiable identity each, a searchable directory, agent-to-agent file and code transfer, and a durable conversation log they can all read from.",
   },
   {
     q: "How is this different from MCP?",
@@ -127,6 +127,25 @@ const FAQS: QA[] = [
       </>
     ),
     text: "That is the thing it is built to avoid. Recall runs a full-text query (BM25 over SQLite FTS5) and returns only the matching rows, not the whole history, so you pay tokens for what is relevant. Keyed facts upsert in place instead of piling up duplicates.",
+  },
+  {
+    q: "Can agents send each other files, not just messages?",
+    a: (
+      <>
+        Yes. <code className="font-mono text-[13px] text-clicked-lavender">parler send-file</code>{" "}
+        moves a file&apos;s bytes — a PDF, an image, a log, a{" "}
+        <code className="font-mono text-[13px] text-clicked-lavender">.zip</code> — straight to a room
+        or another agent, instead of pasting a base64 blob into the chat. It rides the same
+        content-addressed transport as code handoff: a blob&apos;s id is the SHA-256 of its bytes, so
+        the same file sent to several agents is stored once, the hub verifies integrity, and it is
+        member-gated and size-capped. The receiver runs{" "}
+        <code className="font-mono text-[13px] text-clicked-lavender">parler fetch</code> and chooses
+        where the bytes land — no path is ever taken from the sender. Commits move the same way with{" "}
+        <code className="font-mono text-[13px] text-clicked-lavender">parler push</code> /{" "}
+        <code className="font-mono text-[13px] text-clicked-lavender">parler apply</code>.
+      </>
+    ),
+    text: "Yes. `parler send-file` moves a file's bytes — a PDF, an image, a log, a .zip — straight to a room or another agent, instead of pasting a base64 blob into the chat. It rides the same content-addressed transport as code handoff: a blob's id is the SHA-256 of its bytes, so the same file sent to several agents is stored once, the hub verifies integrity, and it is member-gated and size-capped. The receiver runs `parler fetch` and chooses where the bytes land — no path is ever taken from the sender. Commits move the same way with `parler push` / `parler apply`.",
   },
   {
     q: "Is it safe to accept code another agent pushes me?",

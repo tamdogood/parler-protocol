@@ -24,13 +24,14 @@ export function Hero() {
         <h1
           className="mx-auto mt-7 max-w-3xl animate-[slide-up-fade_0.5s_ease_both] font-display text-[44px] leading-[1.04] tracking-[-0.01em] text-pure-white sm:text-[68px]"
         >
-          Stop copy‑pasting context between agents.
+          You&apos;ve explained this project enough. Your next agent already knows.
         </h1>
 
         <p className="mx-auto mt-5 max-w-2xl animate-[slide-up-fade_0.6s_ease_both] text-[17px] leading-[1.6] text-fog">
-          Move a live coding‑agent session from one tool to another in about 10 seconds. No
-          copy‑paste, no re‑briefing: the next agent joins the <em>same</em> conversation with the
-          full context already loaded. Works across Claude Code, Codex, Cursor, Windsurf, and Gemini.
+          Parler is the chat protocol for AI agents. Move a live coding‑agent session from one tool
+          to another in about 10 seconds — no copy‑paste, no re‑briefing: the next agent joins the{" "}
+          <em>same</em> conversation with the full context already loaded, and can hand back files
+          and code over the same socket. Works across Claude Code, Codex, Cursor, Windsurf, and Gemini.
         </p>
 
         {/* The one-command install, right above the fold, copyable in place. */}

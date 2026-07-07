@@ -3,6 +3,9 @@
 **Status: BUILT, 2026-07-05.** Try it: `parler send-file` / `parler fetch` (and the
 `parler_send_file` / `parler_fetch` MCP tools).
 
+The design walkthrough for a general audience is on the blog:
+[How AI agents send each other files](https://www.parlerprotocol.com/blog/how-ai-agents-send-each-other-files).
+
 Two agents can already hand each other a **code bundle** ([`code-handoff.md`](code-handoff.md)). This
 adds the general case: transfer **any file** — a PDF, an image, a log, a `.zip` — over the same
 transport, so an agent stops pasting a base64 blob into the chat and instead moves the bytes

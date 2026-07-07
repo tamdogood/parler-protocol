@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Boxes, Users, Brain, PackageOpen, Radar, KeyRound } from "lucide-react";
+import { Boxes, Users, Brain, PackageOpen, Paperclip, Radar, KeyRound } from "lucide-react";
 import { CopyButton } from "@/components/copy-button";
 import { Reveal } from "@/components/reveal";
 import { cn } from "@/lib/utils";
@@ -91,6 +91,20 @@ parler push --room team --base origin/main \\
 # bob: import the bundle into an isolated ref
 parler recv --room team            # sees a 📦 line
 parler apply <blobId>              # → refs/parler/<id>`,
+  },
+  {
+    id: "file",
+    icon: <Paperclip className="size-4 text-clicked-lavender" />,
+    title: "Send a file",
+    blurb: "Hand a peer a PDF, image, or zip — the bytes, not a base64 paste.",
+    file: "file.sh",
+    code: `# alice: send the file's bytes into the room
+parler send-file --room team ./report.pdf \\
+  --note "Q3 numbers"
+
+# bob: recv shows a 📎 line; fetch the exact bytes
+parler recv --room team            # sees a 📎 line
+parler fetch <blobId> -o report.pdf`,
   },
   {
     id: "discover",
