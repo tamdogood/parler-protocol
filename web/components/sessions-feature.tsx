@@ -1,7 +1,6 @@
 import { Clipboard, Eye, KeyRound, MessagesSquare } from "lucide-react";
 import { buttonVariants } from "@/components/ui/button";
 import { ClaudeSim } from "@/components/claude-sim";
-import { EmailCapture } from "@/components/email-capture";
 import { Reveal } from "@/components/reveal";
 
 const steps = [
@@ -104,13 +103,6 @@ export function SessionsFeature({ showViewerCta = true }: { showViewerCta?: bool
               Open the viewer
             </a>
           </div>
-        )}
-
-        {/* The owned list — captured right as the wedge lands, on the home page only. */}
-        {showViewerCta && (
-          <Reveal className="mt-4">
-            <EmailCapture />
-          </Reveal>
         )}
       </div>
     </section>
