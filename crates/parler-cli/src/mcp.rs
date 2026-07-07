@@ -3038,57 +3038,143 @@ mod tests {
         assert_eq!(std::fs::read(&out).unwrap(), body.to_vec());
     }
 
-    #[test]
-    fn test_no_phantom_tool_references() {
-        let specs = tool_specs();
-        let mut valid_tools: std::collections::HashSet<String> = specs
+    /// The authoritative set of real `parler_*` MCP tools: everything `tool_specs()` advertises,
+    /// plus the session-scoped tools that are advertised dynamically (not in the static specs).
+    /// Both the source check and the docs check below validate against this one list, so there is a
+    /// single source of truth for "is this a real tool?".
+    fn valid_tool_names() -> std::collections::HashSet<String> {
+        let mut valid: std::collections::HashSet<String> = tool_specs()
             .iter()
             .map(|t| t.get("name").unwrap().as_str().unwrap().to_string())
             .collect();
-        
-        valid_tools.insert("parler_open_session".to_string());
-        valid_tools.insert("parler_join_session".to_string());
-        valid_tools.insert("parler_close_session".to_string());
-        valid_tools.insert("parler_join_requests".to_string());
-        valid_tools.insert("parler_approve_join".to_string());
-        valid_tools.insert("parler_deny_join".to_string());
-        valid_tools.insert("parler_watch_session".to_string());
-        valid_tools.insert("parler_session_handoff".to_string());
-        valid_tools.insert("parler_consolidate_session".to_string());
-        
+        // Session-scoped tools registered on the fly by tools/list once you're in a session.
+        for t in [
+            "parler_open_session",
+            "parler_join_session",
+            "parler_close_session",
+            "parler_join_requests",
+            "parler_approve_join",
+            "parler_deny_join",
+            "parler_watch_session",
+            "parler_session_handoff",
+            "parler_consolidate_session",
+        ] {
+            valid.insert(t.to_string());
+        }
+        valid
+    }
+
+    /// `parler_*` identifiers that look like a tool token but are NOT tools, so the substring scan
+    /// must skip them: the crate names (`parler_protocol`, …), internal probes, and a few unrelated
+    /// identifiers that show up in the docs (a Fly volume name, a test name). Excluded from both
+    /// drift checks.
+    fn is_non_tool_token(r: &str) -> bool {
+        matches!(
+            r,
+            // Cargo crate names.
+            "parler_auth"
+                | "parler_connector"
+                | "parler_protocol"
+                | "parler_hub"
+                // Internal probe (not an MCP tool).
+                | "parler_doctor_probe"
+                // Non-tool identifiers that legitimately appear in the docs.
+                | "parler_data"   // Fly.io volume name in deploy docs
+                | "parler_fields" // fragment of a test name quoted in docs/a2a-interop.md
+        )
+    }
+
+    /// Pull every `parler_<ident>` token (ident longer than the bare `parler_` prefix) out of a blob.
+    fn scan_tool_tokens(src: &str) -> std::collections::HashSet<String> {
+        let mut refs = std::collections::HashSet::new();
+        let mut s = src;
+        while let Some(idx) = s.find("parler_") {
+            let s_sub = &s[idx..];
+            let len = s_sub.chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '_').count();
+            let tool_ref = &s_sub[..len];
+            if tool_ref.len() > 7 {
+                refs.insert(tool_ref.to_string());
+            }
+            s = &s_sub[len.max(1)..];
+        }
+        refs
+    }
+
+    #[test]
+    fn test_no_phantom_tool_references() {
+        let valid_tools = valid_tool_names();
+
         let mcp_src = std::fs::read_to_string("src/mcp.rs").unwrap_or_else(|_| std::fs::read_to_string("crates/parler-cli/src/mcp.rs").unwrap());
         let lib_src = std::fs::read_to_string("src/lib.rs").unwrap_or_else(|_| std::fs::read_to_string("crates/parler-cli/src/lib.rs").unwrap());
-        
+
         let mut references = std::collections::HashSet::new();
         for src in &[mcp_src, lib_src] {
-            let mut s = src.as_str();
-            while let Some(idx) = s.find("parler_") {
-                let s_sub = &s[idx..];
-                let len = s_sub.chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '_').count();
-                let tool_ref = &s_sub[..len];
-                if tool_ref.len() > 7 {
-                    references.insert(tool_ref.to_string());
-                }
-                s = &s_sub[len.max(1)..];
-            }
+            references.extend(scan_tool_tokens(src));
         }
-        
-        let mut invalid = Vec::new();
-        for r in &references {
-            if r == "parler_auth" || r == "parler_connector" || r == "parler_protocol" || r == "parler_hub" {
-                continue;
-            }
-            if r == "parler_doctor_probe" {
-                continue;
-            }
-            if !valid_tools.contains(r) {
-                invalid.push(r.clone());
-            }
-        }
-        
+
+        let mut invalid: Vec<String> = references
+            .into_iter()
+            .filter(|r| !is_non_tool_token(r) && !valid_tools.contains(r))
+            .collect();
+        invalid.sort();
+
         assert!(
             invalid.is_empty(),
             "Found references to parler_* tools/names that are not in the valid tools list: {:?}",
+            invalid
+        );
+    }
+
+    /// Docs must not drift from the tools: every `parler_<tool>` named in README/AGENTS/docs/web has
+    /// to be a real tool. When a tool is renamed or removed in mcp.rs, this fails until the docs are
+    /// updated — the mechanical half of the "docs track code" rule in CLAUDE.md / AGENTS.md.
+    #[test]
+    fn test_docs_reference_only_real_tools() {
+        // Walk up from the crate dir (cargo test's CWD) to the repo root, spotted by AGENTS.md.
+        let mut root = std::env::current_dir().unwrap();
+        while !root.join("AGENTS.md").exists() {
+            assert!(root.pop(), "could not find repo root (AGENTS.md) above the crate dir");
+        }
+
+        // User-facing doc surface. Recurse into docs/ and web/, skipping build/vendor dirs.
+        let mut files: Vec<std::path::PathBuf> =
+            vec![root.join("README.md"), root.join("AGENTS.md"), root.join("CLAUDE.md")];
+        let mut stack = vec![root.join("docs"), root.join("web")];
+        while let Some(dir) = stack.pop() {
+            let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                if path.is_dir() {
+                    if !matches!(name.as_ref(), "node_modules" | ".next" | "target" | ".git") {
+                        stack.push(path);
+                    }
+                } else if matches!(
+                    path.extension().and_then(|e| e.to_str()),
+                    Some("md" | "mdx" | "ts" | "tsx" | "js" | "jsx" | "json" | "html" | "txt")
+                ) {
+                    files.push(path);
+                }
+            }
+        }
+
+        let valid_tools = valid_tool_names();
+        let mut invalid: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        for file in files {
+            let Ok(src) = std::fs::read_to_string(&file) else { continue };
+            for r in scan_tool_tokens(&src) {
+                if !is_non_tool_token(&r) && !valid_tools.contains(&r) {
+                    let rel = file.strip_prefix(&root).unwrap_or(&file).display();
+                    invalid.insert(format!("{r} ({rel})"));
+                }
+            }
+        }
+
+        assert!(
+            invalid.is_empty(),
+            "Docs reference parler_* tools that don't exist (rename/remove the tool ⇒ update the docs \
+             in the same PR): {:?}",
             invalid
         );
     }
