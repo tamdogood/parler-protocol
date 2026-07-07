@@ -119,9 +119,12 @@ CREATE VIRTUAL TABLE facts_fts USING fts5(text, content='facts', content_rowid='
       <P>
         Writing a fact is one insert. A keyed write (<InlineCode>parler remember --key deploy-strategy
         &quot;blue-green&quot;</InlineCode>) upserts in place, so updating something you already know
-        does not pile up duplicates. An unkeyed fact just appends. Recall is an FTS5{" "}
-        <InlineCode>MATCH</InlineCode> ordered by BM25, where a lower score is a better match, scoped to
-        the agent&apos;s reachable memory: its own private facts, plus every room it is a member of.
+        does not pile up duplicates. An unkeyed fact just appends. When the agent already knows the key,
+        it can skip search and{" "}
+        <A href="/blog/fetch-agent-memory-by-key">fetch that fact by key</A>, deterministically. Recall
+        by text is an FTS5 <InlineCode>MATCH</InlineCode> ordered by BM25, where a lower score is a better
+        match, scoped to the agent&apos;s reachable memory: its own private facts, plus every room it is
+        a member of.
       </P>
       <CodeBlock
         label="store.rs (recall, scoped to the agent)"

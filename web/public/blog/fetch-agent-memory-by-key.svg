@@ -1,0 +1,70 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="640" viewBox="0 0 1280 640" fill="none" role="img" aria-label="Two ways to reach a stored fact: a text query fans into a ranked BM25 list where the right fact competes with others, while a key goes straight to the one exact fact, deterministically.">
+  <defs>
+    <radialGradient id="glowBlue" cx="16%" cy="-6%" r="70%">
+      <stop offset="0%" stop-color="#3b9eff" stop-opacity="0.20"/>
+      <stop offset="70%" stop-color="#3b9eff" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="glowViolet" cx="14%" cy="100%" r="60%">
+      <stop offset="0%" stop-color="#9281f7" stop-opacity="0.16"/>
+      <stop offset="70%" stop-color="#9281f7" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="glowGreen" cx="88%" cy="24%" r="60%">
+      <stop offset="0%" stop-color="#3ecf8e" stop-opacity="0.16"/>
+      <stop offset="70%" stop-color="#3ecf8e" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="keyWire" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#3ecf8e" stop-opacity="0.95"/>
+      <stop offset="100%" stop-color="#3ecf8e" stop-opacity="0.55"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="1280" height="640" fill="#000000"/>
+  <rect width="1280" height="640" fill="url(#glowBlue)"/>
+  <rect width="1280" height="640" fill="url(#glowViolet)"/>
+  <rect width="1280" height="640" fill="url(#glowGreen)"/>
+
+  <!-- recall origin -->
+  <g>
+    <rect x="96" y="256" width="212" height="128" rx="16" fill="#050506" stroke="#1c1c22" stroke-width="1.5"/>
+    <text x="202" y="298" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="16" fill="#f5f5f7">recall</text>
+    <line x1="96" y1="318" x2="308" y2="318" stroke="#1c1c22" stroke-width="1.5"/>
+    <text x="202" y="348" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13" fill="#3b9eff">query: "digest"</text>
+    <text x="202" y="372" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13" fill="#3ecf8e">key: session-digest</text>
+  </g>
+
+  <!-- SEARCH path: fans into a ranked list -->
+  <line x1="308" y1="340" x2="470" y2="150" stroke="#3b9eff" stroke-width="1.5" stroke-dasharray="3 7" opacity="0.5"/>
+  <line x1="308" y1="340" x2="470" y2="228" stroke="#3b9eff" stroke-width="1.5" stroke-dasharray="3 7" opacity="0.5"/>
+  <line x1="308" y1="340" x2="470" y2="306" stroke="#3b9eff" stroke-width="1.5" stroke-dasharray="3 7" opacity="0.5"/>
+  <text x="360" y="140" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12.5" fill="#5a5a63">BM25 ranks</text>
+
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12.5">
+    <rect x="470" y="124" width="320" height="52" rx="10" fill="#050506" stroke="#26262d" stroke-width="1.5"/>
+    <text x="490" y="155" fill="#c9c9d0">"digest of the sprint standup"</text>
+    <text x="770" y="155" text-anchor="end" fill="#e5484d">0.7</text>
+
+    <rect x="470" y="202" width="320" height="52" rx="10" fill="#050506" stroke="#26262d" stroke-width="1.5"/>
+    <text x="490" y="233" fill="#c9c9d0">"SESSION DIGEST: ..."</text>
+    <text x="770" y="233" text-anchor="end" fill="#c9c9d0">0.9</text>
+
+    <rect x="470" y="280" width="320" height="52" rx="10" fill="#050506" stroke="#26262d" stroke-width="1.5"/>
+    <text x="490" y="311" fill="#c9c9d0">"digest auth notes"</text>
+    <text x="770" y="311" text-anchor="end" fill="#c9c9d0">1.4</text>
+  </g>
+  <text x="630" y="360" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12.5" fill="#e5484d">wrong fact ranks first</text>
+
+  <!-- KEY path: straight to one exact fact -->
+  <line x1="308" y1="356" x2="820" y2="470" stroke="url(#keyWire)" stroke-width="2.5"/>
+  <text x="470" y="452" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12.5" fill="#3ecf8e">fkey = ?1  (no ranking)</text>
+
+  <g>
+    <rect x="820" y="430" width="364" height="88" rx="14" fill="#07120d" stroke="#3ecf8e" stroke-width="1.75"/>
+    <text x="842" y="466" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13.5" fill="#3ecf8e">SESSION DIGEST: shipped keyed fetch</text>
+    <text x="842" y="496" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12.5" fill="#5a5a63">key=session-digest   score 0.0   exact</text>
+  </g>
+  <text x="1002" y="556" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12.5" fill="#3ecf8e">the fact you named, deterministically</text>
+
+  <!-- title -->
+  <text x="96" y="520" font-family="ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif" font-size="30" font-weight="600" fill="#f5f5f7">Don&apos;t search for a fact you can name</text>
+  <text x="96" y="558" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="15" fill="#3b9eff">parler protocol · agent memory</text>
+</svg>

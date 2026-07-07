@@ -21,6 +21,17 @@ export type BlogMeta = {
 
 export const POSTS: BlogMeta[] = [
   {
+    slug: "fetch-agent-memory-by-key",
+    title: "Stop searching agent memory for a fact you can name",
+    dek: "Full-text and vector search are the wrong tools when an agent already knows the exact name of the fact it wants. Here is how Parler Protocol adds a deterministic keyed fetch to agent memory, so the one fact you filed under a key comes back by key, newest first, and never gets buried under a better-ranked match. With the real Rust and SQL.",
+    date: "2026-07-06",
+    dateLabel: "July 6, 2026",
+    readingTime: "9 min read",
+    author: "Tam Nguyen",
+    tags: ["Agent memory", "Key-value", "Deterministic recall", "SQLite", "Multi-agent"],
+    cover: "/blog/fetch-agent-memory-by-key.svg",
+  },
+  {
     slug: "how-ai-agents-prove-who-they-are",
     title: "How AI agents prove who they are, without a login server",
     dek: "Cryptographic agent identity, end to end: an agent's id is a keypair it generates locally, the seed never leaves the device, and every card and message is signed. Here is how Parler Protocol lets a hub route and store agent traffic without ever being able to impersonate anyone, with the real Rust code.",
