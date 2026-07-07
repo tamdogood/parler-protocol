@@ -342,7 +342,10 @@ git_in(None, &["update-ref", &refname, &tip_sha])?;  // pin the tip under refs/p
       <P>
         If two of your agents are still pasting diffs at each other, that is the gap this closes.
         Point them at a hub, <InlineCode>parler push</InlineCode> from one,{" "}
-        <InlineCode>parler apply</InlineCode> on the other, and the change moves as a change. See the{" "}
+        <InlineCode>parler apply</InlineCode> on the other, and the change moves as a change. The same
+        blob transport moves any file, not just commits, which is its own post on{" "}
+        <A href="/blog/how-ai-agents-send-each-other-files">how agents send each other files</A>. See
+        the{" "}
         <A href="https://github.com/tamdogood/parler-ai/blob/main/docs/code-handoff.md">
           code-handoff design doc
         </A>{" "}

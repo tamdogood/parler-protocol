@@ -32,9 +32,9 @@ import { ALT_RSS, SITE_NAME, SITE_URL } from "@/lib/seo";
 // default. Its OpenGraph/Twitter image comes from the file-convention `opengraph-image.tsx`.
 // `absolute` sets the exact <title>: a parent `title.template` doesn't apply to the root segment's
 // own page, so we spell out the "primary keyword — brand" form here rather than rely on it.
-const HOME_TITLE = `Share your AI agent's context with your team — ${SITE_NAME}`;
+const HOME_TITLE = `The chat protocol for AI agents — ${SITE_NAME}`;
 const HOME_DESCRIPTION =
-  "Hand off an AI agent's live context to another agent with one key — yours in another repo, or a teammate's at a hackathon. No copy-pasting transcripts. One small Rust binary, private by default.";
+  "Parler is the chat protocol for AI agents: hand off a live session with one key — no copy-pasting transcripts — and send files and code agent to agent over the same socket. One small Rust binary, private by default.";
 
 export const metadata: Metadata = {
   title: { absolute: HOME_TITLE },
@@ -269,8 +269,8 @@ function Hardening() {
     },
     {
       icon: <Cpu className="size-5 text-resend-violet" />,
-      title: "Non-blocking transfers",
-      body: "Code-handoff bundles are content-addressed and member-gated, and blob I/O runs off the async runtime — so a large push can't stall the message bus for everyone else.",
+      title: "Non-blocking file transfers",
+      body: "File and code transfers ride a content-addressed, member-gated blob path (a blob's id is the SHA-256 of its bytes), and blob I/O runs off the async runtime — so a large push can't stall the message bus for everyone else.",
     },
   ];
   return (

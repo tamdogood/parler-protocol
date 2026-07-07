@@ -1,50 +1,52 @@
-# File transfer between agents (`com.parler.file`)
+# SEO audit + update: rank for "chat protocol for agents" / "agent file transfers"
 
-## Goal
-Let agents transfer arbitrary files efficiently, cheaply, fast — riding the existing
-content-addressed blob transport (the same one code-handoff uses), not a new channel.
+## Audit findings
+1. **CRITICAL — canonical host is wrong.** `web/lib/seo.ts` set `SITE_URL =
+   https://parler-hub.fly.dev` (the *hub server*), but the marketing site lives at
+   `https://www.parlerprotocol.com`. That misdirected every canonical tag, the sitemap,
+   robots.txt (host + sitemap), OpenGraph/Twitter `url`, and all JSON-LD `url` to a host that
+   serves a different app and 404s on `/blog/*`. Fixing the one constant fixes them all.
+2. **HIGH — the home (money) page never targeted "chat protocol for AI agents".** Its `<title>`
+   and H1 lead with "share context"; the tagline phrase lived only in metadata, not visible copy.
+3. **HIGH — "agent file transfers" had ZERO on-site coverage** despite the shipped
+   `com.parler.file` feature (`parler send-file` / `parler fetch`). No keyword, section, example,
+   FAQ, or post.
+4. **MEDIUM — KEYWORDS list** missing both target phrases.
 
-## Why this design (battle-tested foundations)
-- **Content-addressed storage + SHA-256** (Git, Docker, IPFS, restic, borg): dedup + integrity.
-  The hub already keys blobs by `sha256(bytes)` → same file to N agents / re-sends store once.
-- **Raw WebSocket binary frames** (no base64 → −33% size, no encode/decode CPU): already the
-  transport for blobs.
-- Reuses the **audited** blob path: member-gated, size-capped (25 MiB), rate-limited, disk-budgeted,
-  idle-GC'd. **Zero hub changes, zero new attack surface.**
+## Changes (on-page, honest — the features are real)
+- [x] `lib/seo.ts`: `SITE_URL` → `https://www.parlerprotocol.com`; add file-transfer to the
+      site description; prepend target keywords.
+- [x] `app/page.tsx`: home `<title>` + description lead with "the chat protocol for AI agents"
+      and mention file/code transfer; broaden the Hardening "transfers" card to name file transfer.
+- [x] `components/hero.tsx`: open the supporting copy with "Parler is the chat protocol for AI
+      agents" so the exact phrase is visible above the fold (and the hero finally says what it *is*).
+- [x] `components/examples.tsx`: add a "Send a file" tab with the real `send-file`/`fetch` commands.
+- [x] `components/faq.tsx`: fold "chat protocol for AI agents" + file/code transfer into the first
+      answer; add a dedicated "Can agents send each other files?" Q&A (feeds FAQPage schema).
 
-## Plan (purely additive)
-- [ ] `parler-protocol`: `FILE_KIND = "com.parler.file"` + `FileRef { blob, name, size, media_type?, summary? }`
-      with `to_part`/`from_part` (mirror `BundleRef`). Round-trip unit test.
-- [ ] `parler-connector`: extract private `put_blob()` (dedup upload logic from `push`); add
-      `MeshAgent::send_file(target, name, bytes, media_type, note)`. Download reuses `fetch_blob`.
-- [ ] `parler-cli`: `parler send-file <selectors> <path> [--note]`; `render_parts` renders 📎;
-      `parler fetch` already downloads bytes (generalize help). `guess_media_type` helper.
-- [ ] `parler-cli/mcp`: `parler_send_file` tool (+ spec); reuse `parler_fetch` for download; recv
-      renders the file part via shared `render_parts`.
-- [ ] Tests: protocol round-trip, connector e2e (send_file → recv sees 📎 → fetch matches → non-member
-      denied), mcp send_file unit test. Keep `tool_specs_stay_lean` under budget.
-- [ ] Docs: `docs/file-transfer.md` + AGENTS.md index line.
-- [ ] `CI_SKIP_WEB=1 make ci` green.
+## Verify — DONE
+- [x] `npm ci` + `next build` → 50/50 pages, no type/lint errors.
+- [x] Generated `robots.txt`, `sitemap.xml`, home `<title>`, `<link canonical>`, `og:url`, and all
+      JSON-LD `url` now point at `https://www.parlerprotocol.com` (verified in `.next/` output).
+- [x] "chat protocol for AI agents" renders in the home `<title>` + hero body; "Send a file" tab +
+      `parler send-file` + the file-transfer FAQ render on the home page and in FAQPage JSON-LD.
+- [x] The only remaining `parler-hub.fly.dev` refs are `wss://parler-hub.fly.dev` (the live hub
+      endpoint agents dial) — correct, left untouched.
 
-## Deferred frontier (documented, not built)
-Content-defined chunking (FastCDC, à la restic/borg) for sub-file dedup + resumable multi-frame
-streaming for files > 25 MiB + optional zstd. Whole-file content-addressing already dedups whole files.
+## Follow-up — DONE: dedicated blog post for "agent file transfers"
+- Shipped `how-ai-agents-send-each-other-files` via /write-blog. Angle: "a file is bytes, and
+  base64-in-chat taxes size + context tokens; put bytes on the content-addressed blob path." Owns
+  the "agent file transfer" cluster; links to (and is reciprocally linked from) the code-handoff
+  post so they don't cannibalize.
+- Wired: `docs/blog/*.md` source, `web/components/blog/*.tsx` body (prose primitives only),
+  `web/lib/blog.ts` POSTS entry, BODIES map + import in `app/blog/[slug]/page.tsx`, on-brand SVG
+  cover, repo-to-post backlink from `docs/file-transfer.md`.
+- Verified: `next build` green (52 pages); post `<title>`/description(=dek)/canonical(apex)/
+  og:image/twitter:image/BlogPosting JSON-LD all emit; slug in sitemap + /blog index card + cover
+  200. Scanner clean except the verbatim `parler recv` line (📎 + the em dash the CLI itself
+  prints), matching the shipped code-handoff precedent.
 
-## Review — DONE ✅
-All boxes above complete. Purely additive; **zero hub changes**.
-
-**Verified**
-- Protocol unit: `file_ref_round_trips_through_a_part` (round-trips + rejects plain/sibling parts).
-- Connector e2e: `file_transfer_send_recv_fetch_round_trips` (send_file → recv sees 📎 with a bare
-  basename → fetch matches bytes exactly → non-member denied). Existing `code_handoff_*` test still
-  passes, proving the `push`→`put_blob` refactor is behavior-preserving.
-- MCP e2e: `test_mcp_send_file_recv_fetch_e2e`.
-- **Live binary**: two `parler` agents on a real hub — send-file a 20 KB random `.png`, peer recv
-  shows the 📎 line, fetch writes byte-identical bytes (sha256 matches), blob id == sha256(file).
-- Gate: `CI_SKIP_WEB=1 make ci` → all gates passed (clippy -D warnings, test --locked, doc, deny).
-
-**Notes**
-- `TOOL_SPECS_BUDGET` 12,000 → 12,400 (the new `parler_send_file` tool adds ~170 B; descriptions
-  still under their own 4,700 B budget).
-- CLI `parler fetch` default output `.bundle` → `.bin` (it now downloads a bundle *or* a file).
-- Docs: `docs/file-transfer.md`, AGENTS.md index, communication.md capability map (row 7·b).
+## Distribution (still open — outward-facing, needs your go)
+- `/x-tweet` thread teaching the base64-tax insight, linking the post (not the homepage).
+- Answer the real question where it's asked (HN / r/rust / r/LocalLLaMA) with the post as the
+  fuller answer. Not done autonomously.
