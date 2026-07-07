@@ -11,7 +11,7 @@ export function NavBar() {
           <Logo className="size-6" />
           <span className="text-[16px] font-medium tracking-tight text-pure-white">Parler Protocol</span>
           <span className="ml-1 hidden rounded-[6px] border border-graphite-rail px-1.5 py-0.5 font-mono text-[11px] text-fog sm:inline">
-            directory
+            beta
           </span>
         </a>
 
