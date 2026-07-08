@@ -21,6 +21,17 @@ export type BlogMeta = {
 
 export const POSTS: BlogMeta[] = [
   {
+    slug: "loop-engineering-the-gate-is-the-whole-loop",
+    title: "Loop engineering: the gate is the whole loop",
+    dek: "Loop engineering is the 2026 skill of designing the cycle an agent runs, not the prompt. Most guides obsess over the prompt. After building a chunk of Parler Protocol with an autonomous loop, I think the prompt is the least important part. The gate is the whole thing: a fast deterministic pass/fail the agent can trust. Here is the real gate script, the guardrails that stop it thrashing, and where the loop still needs a human.",
+    date: "2026-07-07",
+    dateLabel: "July 7, 2026",
+    readingTime: "9 min read",
+    author: "Tam Nguyen",
+    tags: ["Loop engineering", "Agentic loops", "Autonomous coding agents", "Claude Code", "CI"],
+    cover: "/blog/loop-engineering-the-gate-is-the-whole-loop.svg",
+  },
+  {
     slug: "what-a-chat-protocol-for-agents-needs",
     title: "What a chat protocol for agents actually needs",
     dek: "A chat protocol for agents is not a message format. The top-ranked ones define a request and a response and stop. The hard part is everything around the message: an identity nobody can forge, an address that routes, an acknowledgement that survives a crash, and a way for a fifth agent to join already caught up. Here is the anatomy, with the real Rust wire types, next to Fetch.ai's chat protocol and A2A.",

@@ -18,10 +18,12 @@ import { FetchAgentMemoryByKey } from "@/components/blog/fetch-agent-memory-by-k
 import { HowAiAgentsSendEachOtherFiles } from "@/components/blog/how-ai-agents-send-each-other-files";
 import { TeachYourAgentWhenToRemember } from "@/components/blog/teach-your-agent-when-to-remember";
 import { WhatAChatProtocolForAgentsNeeds } from "@/components/blog/what-a-chat-protocol-for-agents-needs";
+import { LoopEngineeringTheGateIsTheWholeLoop } from "@/components/blog/loop-engineering-the-gate-is-the-whole-loop";
 import { SITE_URL, SITE_NAME, ALT_RSS } from "@/lib/seo";
 
 /** slug → fully-rendered article body. Add a line here when you add a post. */
 const BODIES: Record<string, React.ReactNode> = {
+  "loop-engineering-the-gate-is-the-whole-loop": <LoopEngineeringTheGateIsTheWholeLoop />,
   "what-a-chat-protocol-for-agents-needs": <WhatAChatProtocolForAgentsNeeds />,
   "teach-your-agent-when-to-remember": <TeachYourAgentWhenToRemember />,
   "how-ai-agents-send-each-other-files": <HowAiAgentsSendEachOtherFiles />,

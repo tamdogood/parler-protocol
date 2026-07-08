@@ -1,0 +1,60 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630" fill="none">
+  <rect width="1200" height="630" fill="#000000"/>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1200" y2="630" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#3b9eff" stop-opacity="0.10"/>
+      <stop offset="1" stop-color="#9281f7" stop-opacity="0.06"/>
+    </linearGradient>
+    <marker id="arrow" markerWidth="9" markerHeight="9" refX="6" refY="4.5" orient="auto">
+      <path d="M0 0 L9 4.5 L0 9 z" fill="#5a5f68"/>
+    </marker>
+    <marker id="arrowg" markerWidth="9" markerHeight="9" refX="6" refY="4.5" orient="auto">
+      <path d="M0 0 L9 4.5 L0 9 z" fill="#3ecf8e"/>
+    </marker>
+  </defs>
+  <rect width="1200" height="630" fill="url(#bg)"/>
+
+  <!-- eyebrow -->
+  <text x="90" y="118" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="20" letter-spacing="3" fill="#3b9eff">LOOP ENGINEERING</text>
+
+  <!-- title -->
+  <text x="88" y="200" font-family="Georgia, 'Times New Roman', serif" font-size="64" font-weight="600" fill="#ffffff">The gate is the</text>
+  <text x="88" y="270" font-family="Georgia, 'Times New Roman', serif" font-size="64" font-weight="600" fill="#8a8f98">whole loop</text>
+
+  <!-- the loop: four nodes in a cycle, the gate highlighted -->
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="16" transform="translate(0, 40)">
+    <!-- nodes -->
+    <g>
+      <rect x="120" y="360" width="150" height="66" rx="14" fill="#0a0a0a" stroke="#2a2a2a" stroke-width="1.5"/>
+      <text x="195" y="399" text-anchor="middle" fill="#8a8f98">plan</text>
+    </g>
+    <g>
+      <rect x="345" y="360" width="150" height="66" rx="14" fill="#0a0a0a" stroke="#2a2a2a" stroke-width="1.5"/>
+      <text x="420" y="399" text-anchor="middle" fill="#8a8f98">modify</text>
+    </g>
+    <!-- the gate, highlighted -->
+    <g>
+      <rect x="570" y="352" width="176" height="82" rx="16" fill="#06120c" stroke="#3ecf8e" stroke-width="2"/>
+      <text x="658" y="388" text-anchor="middle" fill="#3ecf8e" font-size="17">verify.sh</text>
+      <text x="658" y="412" text-anchor="middle" fill="#5a5f68" font-size="13">the gate</text>
+    </g>
+    <g>
+      <rect x="820" y="360" width="150" height="66" rx="14" fill="#0a0a0a" stroke="#2a2a2a" stroke-width="1.5"/>
+      <text x="895" y="399" text-anchor="middle" fill="#8a8f98">commit</text>
+    </g>
+
+    <!-- forward arrows -->
+    <line x1="270" y1="393" x2="338" y2="393" stroke="#5a5f68" stroke-width="1.6" marker-end="url(#arrow)"/>
+    <line x1="495" y1="393" x2="563" y2="393" stroke="#3ecf8e" stroke-width="1.6" marker-end="url(#arrowg)"/>
+    <line x1="746" y1="393" x2="813" y2="393" stroke="#3ecf8e" stroke-width="1.6" marker-end="url(#arrowg)"/>
+
+    <!-- repair loop back from gate to modify -->
+    <path d="M 640 434 C 600 500, 460 500, 420 430" fill="none" stroke="#9281f7" stroke-width="1.6" stroke-dasharray="5 5" marker-end="url(#arrow)"/>
+    <text x="500" y="518" text-anchor="middle" fill="#9281f7" font-size="13">VERIFY: FAIL -&gt; repair</text>
+
+    <!-- PASS callout -->
+    <text x="895" y="452" text-anchor="middle" fill="#3ecf8e" font-size="13">VERIFY: PASS</text>
+  </g>
+
+  <text x="90" y="590" font-family="ui-monospace, Menlo, monospace" font-size="17" fill="#5a5f68">parlerprotocol.com</text>
+</svg>

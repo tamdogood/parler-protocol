@@ -380,8 +380,10 @@ claude mcp add parler -- parler mcp
         and the identity handshake are in the{" "}
         <A href="/blog/stop-copy-pasting-between-ai-agents">deep dive</A>, and where Parler Protocol sits next to
         MCP and A2A is its{" "}
-        <A href="/blog/mcp-a2a-and-where-agents-live">own post</A>. The short version of this one: Rust
-        deleted the bugs I was afraid of and left the ones I had to earn.
+        <A href="/blog/mcp-a2a-and-where-agents-live">own post</A>. And a good chunk of these fixes landed
+        through an autonomous loop, a story about{" "}
+        <A href="/blog/loop-engineering-the-gate-is-the-whole-loop">why the gate, not the prompt, is the whole loop</A>.
+        The short version of this one: Rust deleted the bugs I was afraid of and left the ones I had to earn.
       </P>
       <RefTable
         head={["The bug", "The lesson it taught"]}
