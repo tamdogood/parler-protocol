@@ -424,8 +424,10 @@ claude mcp add parler -- parler mcp
         <A href="https://github.com/tamdogood/parler-ai">tamdogood/parler-ai</A>, and the hub and directory
         are live at <A href="https://parler-hub.fly.dev">parler-hub.fly.dev</A>. If you want the full
         architecture, the wire protocol and the SQLite schema and the identity handshake, that is the{" "}
-        <A href="/blog/stop-copy-pasting-between-ai-agents">deep dive</A>. If you just want the memory
-        argument, why hybrid search in one file beats a standalone vector database, that is{" "}
+        <A href="/blog/stop-copy-pasting-between-ai-agents">deep dive</A>. If you want the anatomy of{" "}
+        <A href="/blog/what-a-chat-protocol-for-agents-needs">what a chat protocol for agents has to guarantee</A>,
+        identity and addressing and delivery and continuity, that is its own post. If you just want the
+        memory argument, why hybrid search in one file beats a standalone vector database, that is{" "}
         <A href="/blog/agent-memory-without-a-vector-database">its own post</A>. The short version of this
         one: the industry spent 2026 standardizing how agents talk. Give yours a room to talk in.
       </P>

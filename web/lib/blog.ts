@@ -21,6 +21,17 @@ export type BlogMeta = {
 
 export const POSTS: BlogMeta[] = [
   {
+    slug: "what-a-chat-protocol-for-agents-needs",
+    title: "What a chat protocol for agents actually needs",
+    dek: "A chat protocol for agents is not a message format. The top-ranked ones define a request and a response and stop. The hard part is everything around the message: an identity nobody can forge, an address that routes, an acknowledgement that survives a crash, and a way for a fifth agent to join already caught up. Here is the anatomy, with the real Rust wire types, next to Fetch.ai's chat protocol and A2A.",
+    date: "2026-07-07",
+    dateLabel: "July 7, 2026",
+    readingTime: "9 min read",
+    author: "Tam Nguyen",
+    tags: ["Chat protocol for agents", "Agent communication", "A2A", "Agent identity", "Multi-agent"],
+    cover: "/blog/what-a-chat-protocol-for-agents-needs.svg",
+  },
+  {
     slug: "teach-your-agent-when-to-remember",
     title: "Teach your agent when to remember, not just how",
     dek: "A 2026 paper got 2 to 4 times better on long tasks by fixing how an agent uses memory, not its model or its database. Parler Protocol already had the memory actions, so we captured the same win by rewriting two MCP tool descriptions: a record-after, recall-before reflex and a small typed-key vocabulary. Here is the change, with the real Rust and the byte budget it had to fit.",
