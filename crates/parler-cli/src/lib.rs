@@ -1638,29 +1638,28 @@ pub fn render_message(m: &StoredMessage) -> String {
     }
 }
 
+/// The active-session pointer file, keyed to the *identity* (`$PARLER_HOME`, default `~/.parler`) so
+/// it sits alongside `config.json`. It used to hard-code `$HOME/.parler/active_session`, which meant
+/// two workspaces with distinct `PARLER_HOME`s clobbered one global file (issue #104); deriving it
+/// from `home_dir()` gives each identity its own pointer. The default path is unchanged
+/// (`home_dir()` == `$HOME/.parler` when `PARLER_HOME` is unset).
+fn active_session_path() -> std::path::PathBuf {
+    parler_connector::home_dir().join("active_session")
+}
+
 pub fn save_active_session(room: &str) -> Result<()> {
-    let home = std::env::var("HOME")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|_| parler_connector::home_dir());
-    let path = home.join(".parler").join("active_session");
+    let path = active_session_path();
     std::fs::create_dir_all(path.parent().unwrap())?;
     std::fs::write(&path, room)?;
     Ok(())
 }
 
 pub fn load_active_session() -> Option<String> {
-    let home = std::env::var("HOME")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|_| parler_connector::home_dir());
-    let path = home.join(".parler").join("active_session");
-    std::fs::read_to_string(&path).ok().map(|s| s.trim().to_string())
+    std::fs::read_to_string(active_session_path()).ok().map(|s| s.trim().to_string())
 }
 
 pub fn clear_active_session() -> Result<()> {
-    let home = std::env::var("HOME")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|_| parler_connector::home_dir());
-    let path = home.join(".parler").join("active_session");
+    let path = active_session_path();
     if path.exists() {
         let _ = std::fs::remove_file(&path);
     }
@@ -2277,5 +2276,41 @@ mod tests {
         assert!(msg.contains("matches more than one agent"), "actionable error: {msg}");
         assert!(msg.contains(&a_cfg.identity.id), "lists the first candidate id: {msg}");
         assert!(msg.contains(&b_cfg.identity.id), "lists the second candidate id: {msg}");
+    }
+
+    #[test]
+    fn active_session_is_scoped_per_home_dir() {
+        // Issue #104: the active-session pointer used to hard-code `$HOME/.parler/active_session`, so
+        // two workspaces with distinct `PARLER_HOME`s clobbered one global file. Keyed off
+        // `home_dir()`, each workspace holds its own active session without stepping on the other.
+        let ws_a = tempfile::tempdir().unwrap();
+        let ws_b = tempfile::tempdir().unwrap();
+        let prev = std::env::var("PARLER_HOME").ok();
+
+        std::env::set_var("PARLER_HOME", ws_a.path());
+        save_active_session("room-a").unwrap();
+        // The pointer lands *inside* this workspace's home, not a shared global path.
+        assert!(ws_a.path().join("active_session").exists(), "workspace A owns its own pointer file");
+
+        std::env::set_var("PARLER_HOME", ws_b.path());
+        assert_eq!(load_active_session(), None, "a fresh workspace sees no active session");
+        save_active_session("room-b").unwrap();
+
+        // Switching back proves B never clobbered A, and vice versa.
+        std::env::set_var("PARLER_HOME", ws_a.path());
+        assert_eq!(load_active_session().as_deref(), Some("room-a"), "workspace A kept its session");
+        std::env::set_var("PARLER_HOME", ws_b.path());
+        assert_eq!(load_active_session().as_deref(), Some("room-b"), "workspace B kept its session");
+
+        // clear only affects the active workspace.
+        clear_active_session().unwrap();
+        assert_eq!(load_active_session(), None, "cleared B");
+        std::env::set_var("PARLER_HOME", ws_a.path());
+        assert_eq!(load_active_session().as_deref(), Some("room-a"), "A survives B's clear");
+
+        match prev {
+            Some(p) => std::env::set_var("PARLER_HOME", p),
+            None => std::env::remove_var("PARLER_HOME"),
+        }
     }
 }
