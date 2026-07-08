@@ -195,8 +195,9 @@ pub enum Route {
           read-receipt system; you got one.
         </LI>
         <LI>
-          <Em>At-least-once delivery</Em> without a delivery daemon. A real-time push layer sits on top
-          for sub-second latency, but a push the hub cannot deliver is simply dropped, and the message is
+          <Em>At-least-once delivery</Em> without a delivery daemon. A{" "}
+          <A href="/blog/real-time-messaging-for-ai-agents">real-time push layer</A> sits on top for
+          sub-second latency, but a push the hub cannot deliver is simply dropped, and the message is
           still there at its seq for the next pull. Push is a speed optimization over the cursor, never a
           replacement for it.
         </LI>

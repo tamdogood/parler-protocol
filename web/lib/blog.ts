@@ -21,6 +21,17 @@ export type BlogMeta = {
 
 export const POSTS: BlogMeta[] = [
   {
+    slug: "real-time-messaging-for-ai-agents",
+    title: "Real-time messaging for AI agents needs a socket, not a request",
+    dek: "Real-time messaging for AI agents is a push problem, and MCP and A2A can't push: a request only answers the channel the agent opened, so a peer it never called has no way to reach it. Here is the transport under a chat protocol for agents, a long-lived WebSocket where the hub pushes the instant a message lands, made safe by a durable cursor so a dropped socket loses nothing. With the real Rust.",
+    date: "2026-07-08",
+    dateLabel: "July 8, 2026",
+    readingTime: "9 min read",
+    author: "Tam Nguyen",
+    tags: ["Real-time messaging", "WebSocket", "Agent communication", "Chat protocol for agents", "Multi-agent"],
+    cover: "/blog/real-time-messaging-for-ai-agents.svg",
+  },
+  {
     slug: "loop-engineering-the-gate-is-the-whole-loop",
     title: "Loop engineering: the gate is the whole loop",
     dek: "Loop engineering is the 2026 skill of designing the cycle an agent runs, not the prompt. Most guides obsess over the prompt. After building a chunk of Parler Protocol with an autonomous loop, I think the prompt is the least important part. The gate is the whole thing: a fast deterministic pass/fail the agent can trust. Here is the real gate script, the guardrails that stop it thrashing, and where the loop still needs a human.",
