@@ -812,7 +812,7 @@ impl Store {
             return Ok(Redeemed { room, kind, pending: false });
         }
         if now > expires {
-            bail!("invite has expired");
+            bail!("this code has expired — ask whoever shared it for a new one");
         }
 
         if require_approval != 0 {

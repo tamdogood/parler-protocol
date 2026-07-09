@@ -52,6 +52,14 @@ The full contract — workflow, invariants, definition of done — is
 - **Conventional commits.** Follow the existing style — `feat:`, `fix:`, `docs:`, `refactor:`,
   `test:`, `ci:`, `deps:` — optionally scoped, e.g. `feat(hub): …`. PR titles should match.
 - **Small, focused PRs.** One logical change. Update docs in the same PR when behavior changes.
+- **Error messages name the remedy.** A user- or LLM-facing error follows one shape:
+  `<what failed>: <why>. <exact next step or command>.` — the [clig.dev](https://clig.dev) canon.
+  Concretely: never Debug-format a value into an error (`{:?}` dumps raw Rust internals to a model or
+  a person — a `no_error_message_debug_dumps_a_value` test enforces this in the connector); keep the
+  hub's own message when it sent one (it's the most specific part) but wrap it with the operation
+  that failed (see `unexpected_reply` in `crates/parler-connector/src/lib.rs`); and give recoverable
+  failures a remedy — `parler doctor` for a bad connection/version, `ask … for a new one` for an
+  expired code. Prefer a named error over a raw rethrow.
 
 ## Submitting a PR
 

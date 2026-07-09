@@ -107,7 +107,7 @@ impl HubClient {
         let (nonce, hub_version) = match self.recv().await? {
             ServerFrame::Challenge { nonce, version } => (nonce, version),
             ServerFrame::Error { message } => bail!("hub rejected hello: {message}"),
-            other => bail!("expected a challenge, got {other:?}"),
+            other => return Err(crate::unexpected_reply("complete the handshake", &other)),
         };
         warn_on_protocol_mismatch(hub_version.as_deref());
 
@@ -130,7 +130,7 @@ impl HubClient {
         match self.recv().await? {
             ServerFrame::Welcome { .. } => Ok(()),
             ServerFrame::Error { message } => bail!("authentication failed: {message}"),
-            other => bail!("expected welcome, got {other:?}"),
+            other => Err(crate::unexpected_reply("complete the handshake", &other)),
         }
     }
 
@@ -226,7 +226,7 @@ impl MeshTransport for HubClient {
             // An older hub doesn't know the `subscribe` op and replies with a malformed-frame error;
             // that's not fatal — the connection stays usable, the caller just keeps polling.
             ServerFrame::Error { .. } => Ok(false),
-            other => bail!("unexpected reply to subscribe: {other:?}"),
+            other => return Err(crate::unexpected_reply("subscribe for live updates", &other)),
         }
     }
 
@@ -247,14 +247,12 @@ impl MeshTransport for HubClient {
         self.send(&put).await?;
         match self.recv().await? {
             ServerFrame::BlobReady { .. } => {}
-            ServerFrame::Error { message } => bail!("{message}"),
-            other => bail!("expected blob_ready, got {other:?}"),
+            other => return Err(crate::unexpected_reply("start the upload", &other)),
         }
         self.ws.send(WsMessage::Binary(bytes.to_vec())).await?;
         match self.recv().await? {
             stored @ ServerFrame::BlobStored { .. } => Ok(stored),
-            ServerFrame::Error { message } => bail!("{message}"),
-            other => bail!("expected blob_stored, got {other:?}"),
+            other => return Err(crate::unexpected_reply("finish the upload", &other)),
         }
     }
 
@@ -262,8 +260,7 @@ impl MeshTransport for HubClient {
         self.send(&get).await?;
         match self.recv().await? {
             ServerFrame::BlobIncoming { .. } => {}
-            ServerFrame::Error { message } => bail!("{message}"),
-            other => bail!("expected blob_incoming, got {other:?}"),
+            other => return Err(crate::unexpected_reply("start the download", &other)),
         }
         self.recv_binary().await
     }

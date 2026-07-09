@@ -22,6 +22,20 @@ use async_trait::async_trait;
 use parler_protocol::{ClientFrame, ServerFrame, StoredMessage};
 use std::time::Duration;
 
+/// Turn an unexpected reply frame into a user/LLM-facing error — never a raw `{:?}` Debug dump of
+/// the frame. If the hub sent its own error, surface that message (the most specific part) prefixed
+/// with the action that failed; otherwise name it a likely version mismatch and point at the
+/// recovery command. The error style is documented in `CONTRIBUTING.md`; see issue #111.
+pub(crate) fn unexpected_reply(action: &str, frame: &ServerFrame) -> anyhow::Error {
+    match frame {
+        ServerFrame::Error { message } => anyhow::anyhow!("couldn't {action}: {message}"),
+        _ => anyhow::anyhow!(
+            "couldn't {action}: the hub sent an unexpected reply — the hub and client may be \
+             running different versions. Run `parler doctor`."
+        ),
+    }
+}
+
 /// The seam between [`MeshAgent`] and a concrete transport: send one request frame, get one reply.
 /// A [`ServerFrame::Error`] reply is surfaced as `Err`.
 #[async_trait]
@@ -58,5 +72,58 @@ pub trait MeshTransport: Send {
     async fn download_blob(&mut self, get: ClientFrame) -> Result<Vec<u8>> {
         let _ = get;
         anyhow::bail!("this transport does not support blob download")
+    }
+}
+
+#[cfg(test)]
+mod error_style_tests {
+    use super::unexpected_reply;
+    use parler_protocol::ServerFrame;
+
+    #[test]
+    fn surfaces_the_hub_message_with_operation_context() {
+        // When the hub sent its own error, that message is the most specific part — keep it, but
+        // prefix it with the action that failed. Never leak the raw frame Debug.
+        let e = unexpected_reply(
+            "send the message",
+            &ServerFrame::Error { message: "room 'x' does not exist".into() },
+        );
+        let s = e.to_string();
+        assert!(s.contains("send the message"), "missing operation context: {s}");
+        assert!(s.contains("room 'x' does not exist"), "dropped the hub message: {s}");
+        assert!(!s.contains("Error {"), "Debug-dumped the frame: {s}");
+    }
+
+    #[test]
+    fn names_a_remedy_for_an_unexpected_frame() {
+        // A non-Error unexpected reply is a likely version mismatch → point at the recovery command.
+        let e = unexpected_reply("pull messages", &ServerFrame::JoinPending { room: "r".into() });
+        let s = e.to_string();
+        assert!(s.contains("pull messages"), "missing operation context: {s}");
+        assert!(s.contains("parler doctor"), "missing the remedy: {s}");
+        assert!(!s.contains("JoinPending"), "Debug-dumped the frame: {s}");
+    }
+
+    /// Regression guard for issue #111: no user/LLM-facing error constructor in the transport may
+    /// Debug-format a value (`{:?}`) — that dumps raw Rust internals to a model or a person. Route
+    /// unexpected reply frames through [`unexpected_reply`] instead. (Test-only `{:?}` in `assert!`
+    /// messages is fine — this scans only `bail!`/`anyhow!` lines.)
+    #[test]
+    fn no_error_message_debug_dumps_a_value() {
+        for (file, src) in
+            [("agent.rs", include_str!("agent.rs")), ("client.rs", include_str!("client.rs"))]
+        {
+            for (i, line) in src.lines().enumerate() {
+                if line.contains("bail!(") || line.contains("anyhow!(") {
+                    assert!(
+                        !line.contains(":?}"),
+                        "{file}:{}: error message Debug-dumps a value with {{:?}} — give it a named \
+                         message + remedy (issue #111): {}",
+                        i + 1,
+                        line.trim()
+                    );
+                }
+            }
+        }
     }
 }

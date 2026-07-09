@@ -225,7 +225,7 @@ impl MeshAgent {
             ServerFrame::Invited { code, url, room, kind, expires_at } => {
                 Ok(Invite { code, url, room, kind, expires_at })
             }
-            other => bail!("unexpected reply to invite: {other:?}"),
+            other => Err(crate::unexpected_reply("create the invite", &other)),
         }
     }
 
@@ -235,7 +235,7 @@ impl MeshAgent {
         match self.request(ClientFrame::Redeem { code: code.to_string() }).await? {
             ServerFrame::Joined { room, kind } => Ok(JoinOutcome::Joined { room, kind }),
             ServerFrame::JoinPending { room } => Ok(JoinOutcome::Pending { room }),
-            other => bail!("unexpected reply to redeem: {other:?}"),
+            other => Err(crate::unexpected_reply("redeem the code", &other)),
         }
     }
 
@@ -256,7 +256,7 @@ impl MeshAgent {
     pub async fn join_requests(&mut self, room: &str) -> Result<Vec<JoinRequest>> {
         match self.request(ClientFrame::JoinRequests { room: room.to_string() }).await? {
             ServerFrame::JoinRequests { requests, .. } => Ok(requests),
-            other => bail!("unexpected reply to join_requests: {other:?}"),
+            other => Err(crate::unexpected_reply("list join requests", &other)),
         }
     }
 
@@ -273,7 +273,7 @@ impl MeshAgent {
             .await?
         {
             ServerFrame::JoinResolved { approved, .. } => Ok(approved),
-            other => bail!("unexpected reply to resolve_join: {other:?}"),
+            other => Err(crate::unexpected_reply("resolve the join request", &other)),
         }
     }
 
@@ -281,7 +281,7 @@ impl MeshAgent {
     pub async fn serve(&mut self, service: &str) -> Result<String> {
         match self.request(ClientFrame::Serve { service: service.to_string() }).await? {
             ServerFrame::Joined { room, .. } => Ok(room),
-            other => bail!("unexpected reply to serve: {other:?}"),
+            other => Err(crate::unexpected_reply("register as a worker", &other)),
         }
     }
 
@@ -318,7 +318,7 @@ impl MeshAgent {
             .await?
         {
             ServerFrame::Sent { id, seq, room } => Ok((id, seq, room)),
-            other => bail!("unexpected reply to send: {other:?}"),
+            other => Err(crate::unexpected_reply("send the message", &other)),
         }
     }
 
@@ -420,7 +420,7 @@ impl MeshAgent {
         match stored {
             ServerFrame::BlobStored { id, .. } if id == blob_id => Ok(blob_id),
             ServerFrame::BlobStored { id, .. } => bail!("hub stored a different blob id: {id}"),
-            other => bail!("unexpected reply to put_blob: {other:?}"),
+            other => Err(crate::unexpected_reply("upload the data", &other)),
         }
     }
 
@@ -456,7 +456,7 @@ impl MeshAgent {
                 }
                 Ok((messages, cursor))
             }
-            other => bail!("unexpected reply to pull: {other:?}"),
+            other => Err(crate::unexpected_reply("pull messages", &other)),
         }
     }
 
@@ -553,7 +553,7 @@ impl MeshAgent {
                 self.record_ack(room, cursor);
                 Ok((messages, cursor))
             }
-            other => bail!("unexpected reply to parked pull: {other:?}"),
+            other => Err(crate::unexpected_reply("parked pull", &other)),
         }
     }
 
@@ -642,7 +642,7 @@ impl MeshAgent {
             .await?
         {
             ServerFrame::Remembered { .. } => Ok(()),
-            other => bail!("unexpected reply to remember: {other:?}"),
+            other => Err(crate::unexpected_reply("save the fact", &other)),
         }
     }
 
@@ -660,7 +660,7 @@ impl MeshAgent {
             .await?
         {
             ServerFrame::Recalled { hits } => Ok(hits),
-            other => bail!("unexpected reply to recall: {other:?}"),
+            other => Err(crate::unexpected_reply("search memory", &other)),
         }
     }
 
@@ -686,7 +686,7 @@ impl MeshAgent {
             .await?
         {
             ServerFrame::Recalled { hits } => Ok(hits),
-            other => bail!("unexpected reply to recall: {other:?}"),
+            other => Err(crate::unexpected_reply("search memory", &other)),
         }
     }
 
@@ -694,7 +694,7 @@ impl MeshAgent {
     pub async fn rooms(&mut self) -> Result<Vec<RoomInfo>> {
         match self.request(ClientFrame::Rooms).await? {
             ServerFrame::Rooms { rooms } => Ok(rooms),
-            other => bail!("unexpected reply to rooms: {other:?}"),
+            other => Err(crate::unexpected_reply("list your rooms", &other)),
         }
     }
 
@@ -702,7 +702,7 @@ impl MeshAgent {
     pub async fn roster(&mut self, room: &str) -> Result<Vec<RosterEntry>> {
         match self.request(ClientFrame::Roster { room: room.to_string() }).await? {
             ServerFrame::Roster { entries, .. } => Ok(entries),
-            other => bail!("unexpected reply to roster: {other:?}"),
+            other => Err(crate::unexpected_reply("read the roster", &other)),
         }
     }
 
@@ -713,7 +713,7 @@ impl MeshAgent {
             .await?
         {
             ServerFrame::PresenceOk => Ok(()),
-            other => bail!("unexpected reply to presence: {other:?}"),
+            other => Err(crate::unexpected_reply("update presence", &other)),
         }
     }
 
@@ -749,7 +749,7 @@ impl MeshAgent {
             .await?
         {
             ServerFrame::Registered { visibility, verified, .. } => Ok((visibility, verified)),
-            other => bail!("unexpected reply to register: {other:?}"),
+            other => Err(crate::unexpected_reply("publish your card", &other)),
         }
     }
 
@@ -769,7 +769,7 @@ impl MeshAgent {
             .await?
         {
             ServerFrame::Directory { agents } => Ok(agents),
-            other => bail!("unexpected reply to discover: {other:?}"),
+            other => Err(crate::unexpected_reply("search the directory", &other)),
         }
     }
 
@@ -777,7 +777,7 @@ impl MeshAgent {
     pub async fn lookup(&mut self, id: &str) -> Result<Option<DirectoryEntry>> {
         match self.request(ClientFrame::Lookup { id: id.to_string() }).await? {
             ServerFrame::Card { entry } => Ok(entry),
-            other => bail!("unexpected reply to lookup: {other:?}"),
+            other => Err(crate::unexpected_reply("look up the agent", &other)),
         }
     }
 
@@ -785,7 +785,7 @@ impl MeshAgent {
     pub async fn mint_directory_token(&mut self, ttl_secs: Option<u64>) -> Result<(String, i64)> {
         match self.request(ClientFrame::MintDirectoryToken { ttl_secs }).await? {
             ServerFrame::DirectoryToken { token, expires_at } => Ok((token, expires_at)),
-            other => bail!("unexpected reply to mint token: {other:?}"),
+            other => Err(crate::unexpected_reply("mint the directory token", &other)),
         }
     }
 
@@ -798,7 +798,7 @@ impl MeshAgent {
             .await?
         {
             ServerFrame::Watch { token, expires_at, .. } => Ok((token, expires_at)),
-            other => bail!("unexpected reply to mint watch token: {other:?}"),
+            other => Err(crate::unexpected_reply("mint the watch code", &other)),
         }
     }
 }
