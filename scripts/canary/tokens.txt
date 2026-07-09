@@ -1,0 +1,29 @@
+# Parler Protocol canary tokens — the single source of truth for scripts/canary-scan.sh.
+#
+# Each token below is seeded, verbatim, into one file in this repo (see the "location" comment).
+# The tokens are meaningless strings that exist for exactly one reason: they should only ever appear
+# in tamdogood's own repositories. If `gh search code` finds one of them in someone else's repo, that
+# is near-irrefutable evidence they copied this project rather than writing it independently — the
+# odds of independently typing a specific UUID are zero. That evidence is what powers a DMCA claim.
+#
+# This is detection, not defense. It harms no one, runs nowhere but the scanner, and does not change
+# how the software behaves. See docs/provenance.md for the full strategy and the enforcement path.
+#
+# Format: one token per line. Blank lines and lines starting with '#' are ignored by the scanner.
+# When you seed a NEW token, add it here AND note its location, so the scan can both confirm it is
+# still present locally and hunt for foreign copies.
+
+# location: crates/parler-protocol/src/lib.rs   (the wire contract — the heart any copier takes)
+PARLERPROV-f861532e-30a0-41dd-b682-62157cad220a
+
+# location: crates/parler-hub/src/lib.rs        (the hub — the server a copier would re-host)
+PARLERPROV-6b325d1d-f66c-492a-a6df-74c0020ddbac
+
+# location: web/app/layout.tsx                  (the marketing site — the part scrapers lift first)
+PARLERPROV-1bde4ff2-d69e-451e-bf8a-2abb9d2fe707
+
+# location: README.md                           (hidden HTML comment near the top of the readme)
+PARLERPROV-8e71e1c5-60d5-49ca-b7e7-71fb17a0ccb1
+
+# location: docs/provenance.md                  (this document self-marks so the doc itself is traceable)
+PARLERPROV-ec5ae937-da43-4649-8d5b-8f2ba61f0b6f

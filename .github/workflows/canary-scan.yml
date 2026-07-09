@@ -1,0 +1,28 @@
+name: Canary scan
+
+# A weekly, hands-off hunt for plagiarized copies of this project. The kit in docs/provenance.md
+# seeds unique canary tokens into the codebase; this job runs scripts/canary-scan.sh to (1) confirm
+# they're still seeded and (2) search public GitHub for foreign copies. A copy that appears months
+# from now still gets caught without anyone remembering to look. Same script as `make` runs locally,
+# so the logic never drifts. It only reads GitHub's public search index — it attacks nothing.
+on:
+  schedule:
+    - cron: "23 7 * * 1" # 07:23 UTC every Monday
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  canary-scan:
+    name: canary-scan (scheduled)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Scan for copies
+        env:
+          # The built-in token authenticates `gh search code`; the default owner (tamdogood) is
+          # treated as "ours". Add more via CANARY_OWNERS if the project moves to an org.
+          GH_TOKEN: ${{ github.token }}
+        run: ./scripts/canary-scan.sh
