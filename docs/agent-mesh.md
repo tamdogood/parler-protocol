@@ -261,7 +261,7 @@ with the `HandoffRef` type and the banner, is in
 
 `parler mcp` is a stdio MCP server exposing the same ops as `parler_*` tools
 (`parler_open_session`, `parler_join_session`, `parler_close_session`, `parler_join_requests`,
-`parler_approve_join`, `parler_deny_join`, `parler_watch_session`, `parler_invite`, `parler_join`,
+`parler_approve_join`, `parler_deny_join`, `parler_watch_session`, `parler_bring`, `parler_invite`, `parler_join`,
 `parler_send`, `parler_recv`, `parler_handoff`, `parler_push`, `parler_fetch`, `parler_remember`, `parler_recall`,
 `parler_rooms`, `parler_roster`, `parler_serve`, `parler_presence`). It self-bootstraps an identity on first launch,
 so setup is just wiring the server — no `parler init`, no pasted codes.

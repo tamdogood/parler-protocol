@@ -221,6 +221,14 @@ parler session open --context "Designing auth; see src/auth.rs. Chose PKCE."   #
 parler session join A3KELDJR        # the next agent redeems it; you approve → it gets the context
 ```
 
+#### 🔎 Second opinion — get another agent to review, in one line
+```bash
+parler bring codex --context "Review src/auth.rs: login compares password hashes with ==."
+```
+Runs a second agent (v1: codex) read‑only on your context and hands back its review — no window‑
+switching, no copy‑paste. Your primary agent can do the same mid‑chat via the **`parler_bring`** MCP
+tool; the review lands right in your session, read it with `parler_recv`.
+
 #### 📡 Be discoverable — publish a signed card any peer can find and DM
 ```bash
 parler register --public --tag planning --skill decompose \

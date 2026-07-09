@@ -421,7 +421,7 @@ async fn handle(state: &mut McpState, method: &str, params: Value) -> Result<Val
                 "parler_open_session" | "parler_join_session" | "parler_close_session"
                 | "parler_join" | "parler_send" | "parler_recv" | "parler_handoff"
                 | "parler_join_requests" | "parler_approve_join" | "parler_deny_join"
-                | "parler_watch_session" => {
+                | "parler_watch_session" | "parler_bring" => {
                     call_session_tool(state, &name, &args).await
                 }
                 _ => call_tool(&mut state.agent, &name, &args).await,
@@ -1148,8 +1148,90 @@ async fn call_session_tool(state: &mut McpState, name: &str, args: &Value) -> Re
             }
             Ok(out)
         }
+        "parler_bring" => bring_second_opinion(state, args).await,
         other => bail!("unknown session tool: {other}"),
     }
+}
+
+/// `parler_bring`: get an independent second opinion from another agent (v1: codex) without
+/// copy-paste. The review needs somewhere to land so the host reads it via `parler_recv`, so we
+/// post it into the active session — opening one seeded with the context if there isn't one yet.
+///
+/// A real review is multi-minute, so we must **not** block this tool call (the host would time it
+/// out). Instead we spawn the bundled `parler bring` detached — it runs the agent, posts the
+/// review into the room, and exits — and return immediately. The context goes in over the child's
+/// stdin (never argv, so a large recap can't overflow the command line) and a background task
+/// reaps the child so it never lingers as a zombie.
+async fn bring_second_opinion(state: &mut McpState, args: &Value) -> Result<String> {
+    let agent = args
+        .get("agent")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|a| !a.is_empty())
+        .unwrap_or("codex")
+        .to_string();
+    if !crate::bring::is_supported(&agent) {
+        bail!(
+            "don't know how to bring '{agent}'. Supported: {}",
+            crate::bring::SUPPORTED_AGENTS.join(", ")
+        );
+    }
+    let context = args
+        .get("context")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|c| !c.is_empty())
+        .ok_or_else(|| anyhow!("missing 'context' — what should {agent} give a second opinion on?"))?
+        .to_string();
+
+    // The review is delivered as a normal message, so it needs a room. Reuse the active session;
+    // otherwise open one seeded with the same context (also gives the host a place to converse).
+    let room = match state.active_session.clone() {
+        Some(r) => r,
+        None => {
+            open_session(state, Some(&context), Some(format!("{agent}-review")), None, None, true).await?;
+            state
+                .active_session
+                .clone()
+                .ok_or_else(|| anyhow!("failed to open a session for the review"))?
+        }
+    };
+
+    let exe = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("parler"));
+    let mut child = tokio::process::Command::new(&exe)
+        .arg("bring")
+        .arg(&agent)
+        .arg("--context-file")
+        .arg("-") // read the recap from stdin
+        .arg("--room")
+        .arg(&room)
+        .arg("--quiet")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|e| anyhow!("couldn't start `parler bring`: {e}"))?;
+
+    if let Some(mut stdin) = child.stdin.take() {
+        use tokio::io::AsyncWriteExt;
+        let ctx = context.clone();
+        tokio::spawn(async move {
+            let _ = stdin.write_all(ctx.as_bytes()).await;
+            let _ = stdin.shutdown().await;
+        });
+    }
+    // Reap the child when it finishes so it doesn't become a zombie in this long-lived process.
+    // We don't kill_on_drop: the review should outlive a dropped handle and run to completion.
+    tokio::spawn(async move {
+        let _ = child.wait().await;
+    });
+
+    Ok(format!(
+        "Asked {agent} for a second opinion. It's reviewing now and will post its feedback into \
+         session '{room}' within a few minutes — call parler_recv to read it when it lands. If it \
+         fails (e.g. {agent} isn't installed or logged in), a ⚠ notice with the fix lands there \
+         instead."
+    ))
 }
 
 /// Open a shared session: mint a multi-use channel invite (the key), seed it with the caller's
@@ -1656,6 +1738,15 @@ fn tool_specs() -> Vec<Value> {
             &[],
         ),
         tool(
+            "parler_bring",
+            "Get an independent second opinion from another AI agent (v1: codex) — no copy-paste. Runs it read-only on your context and posts its review into your active session (opening one if needed) as a normal message; call parler_recv to read it. Returns immediately; the review lands in a few minutes.",
+            json!({
+                "agent": { "type": "string", "description": "which agent to ask (default and v1-only: codex)" },
+                "context": { "type": "string", "description": "what to review — recap of the code/decision and what you want a second opinion on" }
+            }),
+            &["context"],
+        ),
+        tool(
             "parler_invite",
             "Mint an invite code/link for another agent. kind: dm (1:1, default), group (1:many channel), service (many:1 queue). Hand the code to the other agent.",
             json!({
@@ -1902,12 +1993,15 @@ mod tests {
     /// parler_join, name-resolving approve/deny, strict inputs) — the point of those issues. Ceiling
     /// raised to 12,000 to keep a meaningful guardrail against large regressions. Adding the
     /// `parler_send_file` tool (arbitrary file transfer) grew it ~170 B to 12,169; ceiling → 12,400.
-    const TOOL_SPECS_BUDGET: usize = 12_400;
+    /// Adding the `parler_bring` tool (one-line second opinion from another agent) grew it ~560 B to
+    /// ~12,970; ceiling → 13,200 to keep ~20% headroom against real regressions.
+    const TOOL_SPECS_BUDGET: usize = 13_200;
     /// Just the human-readable descriptions (the part the diet targets; schema scaffolding is
     /// load-bearing). Pre-diet 5,261 B → post-diet (P0.2) 4,304 B; P1.2 adds ~230 B of cheap-path
     /// steering (name-based `to`/`card`, compact discover/roster, `detail`) that earns its bytes.
-    /// Still ~730 B under the pre-diet baseline. Ceiling with headroom.
-    const TOOL_DESC_BUDGET: usize = 4_700;
+    /// Still ~730 B under the pre-diet baseline. `parler_bring`'s description adds ~280 B; ceiling
+    /// → 5,000 with headroom.
+    const TOOL_DESC_BUDGET: usize = 5_000;
     /// Rendered `join_session` output with a ~100-message backlog. Full-replay baseline was 7,863
     /// chars; P0.3's digest render (seed + tail + omission line) brings it to ~1,458. Ceiling leaves
     /// headroom for a larger tail / longer messages.
@@ -1960,6 +2054,41 @@ mod tests {
             desc_bytes <= TOOL_DESC_BUDGET,
             "tool descriptions {desc_bytes} B exceed budget {TOOL_DESC_BUDGET} B — keep them tight"
         );
+    }
+
+    /// The whitelist is the security boundary in front of a subprocess spawn: a non-whitelisted
+    /// agent — including anything shell-shaped — must be rejected before any side effect (no
+    /// session opened, nothing spawned).
+    #[tokio::test]
+    async fn bring_rejects_unknown_agent_before_any_side_effect() {
+        let hub = start_hub().await;
+        let mut alice = state(&hub, "alice").await;
+        for bad in ["claude", "codex; rm -rf /", "../../bin/sh"] {
+            let err = call_session_tool(
+                &mut alice,
+                "parler_bring",
+                &json!({ "agent": bad, "context": "review this" }),
+            )
+            .await
+            .expect_err("non-whitelisted agent must be rejected");
+            assert!(err.to_string().contains("don't know how to bring"), "{bad}: {err}");
+            assert!(alice.active_session.is_none(), "rejection must not open a session");
+        }
+    }
+
+    /// Omitted/blank context is rejected up front — bring must never spawn a review with nothing
+    /// to review (the failure would otherwise surface minutes later, detached).
+    #[tokio::test]
+    async fn bring_requires_context() {
+        let hub = start_hub().await;
+        let mut alice = state(&hub, "alice").await;
+        for args in [json!({ "agent": "codex" }), json!({ "agent": "codex", "context": "   " })] {
+            let err = call_session_tool(&mut alice, "parler_bring", &args)
+                .await
+                .expect_err("missing context must be rejected");
+            assert!(err.to_string().contains("missing 'context'"), "{err}");
+            assert!(alice.active_session.is_none(), "rejection must not open a session");
+        }
     }
 
     #[tokio::test]
