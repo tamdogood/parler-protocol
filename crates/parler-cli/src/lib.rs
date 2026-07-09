@@ -4,6 +4,7 @@
 //! local identity, connect to the hub, do one op, print. `parler hub` runs the bus in-process and
 //! `parler mcp` exposes the same ops as MCP tools (see [`mcp`]).
 
+pub mod bring;
 pub mod connect;
 pub mod mcp;
 
@@ -54,6 +55,8 @@ enum Cmd {
     /// Open or join a shared live session — hand a key to another agent mid-conversation.
     #[command(subcommand)]
     Session(SessionCmd),
+    /// Get a one-line second opinion from another AI agent — no copy-paste (v1: codex).
+    Bring(BringArgs),
     /// Publish this agent's discovery card to the hub directory (default: private).
     Register(RegisterArgs),
     /// Discover agents — the whole hub (default) or just the public directory (--public).
@@ -269,6 +272,31 @@ enum SessionCmd {
         #[arg(long)]
         ttl: Option<u64>,
     },
+}
+
+#[derive(Args)]
+struct BringArgs {
+    /// Which agent to ask for a second opinion. v1: codex.
+    agent: String,
+    /// The context to review — a recap of the code/decision and what you want a second opinion on.
+    #[arg(long, conflicts_with = "context_file")]
+    context: Option<String>,
+    /// Read the context from a file instead of --context; use `-` for stdin. The `parler_bring`
+    /// MCP tool uses `-` so a large recap never has to fit on the command line.
+    #[arg(long)]
+    context_file: Option<String>,
+    /// Override the default "senior engineer, second opinion" instruction handed to the agent.
+    #[arg(long)]
+    instruction: Option<String>,
+    /// Also post the review into this session room (so it lands in the conversation via recv).
+    #[arg(long)]
+    room: Option<String>,
+    /// Don't print the review to stdout — only post it to --room. Used when spawned by the MCP tool.
+    #[arg(long)]
+    quiet: bool,
+    /// Wall-clock timeout in seconds (default 300).
+    #[arg(long)]
+    timeout_secs: Option<u64>,
 }
 
 #[derive(Args)]
@@ -502,6 +530,7 @@ pub async fn run() -> Result<()> {
         Cmd::Join { code } => cmd_join(code).await,
         Cmd::Serve { service } => cmd_serve(service).await,
         Cmd::Session(c) => cmd_session(c).await,
+        Cmd::Bring(a) => cmd_bring(a).await,
         Cmd::Register(a) => cmd_register(a).await,
         Cmd::Discover(a) => cmd_discover(a).await,
         Cmd::Card { id } => cmd_card(id).await,
@@ -949,6 +978,81 @@ async fn cmd_serve(service: String) -> Result<()> {
     let room = ag.serve(&service).await?;
     println!("✓ serving '{service}' (room '{room}')");
     println!("  receive tasks with:  parler recv --room {room}");
+    Ok(())
+}
+
+/// `parler bring <agent>` — run another AI agent on some context and hand back its review, no
+/// copy-paste. With `--room`, the review is also posted into that session so it surfaces in the
+/// conversation via `parler recv`. The heavy lifting (spawning the agent, timeout, remedies) lives
+/// in [`bring`]; this is the thin CLI adapter, mirroring the other `cmd_*` wrappers.
+async fn cmd_bring(a: BringArgs) -> Result<()> {
+    if !bring::is_supported(&a.agent) {
+        bail!(
+            "don't know how to bring '{}'. Supported: {}",
+            a.agent,
+            bring::SUPPORTED_AGENTS.join(", ")
+        );
+    }
+    let context = match (a.context.as_deref(), a.context_file.as_deref()) {
+        (Some(c), _) => c.to_string(),
+        (None, Some("-")) => {
+            use std::io::Read;
+            let mut s = String::new();
+            std::io::stdin().read_to_string(&mut s)?;
+            s
+        }
+        (None, Some(path)) => std::fs::read_to_string(path)
+            .map_err(|e| anyhow::anyhow!("couldn't read --context-file {path}: {e}"))?,
+        (None, None) => bail!(
+            "nothing to review — pass --context \"…\" (what should {} look at?)",
+            a.agent
+        ),
+    };
+    if context.trim().is_empty() {
+        bail!("the context is empty — give {} something to review", a.agent);
+    }
+
+    let prompt = bring::build_prompt(a.instruction.as_deref(), &context);
+    let timeout =
+        Duration::from_secs(a.timeout_secs.unwrap_or(bring::DEFAULT_TIMEOUT_SECS));
+    if !a.quiet {
+        eprintln!(
+            "⋯ asking {} for a second opinion (up to {}s)…",
+            a.agent,
+            timeout.as_secs()
+        );
+    }
+    let room = a.room.as_deref().map(str::trim).filter(|r| !r.is_empty());
+    let review = match bring::run_review(&a.agent, &prompt, timeout).await {
+        Ok(r) => r,
+        Err(e) => {
+            // The MCP tool runs us detached with stderr nulled, so the room is the only channel
+            // back to the host — post the remedy there (best-effort) or the failure is invisible
+            // and the host polls parler_recv into a dead end (the #100 phantom-tool trap).
+            if let Some(room) = room {
+                if let Ok(mut ag) = connect().await {
+                    let notice =
+                        format!("⚠ second opinion from {} failed: {}", a.agent, e.remedy());
+                    let _ = ag.send_text(Target::Room { room: room.to_string() }, &notice).await;
+                }
+            }
+            bail!("{}", e.remedy());
+        }
+    };
+
+    // Print before posting: the review is already paid for (tokens + minutes), so a hub hiccup on
+    // the post must not eat it.
+    if !a.quiet {
+        println!("{review}");
+    }
+    if let Some(room) = room {
+        let mut ag = connect().await?;
+        let body = format!("🔎 second opinion from {} (via parler bring):\n\n{review}", a.agent);
+        ag.send_text(Target::Room { room: room.to_string() }, &body).await?;
+        if !a.quiet {
+            eprintln!("✓ posted the review into session '{room}'");
+        }
+    }
     Ok(())
 }
 

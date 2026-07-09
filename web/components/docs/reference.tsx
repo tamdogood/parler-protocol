@@ -55,6 +55,7 @@ export function Reference() {
           [code("parler session approve <id>"), "Admit a pending joiner (owner)"],
           [code("parler session watch"), "Mint a read-only watch code for the browser viewer (owner)"],
           [code("parler session close"), "Close the session"],
+          [code("parler bring codex --context …"), "Get a one-line second opinion from another agent (v1: codex); --room posts it into a session"],
         ]}
       />
 
@@ -116,6 +117,7 @@ export function Reference() {
           [code("parler_join_requests"), "List pending join requests (owner)"],
           [code("parler_approve_join / parler_deny_join"), "Admit or reject a pending joiner (owner)"],
           [code("parler_watch_session"), "Mint a read-only browser watch code (owner)"],
+          [code("parler_bring"), "Get a second opinion from another agent (v1: codex); posts into your session"],
           [code("parler_send / parler_recv"), "Send to / pull from any room; recv takes wait_secs to long-poll"],
           [code("parler_invite / parler_join"), "Mint a channel invite / join by code"],
           [code("parler_serve"), "Become a worker on a service queue"],

@@ -1,106 +1,168 @@
-# Provenance & anti-plagiarism kit
+# UX redesign: the wire, not the window (v2 — post-audit)
 
-Goal: make plagiarism **detectable, provable, and legally costly** — no booby traps, nothing that
-damages a copier's machine or hijacks their AI agent. Passive watermarks + active detection + the
-enforcement path, built on the existing Apache-2.0 + NOTICE attribution requirement.
+Goal: make Parler feel as simple as Darren Bounds' one-line `codex exec` hack for the solo case,
+while keeping the niche Mosaic-style apps can't touch — **agents that don't share a screen, a
+machine, or an owner**. Cut conceptual load, make watch-live the visceral demo, and shrink the
+macOS app to the one job only a resident app can do.
 
-## Plan
+Positioning (decided 2026-07-08): Parler is the **wire** (agent↔agent, async, durable,
+cross-tool/machine/owner); Mosaic is a **window** (humans watching shared terminals, sync,
+macOS-only). Don't chase the window. Mosaic is GPL-3.0 — ideas only, never code. The solo
+one-liner is the **funnel**, not the niche.
 
-- [ ] `docs/provenance.md` — strategy doc: canary registry table, benign AI-attribution breadcrumb,
-      signed-commit setup, GitHub code-search + DMCA enforcement path. Self-marked with a canary.
-- [ ] `scripts/canary/tokens.txt` — canonical newline list of the seeded canary tokens (single
-      source of truth for the scan).
-- [ ] `scripts/canary-scan.sh` — reads tokens, (1) asserts each is still seeded locally, (2) runs
-      `gh search code` for foreign hits outside `tamdogood/*`, reports. lib.sh style, shellcheck-clean.
-- [ ] `.github/workflows/canary-scan.yml` — weekly scheduled scan (mirrors `audit.yml`).
-- [ ] Seed watermarks (comments only — zero clippy/build impact):
-  - [ ] `crates/parler-protocol/src/lib.rs`   → PARLERPROV-f861532e…
-  - [ ] `crates/parler-hub/src/lib.rs`         → PARLERPROV-6b325d1d…
-  - [ ] `web/app/layout.tsx` (+ AI breadcrumb)  → PARLERPROV-1bde4ff2…
-  - [ ] `README.md` (hidden HTML comment)        → PARLERPROV-8e71e1c5…
-  - [ ] `docs/provenance.md` self-marker          → PARLERPROV-ec5ae937…
-- [ ] Link provenance from `SECURITY.md` and the README license/attribution section (no doc drift).
-- [x] Verify: shellcheck the new script, dry-run the scan, `CI_SKIP_WEB=1 make ci` (comments only,
-      but prove nothing broke), confirm every token is greppable.
+**Success criteria (measured, not vibes):**
+- Fresh machine → second opinion in chat: **< 60 s, ≤ 2 concepts touched** (install, `bring`).
+  Today's happy path touches ~6 (hub, key, join, approval, identity, session).
+- Owner-offline join request → owner acts on it **without opening a terminal** (Phase 4).
+- Kill criterion for `bring` v2 (MCP-joiner mode): if a headless agent can't reliably drive the
+  join→pull→reply loop in the Phase 0 spike, ship pipe-mode only and revisit.
+
+## Phase 0 — Spike + spec (1–2 days; de-risk before design)
+
+- [ ] **Spike the riskiest assumption first**: can `codex exec` (headless, one-shot) reliably
+      drive parler MCP tools (join session → pull → reply)? Timebox: half a day.
+- [ ] Decide the v1 transport based on the spike:
+  - **Pipe mode (default v1, zero protocol risk):** `bring` opens the session, pipes the recap
+    into `codex exec --sandbox read-only` on stdin, and posts codex's output back into the
+    session itself. Deterministic — no dependency on the joiner's tool-calling behavior. The hub
+    stays the system of record; cross-machine/MCP mode comes later.
+  - **MCP-joiner mode (v2):** joiner self-bootstraps with `PARLER_SESSION_KEY` and participates
+    as a real agent. Only if the spike passes.
+- [ ] Write `docs/research/parler-bring-spec.md` covering both modes plus:
+  - **No protocol change needed for approval:** the host client creates/knows the joiner id, so
+    it polls `JoinRequests` for its own room and auto-resolves that exact id in-process.
+    Owner-initiated, single-id — the gate is not weakened. (#108's general pre-approval is now
+    *not* a blocker for `bring`.)
+  - **Async return shape:** `parler_bring` must NOT block an MCP tool call on a multi-minute
+    review (host tool-call timeouts). It returns immediately ("codex is reviewing in room X");
+    the reply lands as a normal message via recv/auto-pull.
+  - **Subprocess hygiene:** whitelisted agent names only (no shell interpolation from tool
+    args), hard timeout, kill on session close, reap zombies. An MCP tool that spawns processes
+    is a new security surface — spec it, review it against the security model.
+  - **Tool-list budget:** coordinate with #89 — `bring` must not just grow the 11 KB tools/list;
+    a pipe-mode joiner needs zero parler tools, an MCP joiner needs a minimal profile.
+- [ ] File issues (bring, menubar approver, JoinRequested push frame, messaging pass); link into
+      epic #113.
+
+## Phase 1 — `parler bring` v1, pipe mode (the on-ramp)
+
+Moved ahead of the big UX issues: nothing in #104/#108/#111 blocks pipe mode, and this is the
+only phase that ships new user-visible value. 
+
+- [ ] CLI `parler bring codex` (open session → spawn codex with recap → post reply back).
+- [ ] `parler_bring` MCP tool, async return; calling agent supplies the recap.
+- [ ] Handle the unhappy paths: codex not installed / not logged in / times out — error names
+      the remedy (#111 style even before #111 lands).
+- [ ] `scripts/demo-bring.sh` — the 15-second demo; measure the <60 s success criterion in it.
+- [ ] Docs: README "second opinion in one line"; docs/communication.md + tool tables.
+- [ ] Verify: live run on local hub AND shared hub; every printed command copy-paste-runnable
+      (the #99–#103 lesson); `CI_SKIP_WEB=1 make ci`.
+
+## Phase 2 — Conceptual simplification (existing UX lane, resliced)
+
+- [ ] #108 **sliced**: session close + expiring keys + owner-offline signal. (General
+      pre-approval hatch is still worth having for teammates — keep, but it no longer gates
+      anything here.)
+- [ ] #104 per-workspace identity — also what stops `bring`'s spawned joiner colliding with the
+      host on one machine; `bring` v1 must set a scoped `PARLER_HOME` until #104 lands properly.
+- [ ] #111 one error-message standard.
+- [ ] Verify each: e2e test per issue acceptance criteria + CI green; docs greped in same PR.
+
+## Phase 3 — Messaging (rescoped: #161 already shipped the hero)
+
+The landing page was redesigned 2026-07-09 (f10c226): 4 sections around the 42 s demo video.
+Do NOT redo it.
+
+- [ ] Audit current README + site copy against the "wire vs window" positioning; fix drift only.
+- [ ] Fold `bring` into the demo video / quickstart once Phase 1 ships (the video predates it).
+- [ ] Blog post via `write-blog`: "a window or a wire" angle (distinct from the 4 shipped posts;
+      humanizer pass).
+- [ ] Verify: `cd web && npm run build`; every claim matches shipped behavior.
+
+## Phase 4 — macOS app: shrink to menubar approver
+
+Verified feasible: the hub already supports multiple concurrent connections per agent id
+(`subscribers: HashMap<String, Vec<Subscriber>>`), so the app can sit alongside the MCP session
+as the owner. Verified gap: **join requests are poll-only today** — `JoinRequests` is
+request/reply; there is no push to the owner.
+
+- [ ] **v1: poll, don't push (2026-07-09 simplification).** `parler session requests --json`
+      already exists for the desktop app; a human approval flow tolerates seconds of latency, so
+      the menubar approver polls it (~3–5 s) — **zero protocol change, no deploy ordering, no
+      compat risk**. Ship the notification UX on that.
+- [ ] v2 (only if polling proves costly): `ServerFrame::JoinRequested` push. **CORRECTION
+      (map-joinpush, verified):** "old clients ignore it" is FALSE — `ServerFrame` is
+      internally-tagged with no serde catch-all, and both connector recv paths (`client.rs:160`,
+      `:195`) propagate the error, so an unknown frame **hard-errors and drops an old subscribed
+      client's connection**. The frame itself is compile-safe (all match sites have `_` arms), but
+      **delivery must be opt-in-gated**: a new `ClientFrame` op (e.g. `WatchRequests`) or an
+      optional `#[serde(default)]` field on the unit `Subscribe` variant (`hub.rs:415`), pushed
+      only to connections that opted in. Also needs `Store::room_owner(room) -> Option<String>`
+      (only the `room_owned_by` bool exists). Ripples protocol → hub → connector → CLI (+ docs);
+      deploy hub first — necessary but NOT sufficient without the opt-in gate.
+- [ ] App: menubar + native notification "X wants to join <room> · Approve / Reject". Reuse the
+      app's existing architecture — shell out to the bundled CLI (e.g. a new
+      `parler session watch-requests --json` long-poll) rather than reimplementing WS in Node.
+- [ ] Keep one-click Connect; drop/de-emphasize Directory + Sessions screens (web viewer owns
+      watching). App README updated to the narrowed scope.
+- [ ] Note in docs: this is macOS-only sugar; headless/Linux owners (the CI niche) use
+      pre-approval or CLI — no capability is app-exclusive.
+- [ ] Verify: real join request on the shared hub fires the notification; approve from menubar
+      admits the agent end-to-end.
+
+## Out of scope (explicit)
+
+- No terminal/workspace GUI (not competing with Mosaic/Ghostty on their terrain).
+- No Mosaic code (GPL-3.0 vs our Apache-2.0).
+- No weakening of the join gate: `bring`'s auto-admit is the owner's own client resolving the
+  one id it just created; nothing broader.
+- `web/` hero rework (shipped in #161) and session-viewer feature work.
 
 ## Review
 
-Done. All items landed and verified.
+### Phase 0 — spike + spec: DONE
+- Spike (machine-verified, `codex-cli 0.142.5`): pipe mode viable exactly as specced; codex's final
+  answer is the only thing on stdout (chatter → stderr), so zero output parsing. MCP-joiner mode is
+  mechanically possible but its tool-calling reliability is unproven → deferred to a v2 spike.
+- Transport decision: **pipe mode is v1.** Spec written: `docs/research/parler-bring-spec.md`.
+- Correction captured: Phase 4's "additive, old clients ignore it" is FALSE (see Phase 4 note) —
+  `ServerFrame` has no serde catch-all, so the push must be opt-in-gated. Not yet built (Phase 4).
+- GitHub issues NOT filed (outward-facing; left for an explicit go). The plan phases here track it.
 
-- **Doc** — `docs/provenance.md`: the strategy anchor (honest premise, canary registry table, AI
-  breadcrumb, signed-commit setup, scan, DMCA enforcement path). Self-marked with a canary. Linked
-  from `SECURITY.md` (new "Provenance & attribution" section) and the README license section, so no
-  doc drift.
-- **Registry** — `scripts/canary/tokens.txt`: single source of truth, 5 tokens with `# location:` notes.
-- **Scanner** — `scripts/canary-scan.sh`: (1) asserts every token is still seeded locally
-  (`git grep --untracked`, so it works pre-commit), (2) `gh search code` for foreign hits outside
-  owned owners. lib.sh-style; `shellcheck -x` clean at all severities. `--local` mode for offline/`make`.
-- **Automation** — `.github/workflows/canary-scan.yml`: weekly scheduled scan (mirrors `audit.yml`);
-  `actionlint` clean.
-- **Watermarks** (comments only — zero clippy/build impact): protocol `lib.rs`, hub `lib.rs`, web
-  `layout.tsx` (+ AI breadcrumb), README (hidden HTML comment), provenance doc self-marker.
+### Phase 1 — `parler bring`, pipe mode: DONE & VERIFIED
+- New module `crates/parler-cli/src/bring.rs`: whitelist (`SUPPORTED_AGENTS=["codex"]`), codex
+  runner (tokio::process, `--sandbox read-only --ignore-user-config -o <file> -`, stdin recap,
+  hard timeout + kill/reap), typed errors → one-line remedies (#111 style). 6 unit tests.
+- CLI `parler bring <agent>` (`cmd_bring`): `--context`/`--context-file` (`-`=stdin)/`--instruction`
+  /`--room`/`--quiet`/`--timeout-secs`. Prints the review; `--room` posts it into a session.
+- MCP `parler_bring { agent, context }`: uses/opens the active session, spawns the bundled
+  `parler bring … --context-file - --room <room> --quiet` **detached** (context over stdin, reaped
+  in the background), returns immediately — never blocks the tool call. Registered in the
+  session-aware dispatch + `tool_specs` (budget ceilings raised with documented justification,
+  matching the `parler_send_file` precedent; `tool_specs_stay_lean` green).
+- Docs (no drift): README "Second opinion" example, `docs/communication.md` (row 11),
+  `docs/agent-mesh.md` tool list, `web/components/docs/reference.tsx` (CLI + MCP tables).
+- Demo: `scripts/demo-bring.sh` (shellcheck-clean).
+- **Verified:** real `parler bring codex` returned a clean review in ~10 s, exit 0, stdout =
+  review only. Full room flow on a local hub (scoped PARLER_HOME): session open → bring `--room`
+  → `parler recv` shows codex's review landed as a message. `make ci` **green** (selftest, rust
+  with clippy -D warnings, web, audit).
 
-**Verification**
-- `shellcheck -x scripts/canary-scan.sh` → clean (all severities). `actionlint` → clean.
-- `scripts/canary-scan.sh --local` → all 5 tokens present, exit 0.
-- Full scan (remote `gh search code`) → ran end-to-end, "scan clean", exit 0.
-- `cargo clippy -p parler-protocol -p parler-hub --all-targets --locked -- -D warnings` → exit 0.
-- Every token greppable in its intended file.
+### Post-implementation review (2026-07-09, parler-review contract): 2 MEDIUM + 1 LOW found & fixed
+- **MEDIUM (fixed):** a failed review was silent in the detached MCP path (bail before room post,
+  stderr nulled) — the #100 phantom-tool trap reintroduced. Now a ⚠ remedy notice is posted into
+  the room on failure; live-verified (1 s-timeout run → notice landed via recv).
+- **MEDIUM (fixed):** the whitelist/context validation gates had no negative tests. Added 2
+  MCP-layer tests (injection-shaped agents rejected before any side effect; missing/blank context
+  rejected). 92 tests green.
+- **LOW (fixed):** CLI `--room` post failure discarded the already-paid-for review — review now
+  prints before the post. Also: `agent` made optional in the tool spec (matches the codex
+  default), MCP return text updated to mention the failure notice.
+- Verdict after fixes: approve. `CI_SKIP_WEB=1 make ci` green.
+- **Plan improvement adopted:** Phase 4 v1 switched from the push frame to polling the existing
+  `session requests --json` (zero wire change); push demoted to a gated v2 optimization.
 
-**Deliberately NOT built:** any booby trap / logic bomb / prompt-injection payload that damages or
-hijacks a copier's machine or AI agent. That's malware regardless of who trips it, it hits innocent
-bystanders, and competent copiers sidestep it. This kit makes plagiarism *provable and takedown-able*
-instead — the effective, lawful version.
-
-### Optional follow-ups (not done — minimal-impact call)
-- Could wire `scripts/canary-scan.sh --local` into `make ci`/`selftest.sh` so a silently-refactored-
-  away watermark fails the gate. Left out to keep the core gate fast; the weekly workflow already
-  covers presence. Easy to add later.
-- Enable SSH commit signing for real (docs/provenance.md §3) — a local git config change, left to you.
-
-## 2026-07-08 — Landing page simplification (mosaic.inc-style)
-
-**Ask (Tam):** the landing page is too busy; a first-time visitor can't grab the idea. Simplify and
-reorganize like https://mosaic.inc — minimal hero, one clear message; move critical-but-secondary
-elements to standalone pages or the footer. Use the provided demo video if possible.
-
-### Plan
-- [x] Assets: copy attached demo video → `web/public/demo.mp4` (H.264, 3.4 MB, 42 s, captions
-      burned in); extract a poster frame → `web/public/demo-poster.jpg`.
-- [x] `hero.tsx`: rewrite — short serif H1 ("Hand off the conversation, not the clipboard."),
-      one-sentence sub with the "chat protocol for AI agents" keyword, Get started + GitHub CTAs,
-      and the demo video as the centerpiece (autoplay/muted/loop). Drop badge pill, install block,
-      ParticleField.
-- [x] `page.tsx`: cut WhoItsFor / SessionsFeature / Directory / HowItWorks / Examples / Security /
-      Hardening / Faq. New tight sections: 3-step "how it works" (mirrors video captions), install
-      one-liner terminal, one-line security strip → link to /docs/security. Keep metadata (money
-      keywords) unchanged.
-- [x] New `/faq` page reusing the Faq component (FAQPage JSON-LD moves with it); add to sitemap.
-- [x] NavBar: Hub / Docs / Blog (+GitHub); CTA → Get started (/docs/quickstart). Kill dead `/#how`,
-      `/#security` anchors.
-- [x] Footer: expand to columns — Product (Hub, Session viewer, Docs, Quickstart), Resources (Blog,
-      FAQ, Security model, RSS), GitHub/License/Issues.
-- [x] Delete now-dead components: directory.tsx, examples.tsx, particle-field.tsx (agent-card/detail
-      stay — used by agents-console). SessionsFeature stays (hub Sessions tab uses it).
-- [x] Docs drift: update web/README.md description; grep for old anchors.
-- [x] Verify: scripts/ci/web.sh (npm ci + next build), then headless-Chrome screenshots of / and
-      /faq (desktop + mobile) and iterate.
-
-### Review (done 2026-07-08)
-- Landing shrank from 9 sections (~8k px) to 4 (hero+video · 3 steps · install · security line);
-  everything relocated, nothing orphaned: FAQ → `/faq` (FAQPage JSON-LD moved with the component,
-  h2→h1), directory/viewer stayed at `/hub`, security depth → `/docs/security` via strip + footer.
-- Demo video: `web/public/demo.mp4` (H.264 `avc1`, 42 s, 3.4 MB, captions burned in) + poster
-  extracted at t=2 s via a throwaway Swift/AVFoundation script (no ffmpeg on the machine). Video is
-  autoplay/muted/loop/playsInline; poster = first scene so the pre-play frame doesn't jump. Easy to
-  swap when Tam replaces the temporary cut — one `<video>` in `hero.tsx`.
-- Security copy on the strip was tightened after the first screenshot: the *id* is the public key,
-  the *private seed* is what never leaves the device (don't conflate them on the money page).
-- Deleted dead components after the rewrite: `directory.tsx`, `examples.tsx`, `particle-field.tsx`
-  (agent-card/detail stay — agents-console uses them; SessionsFeature stays — hub Sessions tab).
-- Verified: `next build` green (81 pages, `/faq` present); headless-Chrome screenshots at 1440/520
-  (the 390 px "overflow" was Chrome's min-window clamp — viewport meta present, wraps fine);
-  stale-anchor grep clean (`/#how`, `/#security`, `/#faq` all gone).
-- Headline rewrite (same session): H1 → "Your agents just became a team." (sells the collaboration
-  outcome; transformation-headline pattern); sub-line now carries the mechanism ("one key pulls any
-  agent — yours or a teammate's — into the same live conversation"). Rebuilt + screenshot-verified.
+### Not done (intentionally, per plan)
+- Phase 2 (#104/#108/#111), Phase 3 (messaging/blog), Phase 4 (menubar approver + gated push).
+- MCP-joiner mode (v2), kill-on-session-close, cross-machine bring, agents beyond codex.
+- Nothing committed/pushed — changes are in the working tree for review.
