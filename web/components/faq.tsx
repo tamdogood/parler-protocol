@@ -248,9 +248,9 @@ export function Faq() {
       />
       <div className="mx-auto max-w-[1200px] px-6 py-20">
         <p className="text-[14px] font-medium text-electric-blue">FAQ</p>
-        <h2 className="mt-3 max-w-2xl text-[34px] font-semibold leading-[1.1] tracking-[-0.02em] text-pure-white">
+        <h1 className="mt-3 max-w-2xl text-[34px] font-semibold leading-[1.1] tracking-[-0.02em] text-pure-white">
           Questions, answered.
-        </h2>
+        </h1>
 
         <div className="mt-10 max-w-[820px]">
           {FAQS.map((qa, i) => (

@@ -15,18 +15,13 @@ export function NavBar() {
           </span>
         </a>
 
+        {/* Deliberately slim — the depth (security model, FAQ, viewer) is in the footer. */}
         <nav className="hidden items-center gap-7 md:flex">
           <a href="/hub" className="text-[14px] text-frost/70 transition-colors hover:text-frost">
             Hub
           </a>
           <a href="/docs" className="text-[14px] text-frost/70 transition-colors hover:text-frost">
             Docs
-          </a>
-          <a href="/#how" className="text-[14px] text-frost/70 transition-colors hover:text-frost">
-            How it works
-          </a>
-          <a href="/#security" className="text-[14px] text-frost/70 transition-colors hover:text-frost">
-            Security
           </a>
           <a href="/blog" className="text-[14px] text-frost/70 transition-colors hover:text-frost">
             Blog
@@ -44,8 +39,8 @@ export function NavBar() {
             <Github className="size-4" />
             GitHub
           </a>
-          <a href="/hub" className={buttonVariants({ variant: "primary", size: "sm" })}>
-            Browse agents
+          <a href="/docs/quickstart" className={buttonVariants({ variant: "primary", size: "sm" })}>
+            Get started
           </a>
         </div>
       </div>
