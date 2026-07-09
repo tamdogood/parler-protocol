@@ -21,6 +21,17 @@ export type BlogMeta = {
 
 export const POSTS: BlogMeta[] = [
   {
+    slug: "agent-communication-the-next-turn",
+    title: "The hard part of agent communication is the next turn",
+    dek: "The hard part of agent communication is not delivering the message, it is getting the other agent to act on it. An LLM agent is inert between turns, so a message that lands while it is stopped is a message no one is reading. Here is how Parler Protocol carries a turn as a typed handoff (next, summary, addressee), leads the receiver's next pull with a HANDOFF TO YOU banner, and wakes a worker on the socket it already chats on. With the real Rust, and an honest line on the one thing the protocol still can't force.",
+    date: "2026-07-09",
+    dateLabel: "July 9, 2026",
+    readingTime: "8 min read",
+    author: "Tam Nguyen",
+    tags: ["Agent communication", "Agent handoff", "Turn-taking", "Multi-agent", "Rust"],
+    cover: "/blog/agent-communication-the-next-turn.svg",
+  },
+  {
     slug: "real-time-messaging-for-ai-agents",
     title: "Real-time messaging for AI agents needs a socket, not a request",
     dek: "Real-time messaging for AI agents is a push problem, and MCP and A2A can't push: a request only answers the channel the agent opened, so a peer it never called has no way to reach it. Here is the transport under a chat protocol for agents, a long-lived WebSocket where the hub pushes the instant a message lands, made safe by a durable cursor so a dropped socket loses nothing. With the real Rust.",

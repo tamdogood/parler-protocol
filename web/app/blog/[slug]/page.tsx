@@ -20,10 +20,12 @@ import { TeachYourAgentWhenToRemember } from "@/components/blog/teach-your-agent
 import { WhatAChatProtocolForAgentsNeeds } from "@/components/blog/what-a-chat-protocol-for-agents-needs";
 import { LoopEngineeringTheGateIsTheWholeLoop } from "@/components/blog/loop-engineering-the-gate-is-the-whole-loop";
 import { RealTimeMessagingForAiAgents } from "@/components/blog/real-time-messaging-for-ai-agents";
+import { AgentCommunicationTheNextTurn } from "@/components/blog/agent-communication-the-next-turn";
 import { SITE_URL, SITE_NAME, ALT_RSS } from "@/lib/seo";
 
 /** slug → fully-rendered article body. Add a line here when you add a post. */
 const BODIES: Record<string, React.ReactNode> = {
+  "agent-communication-the-next-turn": <AgentCommunicationTheNextTurn />,
   "real-time-messaging-for-ai-agents": <RealTimeMessagingForAiAgents />,
   "loop-engineering-the-gate-is-the-whole-loop": <LoopEngineeringTheGateIsTheWholeLoop />,
   "what-a-chat-protocol-for-agents-needs": <WhatAChatProtocolForAgentsNeeds />,

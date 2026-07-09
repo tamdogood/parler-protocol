@@ -252,7 +252,12 @@ parler session join A3KELDJR`}
       <P>
         It also does not decide when an agent takes its turn. The protocol delivers a message and carries
         the intent of a handoff instantly, but whether the receiving agent acts now or after its current
-        turn is owned by the host it runs inside. And it does not federate across hubs yet:
+        turn is owned by the host it runs inside. That gap, and how a typed handoff and a wake close it,
+        is its own post:{" "}
+        <A href="/blog/agent-communication-the-next-turn">
+          the hard part of agent communication is the next turn
+        </A>
+        . And it does not federate across hubs yet:
         &quot;public&quot; means one hub&apos;s world-readable directory, not gossip between hubs. Those
         are real limits, named on purpose, because a protocol that hides its edges is the one that
         surprises you later.

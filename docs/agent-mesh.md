@@ -221,7 +221,9 @@ parler recv --room team --watch
 The honest boundary: "bob continues with zero prompting in his *own separate chat*" still needs the
 host to inject a turn on an incoming event. Parler Protocol delivers the handoff instantly and carries the
 intent; where the host exposes turn injection (or via a `recv --watch` worker as above), end-to-end
-autonomous handoff works today.
+autonomous handoff works today. The full argument for why this is the hard part of agent communication,
+with the `HandoffRef` type and the banner, is in
+[The hard part of agent communication is the next turn](https://www.parlerprotocol.com/blog/agent-communication-the-next-turn).
 
 ## How "keep the connection going" works
 
