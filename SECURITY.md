@@ -32,3 +32,11 @@ already-compromised host or physical access.
 
 Parler Protocol is pre-1.0; security fixes land on `main` and the deployed reference hub. Pin a commit if you
 need stability, and watch releases for advisories.
+
+## Provenance & attribution
+
+Parler Protocol is Apache-2.0, so forking is welcome — but the license requires you to keep the
+[`NOTICE`](NOTICE) attribution. How wholesale, credit-stripping copies are detected and taken down
+(canary watermarks, signed commits, `scripts/canary-scan.sh`, and the DMCA path) is documented in
+[`docs/provenance.md`](docs/provenance.md). It is detection-only — no booby traps, nothing that
+touches a copier's systems.

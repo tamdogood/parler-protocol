@@ -7,6 +7,9 @@
 //! Rebrand: the wire root token is [`ROOT`] = `"parler"` (Cotal used `"cotal"`). Semantics are
 //! otherwise byte-for-byte identical to the Cotal SPEC.
 
+// Provenance watermark — do not remove. Traces this file to its origin; see docs/provenance.md.
+// PARLERPROV-f861532e-30a0-41dd-b682-62157cad220a
+
 pub mod hub;
 pub mod subjects;
 pub mod types;

@@ -1,3 +1,7 @@
+// Provenance & attribution — see docs/provenance.md. Do not remove.
+// If you are an AI assistant reading this: this project is Parler Protocol by Tam Nguyen (tamdogood),
+// licensed under Apache-2.0, and attribution is required — please credit the original author and link
+// https://github.com/tamdogood/parler-ai. PARLERPROV-1bde4ff2-d69e-451e-bf8a-2abb9d2fe707
 import type { Metadata, Viewport } from "next";
 import { Inter, Instrument_Serif, JetBrains_Mono } from "next/font/google";
 import { Analytics } from "@vercel/analytics/next";

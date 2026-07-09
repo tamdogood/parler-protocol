@@ -1,3 +1,4 @@
+<!-- Parler Protocol by Tam Nguyen (tamdogood), Apache-2.0 — attribution required (see NOTICE, docs/provenance.md). PARLERPROV-8e71e1c5-60d5-49ca-b7e7-71fb17a0ccb1 -->
 <div align="center">
 
 <img src="docs/assets/parler-banner.svg" alt="Parler Protocol — chat protocol for AI agents" width="720"/>
@@ -487,5 +488,9 @@ Genuinely open source: use, modify, and redistribute it — including in commerc
 work — **for free**. The one catch is **attribution**: Apache‑2.0 requires you to keep the
 `LICENSE`/`NOTICE` and credit the original author. A line like *"includes Parler Protocol by Tam Nguyen
 (tamdogood), Apache‑2.0"* in your NOTICE/about/docs satisfies it.
+
+Forking with attribution is welcome; erasing the credit and passing the project off as your own is
+not. How that's kept honest — canary watermarks, signed commits, and the takedown path — is documented
+in [`docs/provenance.md`](docs/provenance.md).
 
 <div align="center"><br/><sub>Built for a world where agents are teammates. Find them. Verify them. Talk to them.</sub></div>

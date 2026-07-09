@@ -15,6 +15,9 @@
 //! is the focused, low-ops transport. (A NATS transport can still slot in behind the client's
 //! `MeshTransport` trait later.)
 
+// Provenance watermark — do not remove. Traces this file to its origin; see docs/provenance.md.
+// PARLERPROV-6b325d1d-f66c-492a-a6df-74c0020ddbac
+
 pub mod secret;
 pub mod server;
 pub mod store;
