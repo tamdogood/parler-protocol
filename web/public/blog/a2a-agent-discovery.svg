@@ -1,0 +1,63 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630" fill="none">
+  <rect width="1200" height="630" fill="#000000"/>
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1200" y2="630" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#3b9eff" stop-opacity="0.10"/>
+      <stop offset="1" stop-color="#9281f7" stop-opacity="0.06"/>
+    </linearGradient>
+    <linearGradient id="wire" x1="0" y1="0" x2="1" y2="0">
+      <stop stop-color="#9281f7"/>
+      <stop offset="1" stop-color="#3b9eff"/>
+    </linearGradient>
+  </defs>
+  <rect width="1200" height="630" fill="url(#g)"/>
+
+  <!-- faint grid rails -->
+  <g stroke="#1a1a1a" stroke-width="1">
+    <line x1="0" y1="157" x2="1200" y2="157"/>
+    <line x1="0" y1="472" x2="1200" y2="472"/>
+  </g>
+
+  <!-- eyebrow -->
+  <text x="90" y="120" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="20" letter-spacing="3" fill="#3b9eff">A2A AGENT DISCOVERY</text>
+
+  <!-- title -->
+  <text x="88" y="205" font-family="Georgia, 'Times New Roman', serif" font-size="62" font-weight="600" fill="#ffffff">Discoverable over A2A,</text>
+  <text x="88" y="275" font-family="Georgia, 'Times New Roman', serif" font-size="62" font-weight="600" fill="#8a8f98">still verifiable</text>
+
+  <!-- the well-known URL -->
+  <text x="90" y="360" font-family="ui-monospace, Menlo, monospace" font-size="17" letter-spacing="1" fill="#5a5f68">GET /.well-known/agent-card.json</text>
+
+  <!-- LEFT: the stored signed card -->
+  <g transform="translate(0, 400)">
+    <text x="120" y="-16" font-family="ui-monospace, Menlo, monospace" font-size="15" letter-spacing="1" fill="#5a5f68">signed card &#183; id is the key</text>
+    <rect x="120" y="0" width="300" height="150" rx="18" fill="#0a0a0a" stroke="#3b9eff" stroke-width="2"/>
+    <g font-family="ui-monospace, Menlo, monospace" font-size="15" fill="#8a8f98">
+      <text x="150" y="42">"id": "U8f3a…",</text>
+      <text x="150" y="72">"name": "reviewer",</text>
+      <text x="150" y="102">"skills": [ … ],</text>
+    </g>
+    <text x="150" y="132" font-family="ui-monospace, Menlo, monospace" font-size="15" fill="#3ecf8e">"sig": "verified" &#10003;</text>
+  </g>
+
+  <!-- projection arrow -->
+  <g transform="translate(0, 400)">
+    <line x1="440" y1="75" x2="700" y2="75" stroke="url(#wire)" stroke-width="2.5"/>
+    <polygon points="700,75 686,68 686,82" fill="#3b9eff"/>
+    <text x="570" y="60" text-anchor="middle" font-family="ui-monospace, Menlo, monospace" font-size="13" fill="#5a5f68">project</text>
+  </g>
+
+  <!-- RIGHT: the A2A card with the parler extension -->
+  <g transform="translate(0, 400)">
+    <text x="720" y="-16" font-family="ui-monospace, Menlo, monospace" font-size="15" letter-spacing="1" fill="#5a5f68">A2A AgentCard</text>
+    <rect x="720" y="0" width="330" height="150" rx="18" fill="#0a0a0a" stroke="#9281f7" stroke-width="2"/>
+    <g font-family="ui-monospace, Menlo, monospace" font-size="15" fill="#8a8f98">
+      <text x="750" y="42">"protocolVersion": "0.3.0",</text>
+      <text x="750" y="72">"capabilities": { … },</text>
+    </g>
+    <rect x="748" y="90" width="274" height="44" rx="10" fill="#0a0a0a" stroke="#3ecf8e" stroke-width="1.5"/>
+    <text x="766" y="118" font-family="ui-monospace, Menlo, monospace" font-size="15" fill="#3ecf8e">"parler": { id, signature }</text>
+  </g>
+
+  <text x="90" y="600" font-family="ui-monospace, Menlo, monospace" font-size="17" fill="#5a5f68">parlerprotocol.com</text>
+</svg>

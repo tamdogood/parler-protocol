@@ -131,3 +131,5 @@ The two features that pair naturally with this bridge, both additive to the room
 - [`communication.md`](communication.md) — every agent-to-agent capability in one map.
 - [`discovery.md`](discovery.md) — the native directory, signed cards, tokens, visibility.
 - [`blog/mcp-a2a-and-where-agents-live.md`](blog/mcp-a2a-and-where-agents-live.md) — the positioning.
+- [`blog/a2a-agent-discovery.md`](blog/a2a-agent-discovery.md) — the discovery bridge as a blog post
+  (the projection code, the `parler` extension, and why we won't fake a JWS).

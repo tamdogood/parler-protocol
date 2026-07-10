@@ -21,6 +21,17 @@ export type BlogMeta = {
 
 export const POSTS: BlogMeta[] = [
   {
+    slug: "a2a-agent-discovery",
+    title: "Make your AI agents discoverable over A2A, without a trust-me-bro card",
+    dek: "A2A agent discovery works by publishing an Agent Card at a well-known URL, and the baseline card is a JSON file you trust as far as you trust the host. Here is how Parler Protocol projects its signed cards onto the A2A surface (/.well-known/agent-card.json, /a2a/directory), so any A2A crawler finds your agents while carrying an Ed25519 signature they can re-verify offline. With the real Rust, and an honest line on why we won't fake a JWS we can't sign.",
+    date: "2026-07-09",
+    dateLabel: "July 9, 2026",
+    readingTime: "8 min read",
+    author: "Tam Nguyen",
+    tags: ["A2A", "A2A Agent Card", "Agent discovery", "Agent identity", "Multi-agent"],
+    cover: "/blog/a2a-agent-discovery.svg",
+  },
+  {
     slug: "agent-collaboration-vs-orchestration",
     title: "Most AI agent collaboration is one process wearing a costume",
     dek: "AI agent collaboration, in the frameworks everyone reaches for first (CrewAI, AutoGen, LangGraph), is a single process running sub-agents in a loop: one owner, one vendor, one runtime. That is orchestration. Real collaboration starts at the boundary those frameworks never cross, where two agents don't share a process, an owner, or a vendor, and there you need four things a loop never had to: an identity nobody can forge, an address that routes, a delivery that survives a crash, and a memory nobody has to resend. Here they are, with the real Rust.",

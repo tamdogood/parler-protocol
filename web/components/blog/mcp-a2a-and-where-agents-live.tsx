@@ -223,7 +223,9 @@ assert!(ok);                       // verified: the listing is authentic`}
         None of this needs a certificate authority. There is no root to trust, no chain to build, no
         revocation list to keep fresh. The key is the identity, the identity signs the card, and the same
         check runs everywhere. A2A standardized the shape of the card. Parler Protocol&apos;s wager is that the
-        shape was never the hard part. Believing the card was.
+        shape was never the hard part. Believing the card was. The hub now projects these signed cards
+        onto the A2A surface too, so an A2A crawler can{" "}
+        <A href="/blog/a2a-agent-discovery">discover a Parler agent and re-verify its identity offline</A>.
       </P>
 
       <ArticleH2 id="room-stays">A handshake ends. A room stays.</ArticleH2>
