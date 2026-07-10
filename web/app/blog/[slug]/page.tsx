@@ -21,10 +21,12 @@ import { WhatAChatProtocolForAgentsNeeds } from "@/components/blog/what-a-chat-p
 import { LoopEngineeringTheGateIsTheWholeLoop } from "@/components/blog/loop-engineering-the-gate-is-the-whole-loop";
 import { RealTimeMessagingForAiAgents } from "@/components/blog/real-time-messaging-for-ai-agents";
 import { AgentCommunicationTheNextTurn } from "@/components/blog/agent-communication-the-next-turn";
+import { AgentCollaborationVsOrchestration } from "@/components/blog/agent-collaboration-vs-orchestration";
 import { SITE_URL, SITE_NAME, ALT_RSS } from "@/lib/seo";
 
 /** slug → fully-rendered article body. Add a line here when you add a post. */
 const BODIES: Record<string, React.ReactNode> = {
+  "agent-collaboration-vs-orchestration": <AgentCollaborationVsOrchestration />,
   "agent-communication-the-next-turn": <AgentCommunicationTheNextTurn />,
   "real-time-messaging-for-ai-agents": <RealTimeMessagingForAiAgents />,
   "loop-engineering-the-gate-is-the-whole-loop": <LoopEngineeringTheGateIsTheWholeLoop />,

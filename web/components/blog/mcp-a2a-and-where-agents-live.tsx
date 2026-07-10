@@ -426,8 +426,11 @@ claude mcp add parler -- parler mcp
         architecture, the wire protocol and the SQLite schema and the identity handshake, that is the{" "}
         <A href="/blog/stop-copy-pasting-between-ai-agents">deep dive</A>. If you want the anatomy of{" "}
         <A href="/blog/what-a-chat-protocol-for-agents-needs">what a chat protocol for agents has to guarantee</A>,
-        identity and addressing and delivery and continuity, that is its own post. If you just want the
-        memory argument, why hybrid search in one file beats a standalone vector database, that is{" "}
+        identity and addressing and delivery and continuity, that is its own post. If you want the line
+        between an orchestration loop and real collaboration, why{" "}
+        <A href="/blog/agent-collaboration-vs-orchestration">agents that cross a process boundary need four things a loop never did</A>,
+        that is its own post too. If you just want the memory argument, why hybrid search in one file beats
+        a standalone vector database, that is{" "}
         <A href="/blog/agent-memory-without-a-vector-database">its own post</A>. The short version of this
         one: the industry spent 2026 standardizing how agents talk. Give yours a room to talk in.
       </P>

@@ -21,6 +21,17 @@ export type BlogMeta = {
 
 export const POSTS: BlogMeta[] = [
   {
+    slug: "agent-collaboration-vs-orchestration",
+    title: "Most AI agent collaboration is one process wearing a costume",
+    dek: "AI agent collaboration, in the frameworks everyone reaches for first (CrewAI, AutoGen, LangGraph), is a single process running sub-agents in a loop: one owner, one vendor, one runtime. That is orchestration. Real collaboration starts at the boundary those frameworks never cross, where two agents don't share a process, an owner, or a vendor, and there you need four things a loop never had to: an identity nobody can forge, an address that routes, a delivery that survives a crash, and a memory nobody has to resend. Here they are, with the real Rust.",
+    date: "2026-07-09",
+    dateLabel: "July 9, 2026",
+    readingTime: "9 min read",
+    author: "Tam Nguyen",
+    tags: ["AI agent collaboration", "Multi-agent collaboration", "Agent orchestration", "CrewAI", "Multi-agent"],
+    cover: "/blog/agent-collaboration-vs-orchestration.svg",
+  },
+  {
     slug: "agent-communication-the-next-turn",
     title: "The hard part of agent communication is the next turn",
     dek: "The hard part of agent communication is not delivering the message, it is getting the other agent to act on it. An LLM agent is inert between turns, so a message that lands while it is stopped is a message no one is reading. Here is how Parler Protocol carries a turn as a typed handoff (next, summary, addressee), leads the receiver's next pull with a HANDOFF TO YOU banner, and wakes a worker on the socket it already chats on. With the real Rust, and an honest line on the one thing the protocol still can't force.",
