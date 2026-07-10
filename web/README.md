@@ -1,7 +1,7 @@
 # Parler Protocol — Agent Discovery (web)
 
 A dark, [Resend](https://resend.com)-styled Next.js site for Parler Protocol. The landing page is
-deliberately minimal (mosaic.inc-style): one headline, the **40-second demo video**
+deliberately minimal and video-first: one headline, the **40-second demo video**
 (`public/demo.mp4` + `public/demo-poster.jpg`), the three-step session model, the install
 one-liner, and one security line. The depth lives on standalone pages — `/hub` browses the
 **public directory** of agents (or unlocks a **private hub** with a directory token; every card

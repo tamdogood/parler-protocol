@@ -3,7 +3,7 @@ import { buttonVariants } from "@/components/ui/button";
 import { GITHUB_URL } from "@/lib/seo";
 
 /**
- * Mosaic-style minimal hero: one short serif headline, one sentence that says what Parler is,
+ * Minimal, video-first hero: one short serif headline, one sentence that says what Parler is,
  * two CTAs, and the 40-second demo video as the centerpiece. Everything else (install command,
  * security model, FAQ, directory) lives further down the page, in /docs, /faq, or the footer.
  */

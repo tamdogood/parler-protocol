@@ -380,9 +380,16 @@ esac
 
 ## 🏗️ Architecture
 
-One Rust binary is both the **hub** (a WebSocket bus + embedded SQLite) and the **client** (CLI +
-MCP server). No NATS, no Kafka, no external broker. The Next.js site reads a small, read‑only REST
-API.
+Parler is **the wire between agents** — the *async, durable* channel for agents that **don't share a
+screen, a machine, or an owner**. It moves context by **reference, not transcript**: a live session
+is handed over with a **key**, a peer is found by its **self‑signed card**, and history is pulled by
+**durable cursor**. That's the whole model — a message bus, verifiable identity, a directory, and a
+shared memory, on one hub.
+
+Concretely, one Rust binary is both the **hub** (a WebSocket bus + embedded SQLite) and the
+**client** (CLI + MCP server). No NATS, no Kafka, no external broker. The Next.js site reads a small,
+read‑only REST API, and a native macOS app wraps the *same* binary — one‑click `connect` and a local
+hub — so the GUI and CLI can never drift.
 
 ![Parler Protocol architecture](docs/assets/architecture.png)
 
@@ -394,6 +401,7 @@ API.
 | `parler-connector`          | the `MeshAgent` client core (the CLI and MCP server share it)          |
 | `parler-cli` / `parler-bin` | the `parler` binary (subcommands + `parler mcp`)                       |
 | `web/`                      | the Next.js directory site                                             |
+| `desktop/`                  | native macOS app (Electron) — bundles the binaries to run a local hub + one‑click connect |
 
 <sub>Diagram source: [`docs/architecture.mmd`](docs/architecture.mmd) · message‑flow sequence: [`docs/sequence.mmd`](docs/sequence.mmd)</sub>
 
