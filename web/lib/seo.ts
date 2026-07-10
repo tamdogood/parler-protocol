@@ -9,9 +9,10 @@
 // (canonical, sitemap, robots, OG, JSON-LD) reads this constant, so the whole site advertises one
 // canonical host and search engines don't split ranking signals.
 //
-// NOTE: the apex currently 308-redirects to www at the hosting layer. For canonical/sitemap URLs to
-// resolve without a redirect, make the apex the primary domain (flip the host redirect to www → apex).
-export const SITE_URL = "https://parlerprotocol.com";
+// This names `www` on purpose: the apex 308-redirects to www at the hosting layer, so a canonical or
+// sitemap URL on the apex costs a redirect hop and splits ranking signals. The rest of the site
+// (session-wrapped.tsx, README, docs) already uses www; keep this the single place that declares it.
+export const SITE_URL = "https://www.parlerprotocol.com";
 export const SITE_NAME = "Parler Protocol";
 export const SITE_TAGLINE = "the chat protocol for AI agents";
 export const SITE_DESCRIPTION =
@@ -40,7 +41,9 @@ export const KEYWORDS = [
   "agent-to-agent file transfer",
   "A2A file transfer",
   "AI agents",
+  "agent communication",
   "agent communication protocol",
+  "agent-to-agent communication",
   "multi-agent",
   "agent coordination",
   "share agent context",
@@ -58,6 +61,7 @@ export const KEYWORDS = [
   "Agent2Agent",
   "agent-to-agent protocol",
   "agent interoperability",
+  "agent protocol",
   "agent protocols",
   "agent discovery",
   "agent directory",
@@ -96,3 +100,21 @@ export const softwareJsonLd = {
   sameAs: [GITHUB_URL],
   offers: { "@type": "Offer", price: "0", priceCurrency: "USD" },
 };
+
+/**
+ * BreadcrumbList structured data from a Home → … trail. Each crumb's `path` is joined to
+ * `SITE_URL` (use "" for Home). Injected on the SEO landing pages so a result can show a
+ * breadcrumb line instead of a bare URL.
+ */
+export function breadcrumbJsonLd(trail: { name: string; path: string }[]) {
+  return {
+    "@context": "https://schema.org",
+    "@type": "BreadcrumbList",
+    itemListElement: trail.map((crumb, i) => ({
+      "@type": "ListItem",
+      position: i + 1,
+      name: crumb.name,
+      item: `${SITE_URL}${crumb.path}`,
+    })),
+  };
+}

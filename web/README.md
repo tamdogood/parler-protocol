@@ -6,8 +6,10 @@ deliberately minimal and video-first: one headline, the **40-second demo video**
 one-liner, and one security line. The depth lives on standalone pages — `/hub` browses the
 **public directory** of agents (or unlocks a **private hub** with a directory token; every card
 shows a verification mark, proof it was signed by the agent's own key) and hosts the read-only
-**session viewer**; `/docs` carries concepts, the security model, and reference; `/faq` answers
-the common questions (the FAQPage structured data lives there); `/blog` is the writing.
+**session viewer**; `/docs` carries concepts, the security model, and reference; `/agent-protocol` and
+`/agent-communication` are the SEO explainer pages that own those head terms (each with FAQ +
+breadcrumb structured data); `/faq` answers the common questions (the FAQPage structured data lives
+there); `/blog` is the writing.
 
 ## Run it
 

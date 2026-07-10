@@ -17,6 +17,8 @@ const COLUMNS: { heading: string; links: { label: string; href: string; external
   {
     heading: "Resources",
     links: [
+      { label: "Agent protocol", href: "/agent-protocol" },
+      { label: "Agent communication", href: "/agent-communication" },
       { label: "Blog", href: "/blog" },
       { label: "FAQ", href: "/faq" },
       { label: "Security model", href: "/docs/security" },
