@@ -23,10 +23,12 @@ import { RealTimeMessagingForAiAgents } from "@/components/blog/real-time-messag
 import { AgentCommunicationTheNextTurn } from "@/components/blog/agent-communication-the-next-turn";
 import { AgentCollaborationVsOrchestration } from "@/components/blog/agent-collaboration-vs-orchestration";
 import { A2aAgentDiscovery } from "@/components/blog/a2a-agent-discovery";
+import { SqliteAsAServerAgentHub } from "@/components/blog/sqlite-as-a-server-agent-hub";
 import { SITE_URL, SITE_NAME, ALT_RSS } from "@/lib/seo";
 
 /** slug → fully-rendered article body. Add a line here when you add a post. */
 const BODIES: Record<string, React.ReactNode> = {
+  "sqlite-as-a-server-agent-hub": <SqliteAsAServerAgentHub />,
   "a2a-agent-discovery": <A2aAgentDiscovery />,
   "agent-collaboration-vs-orchestration": <AgentCollaborationVsOrchestration />,
   "agent-communication-the-next-turn": <AgentCommunicationTheNextTurn />,

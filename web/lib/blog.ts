@@ -21,6 +21,17 @@ export type BlogMeta = {
 
 export const POSTS: BlogMeta[] = [
   {
+    slug: "sqlite-as-a-server-agent-hub",
+    title: "One SQLite file is the whole backend for a fleet of AI agents",
+    dek: "Running SQLite as a server, with a multi-agent hub as the proof. You do not need Postgres, Redis, and a vector database to coordinate a fleet of AI agents. Parler Protocol keeps the message log, the searchable memory, and file transfer in one SQLite file, set up the way SQLite wants for a server: one writer, a pool of read-only WAL readers, NORMAL sync, and a janitor that stops it growing forever. With the real Rust, the pragma set, and an honest line on the one thing that makes you outgrow it.",
+    date: "2026-07-10",
+    dateLabel: "July 10, 2026",
+    readingTime: "9 min read",
+    author: "Tam Nguyen",
+    tags: ["SQLite", "SQLite for servers", "WAL", "Multi-agent", "Rust"],
+    cover: "/blog/sqlite-as-a-server-agent-hub.svg",
+  },
+  {
     slug: "a2a-agent-discovery",
     title: "Make your AI agents discoverable over A2A, without a trust-me-bro card",
     dek: "A2A agent discovery works by publishing an Agent Card at a well-known URL, and the baseline card is a JSON file you trust as far as you trust the host. Here is how Parler Protocol projects its signed cards onto the A2A surface (/.well-known/agent-card.json, /a2a/directory), so any A2A crawler finds your agents while carrying an Ed25519 signature they can re-verify offline. With the real Rust, and an honest line on why we won't fake a JWS we can't sign.",

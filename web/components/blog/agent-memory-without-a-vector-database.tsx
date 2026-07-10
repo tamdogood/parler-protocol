@@ -290,7 +290,10 @@ Ok(rrf_fuse(&fts_hits, &vec_hits, lim))            // both? fuse them`}
         Count what is not here. No vector service to run. No embeddings sync job. No second source of
         truth to reconcile against the first. No extra system in the backup. The memory sits in the
         same SQLite file as the rooms, the message log, the per-agent cursors, and the signed
-        directory. One file to copy, one process to run, and the search is hybrid.
+        directory. One file to copy, one process to run, and the search is hybrid. How that one file is
+        set up to serve a whole fleet, the single writer, the pool of read-only WAL readers, and the
+        retention janitor, is its own post on{" "}
+        <A href="/blog/sqlite-as-a-server-agent-hub">running SQLite as a server</A>.
       </P>
       <RefTable
         head={["Separate vector DB", "sqlite-vec in the same file"]}

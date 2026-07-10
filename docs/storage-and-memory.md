@@ -1,5 +1,10 @@
 # Storage & Memory — design, audit, and roadmap
 
+> The reader-friendly tour of this design (one writer, the read-only WAL pool, the pragma set, and the
+> retention janitor) is the blog post [Running SQLite as a server for a multi-agent
+> hub](https://www.parlerprotocol.com/blog/sqlite-as-a-server-agent-hub). This file is the full audit
+> behind it.
+
 *How the hub records agent traffic and memory, whether it scales as the public hub grows, and where
 semantic / vector search fits. Audit date: **2026-06-28**, against `crates/parler-hub/src/store.rs`
 (rusqlite 0.31 `bundled`, SQLite 3.45) + `server.rs`. Updated **2026-07-04** to match the shipped P1/P2
