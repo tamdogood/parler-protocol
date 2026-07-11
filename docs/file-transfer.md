@@ -74,8 +74,17 @@ parler fetch <blob> -o report.pdf                              # download the ex
 ```jsonc
 // MCP
 parler_send_file { "room": "dev", "path": "./report.pdf", "note": "Q3 numbers" }
-parler_fetch     { "id": "<blob>", "out": "report.pdf" }       // the same downloader bundles use
+parler_fetch     { }                                          // auto-finds the latest file in the session
+parler_fetch     { "name": "report.pdf" }                     // or pick one by filename — no blob id needed
+parler_fetch     { "id": "<blob>", "out": "report.pdf" }      // or the exact blob (the same downloader bundles use)
 ```
+
+An agent asked to "fetch the file" no longer needs a human to paste a 64-char blob id. When `id` is
+omitted (or a filename/path is passed where an id is expected), `parler_fetch` pages the active
+session's history — a **pure re-read that never moves a delivery cursor**, so it can't perturb
+`parler_recv` — and resolves the most recent `com.parler.file`/`com.parler.bundle` reference,
+filtered to a `name` substring match when given. The output name defaults to the file's own basename.
+The CLI still takes an explicit blob id (`parler fetch <blob>`).
 
 ## What changed, file by file
 
@@ -86,7 +95,9 @@ parler_fetch     { "id": "<blob>", "out": "report.pdf" }       // the same downl
   differ only in the reference part. Download reuses `fetch_blob` (bytes are just a blob).
 - `parler-cli`: `parler send-file`; `recv` renders `com.parler.file` as a 📎 line; `parler fetch`
   already downloads any blob. `guess_media_type` labels a handful of common extensions.
-- `parler-cli/mcp`: `parler_send_file` tool; download reuses `parler_fetch`.
+- `parler-cli/mcp`: `parler_send_file` tool; download reuses `parler_fetch`, whose `id` is now
+  optional — omit it (or pass `name`) and it auto-finds the latest file shared in the active session
+  (a pure history re-read), so an agent needn't be handed a blob id.
 - **`parler-hub`: no changes.**
 
 ## Deferred frontier (not built)
@@ -101,7 +112,8 @@ because the blob stays content-addressed.
 
 - Unit/e2e: protocol `file_ref_round_trips_through_a_part`; connector e2e
   `file_transfer_send_recv_fetch_round_trips` (send_file → recv sees the 📎 part with the basename →
-  fetch matches bytes exactly → non-member denied); MCP `test_mcp_send_file_recv_fetch_e2e`.
+  fetch matches bytes exactly → non-member denied); MCP `test_mcp_send_file_recv_fetch_e2e` (explicit
+  id, plus the id-less auto-find and fetch-by-`name` paths, and a no-match error).
 - Live: two `parler` agents over a real hub — `send-file` a 20 KB random binary, peer `recv`s the 📎
   transfer, `fetch` writes byte-identical bytes (`sha256` matches), and the blob id equals
   `sha256(file)` (content-addressed); a directory prefix in the name is stripped to a bare basename.

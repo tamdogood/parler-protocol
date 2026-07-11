@@ -7,7 +7,10 @@
 
 use anyhow::{anyhow, bail, Result};
 use parler_connector::{BundleMeta, Config, JoinOutcome, MeshAgent};
-use parler_protocol::{AgentSkill, DiscoverScope, HandoffRef, RoomKind, StoredMessage, Target, Visibility};
+use parler_protocol::{
+    AgentSkill, BundleRef, DiscoverScope, FileRef, HandoffRef, RoomKind, StoredMessage, Target,
+    Visibility,
+};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -438,7 +441,7 @@ async fn handle(state: &mut McpState, method: &str, params: Value) -> Result<Val
                 "parler_open_session" | "parler_join_session" | "parler_close_session"
                 | "parler_join" | "parler_send" | "parler_recv" | "parler_handoff"
                 | "parler_task" | "parler_join_requests" | "parler_approve_join" | "parler_deny_join"
-                | "parler_watch_session" | "parler_bring" => {
+                | "parler_watch_session" | "parler_bring" | "parler_fetch" => {
                     call_session_tool(state, &name, &args).await
                 }
                 _ => call_tool(&mut state.agent, &name, &args).await,
@@ -666,7 +669,7 @@ async fn call_tool(agent: &mut MeshAgent, name: &str, args: &Value) -> Result<St
             let r = agent.send_file(target, &name, &bytes, media_type, s("note")).await?;
             Ok(format!(
                 "sent file '{name}' to '{}' (seq {}, {} bytes).\n\
-                 The peer runs (MCP): parler_fetch id={} out={name}\n\
+                 The peer runs (MCP): parler_fetch (auto-finds it) — or parler_fetch id={}\n\
                  The peer runs (CLI): parler fetch {} -o {name}",
                 r.room,
                 r.seq,
@@ -674,18 +677,6 @@ async fn call_tool(agent: &mut MeshAgent, name: &str, args: &Value) -> Result<St
                 r.blob_id,
                 r.blob_id,
             ))
-        }
-        "parler_fetch" => {
-            let id = s("id").ok_or_else(|| anyhow!("missing 'id'"))?;
-            let bytes = agent.fetch_blob(&id).await?;
-            let out = s("out").unwrap_or_else(|| format!("{}.bundle", &id[..id.len().min(12)]));
-            let out_path = std::path::PathBuf::from(out);
-            std::fs::write(&out_path, &bytes)?;
-            let abs_out = std::fs::canonicalize(&out_path).unwrap_or_else(|_| {
-                std::env::current_dir().unwrap_or_default().join(&out_path)
-            });
-            let abs_out_str = abs_out.to_string_lossy();
-            Ok(format!("wrote {} bytes to {} (apply with: git bundle verify {} && git fetch {})", bytes.len(), abs_out_str, abs_out_str, abs_out_str))
         }
         "parler_apply" => {
             let blob = s("blob").ok_or_else(|| anyhow!("missing 'blob'"))?;
@@ -944,6 +935,86 @@ async fn resolve_pending_joiner(agent: &mut MeshAgent, room: &str, who: &str) ->
 }
 
 /// Tools that read or mutate the active session (or default their target to it).
+/// Whether `s` is a content-addressed blob id — a lowercase-hex SHA-256 (exactly 64 hex chars).
+/// Lets `parler_fetch` tell a real id from a filename/path the caller passed instead (a hint to
+/// resolve against the room's recent transfers).
+fn looks_like_blob_id(s: &str) -> bool {
+    s.len() == 64 && s.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+/// Find a file (or code bundle) `room` recently shared, so `parler_fetch` needs no pasted blob id.
+///
+/// Pages the room's history with **pure `since` re-reads** (they never advance a delivery cursor, so
+/// this can't perturb `parler_recv`), collecting every `com.parler.file`/`com.parler.bundle`
+/// reference, and returns the **most recent** one — filtered to a name/basename substring match when
+/// `name_hint` is given. Returns `(blob_id, suggested_out_name)`.
+async fn resolve_recent_blob(
+    agent: &mut MeshAgent,
+    room: &str,
+    name_hint: Option<&str>,
+) -> Result<(String, String)> {
+    // Match on the basename, case-insensitively — the sender only ever stores a bare basename, and a
+    // caller may paste a full path (e.g. the one the host showed them).
+    let hint = name_hint.map(|h| {
+        std::path::Path::new(h)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or(h)
+            .to_ascii_lowercase()
+    });
+    let mut best: Option<(i64, String, String)> = None; // (seq, blob, out_name)
+    let mut since = 0i64;
+    loop {
+        // 1000 is the hub's per-pull ceiling; page until a short batch drains the history.
+        let (msgs, _) = agent.pull(room, Some(since), Some(1000)).await?;
+        if msgs.is_empty() {
+            break;
+        }
+        let batch = msgs.len();
+        for m in &msgs {
+            since = since.max(m.seq);
+            for p in &m.parts {
+                let (blob, out_name, match_text) = if let Some(f) = FileRef::from_part(p) {
+                    (f.blob, f.name.clone(), f.name)
+                } else if let Some(b) = BundleRef::from_part(p) {
+                    // A bundle carries no filename; save it as `<short>.bundle`, but let a hint match
+                    // its summary (the commit subject) so "fetch the auth bundle" can resolve.
+                    let out = format!("{}.bundle", crate::short(&b.blob));
+                    let text = b.summary.clone().unwrap_or_else(|| out.clone());
+                    (b.blob, out, text)
+                } else {
+                    continue;
+                };
+                if let Some(h) = &hint {
+                    if !match_text.to_ascii_lowercase().contains(h.as_str()) {
+                        continue;
+                    }
+                }
+                // Keep the highest-seq match (the most recent transfer).
+                if best.as_ref().is_none_or(|(s, ..)| m.seq >= *s) {
+                    best = Some((m.seq, blob, out_name));
+                }
+            }
+        }
+        if batch < 1000 {
+            break;
+        }
+    }
+    match best {
+        Some((_, blob, out_name)) => Ok((blob, out_name)),
+        None => match name_hint {
+            Some(h) => bail!(
+                "no shared file matching '{h}' found in '{room}' — run parler_recv to see what's been \
+                 sent, or pass the exact id (parler_fetch id=<blob>)"
+            ),
+            None => bail!(
+                "no file has been shared in '{room}' yet — run parler_recv to check for one, or pass \
+                 id=<blob>"
+            ),
+        },
+    }
+}
+
 async fn call_session_tool(state: &mut McpState, name: &str, args: &Value) -> Result<String> {
     let s = |k: &str| args.get(k).and_then(Value::as_str).map(str::to_string);
     let u32opt = |k: &str| args.get(k).and_then(Value::as_u64).map(|x| x as u32);
@@ -1236,6 +1307,42 @@ async fn call_session_tool(state: &mut McpState, name: &str, args: &Value) -> Re
                 out.push_str(&notice);
             }
             Ok(out)
+        }
+        "parler_fetch" => {
+            // A blob id is a 64-char lowercase-hex SHA-256. If the caller passes one, download it
+            // directly. Otherwise (no `id`, or a filename/path was passed instead) find the file the
+            // room recently shared — so an agent asked to "fetch the file" just works, without a human
+            // pasting the id. `out` (or `-o`) always wins; else default to the file's own name.
+            let raw_id = s("id");
+            let explicit = raw_id.clone().filter(|v| looks_like_blob_id(v));
+            let (id, suggested) = match explicit {
+                Some(blob) => (blob, None),
+                None => {
+                    let room = s("room").or_else(|| state.active_session.clone()).ok_or_else(|| {
+                        anyhow!(
+                            "no blob id, and no active session to search — pass id=<blob>, or open/join \
+                             a session (or pass room=…) so I can find the shared file"
+                        )
+                    })?;
+                    // `name` is the explicit hint; a non-id `id` (e.g. a pasted path) is a fallback hint.
+                    let name_hint = s("name").or(raw_id);
+                    let (blob, name) =
+                        resolve_recent_blob(&mut state.agent, &room, name_hint.as_deref()).await?;
+                    (blob, Some(name))
+                }
+            };
+            let bytes = state.agent.fetch_blob(&id).await?;
+            let out = s("out").or(suggested).unwrap_or_else(|| format!("{}.bundle", crate::short(&id)));
+            let out_path = std::path::PathBuf::from(out);
+            std::fs::write(&out_path, &bytes)?;
+            let abs_out = std::fs::canonicalize(&out_path)
+                .unwrap_or_else(|_| std::env::current_dir().unwrap_or_default().join(&out_path));
+            let abs_out_str = abs_out.to_string_lossy();
+            Ok(format!(
+                "wrote {} bytes to {} (if it's a git bundle, apply with: parler_apply blob={id})",
+                bytes.len(),
+                abs_out_str,
+            ))
         }
         "parler_bring" => bring_second_opinion(state, args).await,
         other => bail!("unknown session tool: {other}"),
@@ -2073,12 +2180,15 @@ fn tool_specs() -> Vec<Value> {
         ),
         tool(
             "parler_fetch",
-            "Download a pushed blob (a code bundle or a file) by blob id to a file. Does NOT apply.",
+            "Download a shared file/bundle to disk (does NOT apply). Omit `id` for the latest file in \
+             the session, or pass `name` to pick by filename; `id` (blob id) fetches an exact blob.",
             json!({
-                "id": { "type": "string" },
-                "out": { "type": "string", "description": "output file (default: <blob>.bundle)" }
+                "id": { "type": "string", "description": "blob id; omit to auto-find the latest file" },
+                "name": { "type": "string", "description": "pick by filename when you have no id" },
+                "room": { "type": "string", "description": "room to search (default: active session)" },
+                "out": { "type": "string", "description": "output file (default: the file's name)" }
             }),
-            &["id"],
+            &[],
         ),
         tool(
             "parler_apply",
@@ -2214,8 +2324,12 @@ mod tests {
     /// 12,689 B — *below* the pre-`parler_task` baseline, so the new capability nets a reduction, not a
     /// cost; ceiling → 13,000 (a real cut from 13,200) to lock the savings against creep-back. Adding
     /// `parler_open_session`'s lean `preapprove` param (auto-admit trusted joiners, #108) grew it ~240 B
-    /// to ~12,930; ceiling → 13,200 to restore headroom (still the pre-diet guardrail level).
-    const TOOL_SPECS_BUDGET: usize = 13_200;
+    /// to ~12,930; ceiling → 13,200 to restore headroom (still the pre-diet guardrail level). Making
+    /// `parler_fetch` self-service (auto-find the latest shared file: `id` now optional, `name`/`room`
+    /// params added so an agent asked to "fetch the file" needn't be handed a 64-char blob id) grew it
+    /// ~300 B to ~13,237 — load-bearing schema, not description bloat (descriptions stayed under their
+    /// own ceiling); ceiling → 13,500 to restore headroom.
+    const TOOL_SPECS_BUDGET: usize = 13_500;
     /// Just the human-readable descriptions (the part the diet targets; schema scaffolding is
     /// load-bearing). Pre-diet 5,261 B → post-diet (P0.2) 4,304 B; P1.2 adds ~230 B of cheap-path
     /// steering (name-based `to`/`card`, compact discover/roster, `detail`) that earns its bytes.
@@ -3535,7 +3649,7 @@ mod tests {
             "id": blob_id,
             "out": bundle_out.to_str().unwrap(),
         });
-        let fetch_res = call_tool(&mut bob.agent, "parler_fetch", &fetch_args).await.unwrap();
+        let fetch_res = call_session_tool(&mut bob, "parler_fetch", &fetch_args).await.unwrap();
         assert!(fetch_res.contains("wrote"));
         assert!(bundle_out.exists());
 
@@ -3588,12 +3702,42 @@ mod tests {
         assert!(rendered.contains("📎 report.txt"), "recv should show the file: {rendered}");
         assert!(rendered.contains("here's the report"), "recv should show the note: {rendered}");
 
-        // Bob downloads the exact bytes via parler_fetch.
+        // Bob downloads the exact bytes via parler_fetch (explicit blob id).
         let out = dir.path().join("got.txt");
         let fetch_args = json!({ "id": blob_id, "out": out.to_str().unwrap() });
-        let fetch_res = call_tool(&mut bob.agent, "parler_fetch", &fetch_args).await.unwrap();
+        let fetch_res = call_session_tool(&mut bob, "parler_fetch", &fetch_args).await.unwrap();
         assert!(fetch_res.contains("wrote"), "{fetch_res}");
         assert_eq!(std::fs::read(&out).unwrap(), body.to_vec());
+
+        // Bob fetches with NO id — it auto-finds the file the room just shared. This is the "just
+        // fetch the file" flow (explicit `out` here only so the test doesn't write to the cwd).
+        let auto_out = out.with_file_name("auto.txt");
+        let auto = call_session_tool(
+            &mut bob,
+            "parler_fetch",
+            &json!({ "room": inv.room, "out": auto_out.to_str().unwrap() }),
+        )
+        .await
+        .unwrap();
+        assert!(auto.contains("wrote"), "{auto}");
+        assert_eq!(std::fs::read(&auto_out).unwrap(), body.to_vec(), "auto-find resolved the blob");
+
+        // Bob fetches by filename (no id), resolving the same blob.
+        let by_name = out.with_file_name("byname.txt");
+        let named = call_session_tool(
+            &mut bob,
+            "parler_fetch",
+            &json!({ "room": inv.room, "name": "report.txt", "out": by_name.to_str().unwrap() }),
+        )
+        .await
+        .unwrap();
+        assert!(named.contains("wrote"), "{named}");
+        assert_eq!(std::fs::read(&by_name).unwrap(), body.to_vec());
+
+        // A name that matches nothing is a clear error, not a silent wrong file.
+        let miss = call_session_tool(&mut bob, "parler_fetch", &json!({ "room": inv.room, "name": "nope.zip" }))
+            .await;
+        assert!(miss.is_err(), "unknown name should error");
     }
 
     /// The authoritative set of real `parler_*` MCP tools: everything `tool_specs()` advertises,
