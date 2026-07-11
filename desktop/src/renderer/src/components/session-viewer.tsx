@@ -12,15 +12,17 @@ import {
   MessageSquare,
   Clock,
   Gauge,
+  Download,
 } from "lucide-react";
 import type {
   SessionAgent,
+  SessionFile,
   SessionMessage,
   SessionPart,
   SessionStats,
   SessionView,
 } from "@/lib/types";
-import { fetchSession, HubError } from "@/lib/api";
+import { fetchSession, fetchSessionBlob, HubError } from "@/lib/api";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { StatusDot, statusMeta } from "@/components/status-dot";
@@ -41,6 +43,7 @@ export function SessionViewer({ base, initialToken }: { base: string; initialTok
   const [messages, setMessages] = useState<SessionMessage[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [unauthorized, setUnauthorized] = useState(false);
+  const [downloadError, setDownloadError] = useState<string | null>(null);
   const cursor = useRef(0);
 
   useEffect(() => {
@@ -98,11 +101,44 @@ export function SessionViewer({ base, initialToken }: { base: string; initialTok
     cursor.current = 0;
     setUnauthorized(false);
     setError(null);
+    setDownloadError(null);
     setToken(t);
   };
 
+  // Fetch the bytes for an exchanged file (watch-token gated) and save them locally. Streaming to an
+  // object URL + a synthetic <a download> triggers the app's download of the exact bytes.
+  const downloadFile = useCallback(
+    async (file: SessionFile, name: string) => {
+      if (!token) return;
+      setDownloadError(null);
+      try {
+        const blob = await fetchSessionBlob(base, token, file.blob, name);
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = name;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+      } catch (e) {
+        setDownloadError(e instanceof Error ? e.message : "Couldn't download that file.");
+      }
+    },
+    [base, token],
+  );
+
   if (view && !unauthorized) {
-    return <ConnectedView view={view} messages={messages} error={error} onDisconnect={reset} />;
+    return (
+      <ConnectedView
+        view={view}
+        messages={messages}
+        error={error}
+        downloadError={downloadError}
+        onDownload={downloadFile}
+        onDisconnect={reset}
+      />
+    );
   }
 
   return (
@@ -145,11 +181,15 @@ function ConnectedView({
   view,
   messages,
   error,
+  downloadError,
+  onDownload,
   onDisconnect,
 }: {
   view: SessionView;
   messages: SessionMessage[];
   error: string | null;
+  downloadError: string | null;
+  onDownload: (file: SessionFile, name: string) => void;
   onDisconnect: () => void;
 }) {
   const endRef = useRef<HTMLDivElement>(null);
@@ -216,12 +256,18 @@ function ConnectedView({
             Lost contact with the hub — retrying.
           </p>
         )}
+        {downloadError && (
+          <p className="mb-4 flex items-center gap-2 text-[12px] text-bounced-red">
+            <ServerCrash className="size-3.5" />
+            {downloadError}
+          </p>
+        )}
         {list.length === 0 ? (
           <p className="py-10 text-center text-[14px] text-steel">No messages in this session yet.</p>
         ) : (
           <div className="flex max-h-[52vh] flex-col gap-5 overflow-y-auto" data-selectable>
             {list.map((m) => (
-              <MessageRow key={m.seq} message={m} />
+              <MessageRow key={m.seq} message={m} onDownload={onDownload} />
             ))}
             <div ref={endRef} />
           </div>
@@ -243,7 +289,13 @@ function accentFor(name: string): string {
   return ACCENTS[h % ACCENTS.length];
 }
 
-function MessageRow({ message }: { message: SessionMessage }) {
+function MessageRow({
+  message,
+  onDownload,
+}: {
+  message: SessionMessage;
+  onDownload: (file: SessionFile, name: string) => void;
+}) {
   const accent = accentFor(message.from.name);
   const initial = message.from.name.charAt(0).toUpperCase() || "?";
   return (
@@ -262,7 +314,7 @@ function MessageRow({ message }: { message: SessionMessage }) {
         </div>
         <div className="mt-1 flex flex-wrap items-center gap-2 text-[14px] leading-relaxed text-fog">
           {message.parts.map((p, i) => (
-            <PartView key={i} part={p} />
+            <PartView key={i} part={p} onDownload={onDownload} />
           ))}
         </div>
       </div>
@@ -270,19 +322,94 @@ function MessageRow({ message }: { message: SessionMessage }) {
   );
 }
 
-function PartView({ part }: { part: SessionPart }) {
+function PartView({
+  part,
+  onDownload,
+}: {
+  part: SessionPart;
+  onDownload: (file: SessionFile, name: string) => void;
+}) {
   if (part.kind === "text") {
     return <span className="whitespace-pre-wrap break-words">{part.text}</span>;
   }
-  const isBundle = part.kind === "com.parler.bundle";
-  const label = isBundle ? "code bundle" : part.kind === "data" ? "data" : part.kind;
-  const Icon = isBundle ? Package : Paperclip;
+  if (part.kind === "com.parler.bundle" || part.kind === "com.parler.file") {
+    return <FilePart part={part} onDownload={onDownload} />;
+  }
+  const label = part.kind === "data" ? "data" : part.kind;
   return (
     <span className="inline-flex items-center gap-1.5 rounded-[8px] border border-graphite-rail bg-black/30 px-2 py-1 text-[12px] text-fog">
-      <Icon className="size-3.5 text-electric-blue" />
+      <Paperclip className="size-3.5 text-electric-blue" />
       {label}
     </span>
   );
+}
+
+/**
+ * A file the session exchanged — a code bundle (`com.parler.bundle`) or a handed-off file
+ * (`com.parler.file`) — rendered as a card: name, size + type, and a **Download** button that pulls
+ * the exact bytes (watch-token gated). Metadata-only parts (an older hub, no `file`) still render the
+ * name/type without a download.
+ */
+function FilePart({
+  part,
+  onDownload,
+}: {
+  part: SessionPart;
+  onDownload: (file: SessionFile, name: string) => void;
+}) {
+  const file = part.file;
+  const isBundle = part.kind === "com.parler.bundle";
+  const Icon = isBundle ? Package : Paperclip;
+  const name = fileDisplayName(part);
+  const meta = [file ? fmtBytes(file.size) : null, isBundle ? `${file?.vcs ?? "code"} bundle` : file?.mediaType]
+    .filter(Boolean)
+    .join(" · ");
+  return (
+    <span
+      className="inline-flex max-w-full items-center gap-2 rounded-[10px] border border-graphite-rail bg-black/30 px-2.5 py-1.5"
+      title={file?.summary || name}
+    >
+      <Icon className="size-4 shrink-0 text-electric-blue" />
+      <span className="min-w-0">
+        <span className="block truncate text-[13px] text-frost">{name}</span>
+        {meta && <span className="block truncate text-[11px] text-steel">{meta}</span>}
+      </span>
+      {file && (
+        <button
+          type="button"
+          onClick={() => onDownload(file, name)}
+          className="ml-1 inline-flex shrink-0 items-center gap-1 rounded-[8px] border border-electric-blue/40 bg-electric-blue/10 px-2 py-1 text-[11px] text-frost transition-colors hover:bg-electric-blue/20"
+          title="Download this file"
+        >
+          <Download className="size-3.5" />
+          Download
+        </button>
+      )}
+    </span>
+  );
+}
+
+/** A human filename for a file/bundle part: the handoff's basename, else a name derived from the
+ * bundle kind + short content id (a code bundle carries no filename of its own). */
+function fileDisplayName(part: SessionPart): string {
+  const file = part.file;
+  if (file?.name) return file.name;
+  const short = file?.blob?.slice(0, 8) ?? "";
+  if (part.kind === "com.parler.bundle") {
+    const ext = file?.vcs === "patch" ? "patch" : file?.vcs === "tar" ? "tar" : "bundle";
+    return short ? `handoff-${short}.${ext}` : "code bundle";
+  }
+  return short ? `file-${short}` : "file";
+}
+
+/** Compact byte size: 900 → "900 B", 20000 → "20 KB", 5_000_000 → "4.8 MB". */
+function fmtBytes(n: number): string {
+  if (!Number.isFinite(n) || n < 0) return "";
+  if (n < 1024) return `${n} B`;
+  const kb = n / 1024;
+  if (kb < 1024) return `${kb < 10 ? kb.toFixed(1) : Math.round(kb)} KB`;
+  const mb = kb / 1024;
+  return `${mb < 10 ? mb.toFixed(1) : Math.round(mb)} MB`;
 }
 
 function RosterChip({ agent }: { agent: SessionAgent }) {

@@ -162,7 +162,8 @@ surface in `rooms` output and on the website. Cheap; defer until handoff is in u
 ## Explicitly NOT borrowed (keep the chat-protocol focus)
 
 - No server-side bare repo / commit DAG / `children`/`lineage`/`diff` REST — the GitHub-clone path.
-- No web UI for code; the website stays a read-only **directory** browser.
+- No in-browser code UI (commit tree / diff / blame): the read-only **session viewer** lets a watcher
+  *download* an exchanged bundle, but never renders or diffs it.
 - No auto-merge into a working tree.
 
 ## Security model

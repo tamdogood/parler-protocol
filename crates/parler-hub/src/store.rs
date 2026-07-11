@@ -1210,6 +1210,19 @@ impl Store {
         Ok(n > 0)
     }
 
+    /// Whether blob `id` was posted to `room`. This is the room-scoped authorization the read-only
+    /// session viewer uses: a watch token grants a single *room*, not an agent membership, so it
+    /// cannot reuse [`Store::blob_readable_by`]. True iff a `blob_rooms` row binds the two.
+    pub fn blob_in_room(&self, id: &str, room: &str) -> Result<bool> {
+        let conn = self.r();
+        let n: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM blob_rooms WHERE blob = ?1 AND room = ?2",
+            params![id, room],
+            |r| r.get(0),
+        )?;
+        Ok(n > 0)
+    }
+
     // ---- memory (facts) ----
 
     /// Write a fact. With a `key`, this upserts within (author, room, key) — idempotent updates.
@@ -2247,6 +2260,13 @@ mod tests {
         s.add_member("ops", "U_B", 1).unwrap();
         s.put_blob_meta("deadbeef", "ops", "U_B", None, 42, 3).unwrap();
         assert!(s.blob_readable_by("deadbeef", "U_B").unwrap());
+
+        // Room-scoped check — what the watch-gated viewer download authorizes against. True for any
+        // room the blob is bound to, false otherwise (and independent of membership).
+        assert!(s.blob_in_room("deadbeef", "dev").unwrap());
+        assert!(s.blob_in_room("deadbeef", "ops").unwrap());
+        assert!(!s.blob_in_room("deadbeef", "elsewhere").unwrap());
+        assert!(!s.blob_in_room("nope", "dev").unwrap());
     }
 
     #[test]

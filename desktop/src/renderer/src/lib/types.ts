@@ -65,10 +65,31 @@ export interface SessionAgent {
   lastSeen: number;
 }
 
+/** A file exchanged in the session — a code bundle (`com.parler.bundle`) or a handed-off file
+ * (`com.parler.file`). Reference metadata only; the bytes come from `GET /api/session/blob/:blob`. */
+export interface SessionFile {
+  /** Content id (sha256) — the key used to download the bytes. */
+  blob: string;
+  /** Original basename (present for a file handoff; a code bundle carries none). */
+  name?: string;
+  /** Byte length. */
+  size: number;
+  /** IANA media type, when known. */
+  mediaType?: string;
+  /** One-line human description, when set. */
+  summary?: string;
+  /** Code bundle only: the artifact kind ("git", "patch", …) and the bundled tip/base commits. */
+  vcs?: string;
+  tip?: string;
+  base?: string;
+}
+
 export interface SessionPart {
   kind: string;
   text?: string;
   fields?: Record<string, any>;
+  /** Present on a `com.parler.bundle` / `com.parler.file` part: the exchanged file's metadata. */
+  file?: SessionFile;
 }
 
 export interface SessionMessage {
