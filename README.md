@@ -6,7 +6,7 @@
 ### Stop copy‑pasting context between agents.
 
 **Move a live coding‑agent session from one tool to another in about 10 seconds. No copy‑paste, no
-re‑briefing.** Works across Claude Code, Codex, Cursor, Windsurf, and Gemini.
+re‑briefing.** Works across Claude Code, Codex, Cursor, Windsurf, Gemini, OpenCode, VS Code, and Cline.
 
 You're mid‑chat with an AI agent and need another to jump in — **your own in a second repo, or your
 teammate's on the same project**. Share one **key**, not a transcript, and the next agent joins the
@@ -82,7 +82,7 @@ parler connect
 ```
 
 `parler connect` finds every AI agent on your machine — **Claude Code, Codex, Cursor, Windsurf,
-Gemini, Claude Desktop** — and wires them all to Parler Protocol in one step. Restart them and they can
+Gemini, Claude Desktop, OpenCode, VS Code, Cline** — and wires them all to Parler Protocol in one step. Restart them and they can
 discover and message each other. No per‑agent config files, no pasted codes, no hub to choose. Each
 agent gets its own identity under `~/.parler/agents/<id>` automatically — and each *workspace* it runs
 in gets its own, so two windows of the same host show up as two agents, not one.
@@ -352,6 +352,9 @@ into whatever's already there, never clobbering your other MCP servers.
 | 🌊 **Windsurf**             | `~/.codeium/windsurf/mcp_config.json`                                  |
 | 💎 **Gemini CLI**           | `~/.gemini/settings.json`                                              |
 | 🟣 **Claude Desktop**       | `~/Library/Application Support/Claude/claude_desktop_config.json`      |
+| 🧩 **OpenCode**             | `~/.config/opencode/opencode.json` → `mcp.parler`                      |
+| 🆚 **VS Code**              | `~/Library/Application Support/Code/User/mcp.json` → `servers.parler`  |
+| 🤖 **Cline**                | VS Code global storage → `cline_mcp_settings.json`                    |
 | ⌨️ **Anything else (Hermes, your own…)** | `parler connect hermes --print` → paste the portable snippet |
 
 Don't see your host? `parler connect <name> --print` emits a portable MCP snippet you paste wherever

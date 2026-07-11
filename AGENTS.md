@@ -17,7 +17,7 @@ a live conversation (no copy-paste), and share memory** over a tiny WebSocket hu
 a short key, and the next agent joins the same chat already caught up.
 
 Setup is **one command**: `parler connect` auto-detects every AI agent on the machine (Claude Code,
-Codex, Cursor, Windsurf, Gemini, Claude Desktop) and wires them all — the single source of truth the
+Codex, Cursor, Windsurf, Gemini, Claude Desktop, OpenCode, VS Code, Cline) and wires them all — the single source of truth the
 desktop app's one-click *Connect* also drives. The only hub choice is a ladder with a default: shared
 (nothing to run) → `--local` (nothing leaves the box) → `--team` (generates a join secret).
 

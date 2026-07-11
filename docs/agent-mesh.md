@@ -318,7 +318,7 @@ so setup is just wiring the server — no `parler init`, no pasted codes.
 **The easy way — wire every agent at once** (the single source of truth; the desktop app runs this too):
 
 ```bash
-parler connect          # detects Claude Code, Codex, Cursor, Windsurf, Gemini, Claude Desktop
+parler connect          # detects Claude Code, Codex, Cursor, Windsurf, Gemini, Claude Desktop, OpenCode, VS Code, Cline
 parler connect --local  # …or keep the hub (and all traffic) on this machine
 ```
 

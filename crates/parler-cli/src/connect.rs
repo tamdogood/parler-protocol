@@ -116,10 +116,36 @@ pub struct WiredAgent {
 pub(crate) enum Wiring {
     /// Claude Code — driven through its own `claude mcp add` CLI (the supported API).
     ClaudeCli,
-    /// A JSON file with a top-level `mcpServers` object (Cursor, Windsurf, Gemini, Claude Desktop).
-    Json(PathBuf),
+    /// A JSON file that stores its servers under a top-level `key` object, with each entry rendered
+    /// in `shape`. Covers every JSON host — the `mcpServers` standard (Cursor, Windsurf, Gemini,
+    /// Claude Desktop, Cline) as well as the ones with their own dialect (OpenCode's `mcp`, VS Code's
+    /// `servers`).
+    Json { path: PathBuf, key: &'static str, shape: JsonShape },
     /// A TOML file with `[mcp_servers.<name>]` tables (Codex).
     Toml(PathBuf),
+}
+
+/// The shape of one server entry inside a JSON host's config — the small per-host dialect differences
+/// that used to make "add an agent" a code change instead of a registry line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum JsonShape {
+    /// `{ "command": bin, "args": ["mcp"], "env": {…} }` — the `mcpServers` standard.
+    Standard,
+    /// `{ "type": "local", "command": [bin, "mcp"], "enabled": true, "environment": {…} }` — OpenCode.
+    OpenCode,
+    /// `{ "type": "stdio", "command": bin, "args": ["mcp"], "env": {…} }` — VS Code's `servers`.
+    VsCode,
+}
+
+impl JsonShape {
+    /// The key this shape stores env vars under (`environment` for OpenCode, `env` everywhere else) —
+    /// so [`configured_env`] can read the wired hub + secret back out.
+    fn env_field(self) -> &'static str {
+        match self {
+            JsonShape::OpenCode => "environment",
+            JsonShape::Standard | JsonShape::VsCode => "env",
+        }
+    }
 }
 
 pub(crate) struct HostDef {
@@ -144,6 +170,15 @@ pub(crate) fn registry() -> Vec<HostDef> {
     } else {
         home.join(".config/Claude")
     };
+    // VS Code stores per-user config (its own MCP file + extensions' global storage) under one dir
+    // that differs by OS. Cline (a VS Code extension) writes into that same tree.
+    let vscode_user = if cfg!(target_os = "macos") {
+        home.join("Library/Application Support/Code/User")
+    } else {
+        home.join(".config/Code/User")
+    };
+    let cline_settings =
+        vscode_user.join("globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json");
     vec![
         HostDef {
             id: "claude-code",
@@ -160,28 +195,51 @@ pub(crate) fn registry() -> Vec<HostDef> {
         HostDef {
             id: "cursor",
             name: "Cursor",
-            wiring: Wiring::Json(home.join(".cursor/mcp.json")),
+            wiring: json_host(home.join(".cursor/mcp.json"), "mcpServers", JsonShape::Standard),
             hints: vec![home.join(".cursor"), PathBuf::from("/Applications/Cursor.app")],
         },
         HostDef {
             id: "windsurf",
             name: "Windsurf",
-            wiring: Wiring::Json(home.join(".codeium/windsurf/mcp_config.json")),
+            wiring: json_host(home.join(".codeium/windsurf/mcp_config.json"), "mcpServers", JsonShape::Standard),
             hints: vec![home.join(".codeium/windsurf"), PathBuf::from("/Applications/Windsurf.app")],
         },
         HostDef {
             id: "gemini",
             name: "Gemini CLI",
-            wiring: Wiring::Json(home.join(".gemini/settings.json")),
+            wiring: json_host(home.join(".gemini/settings.json"), "mcpServers", JsonShape::Standard),
             hints: vec![home.join(".gemini")],
         },
         HostDef {
             id: "claude-desktop",
             name: "Claude Desktop",
-            wiring: Wiring::Json(claude_desktop_dir.join("claude_desktop_config.json")),
+            wiring: json_host(claude_desktop_dir.join("claude_desktop_config.json"), "mcpServers", JsonShape::Standard),
             hints: vec![claude_desktop_dir, PathBuf::from("/Applications/Claude.app")],
         },
+        HostDef {
+            id: "opencode",
+            name: "OpenCode",
+            wiring: json_host(home.join(".config/opencode/opencode.json"), "mcp", JsonShape::OpenCode),
+            hints: vec![home.join(".config/opencode"), home.join(".opencode")],
+        },
+        HostDef {
+            id: "vscode",
+            name: "VS Code",
+            wiring: json_host(vscode_user.join("mcp.json"), "servers", JsonShape::VsCode),
+            hints: vec![vscode_user.clone(), PathBuf::from("/Applications/Visual Studio Code.app")],
+        },
+        HostDef {
+            id: "cline",
+            name: "Cline",
+            wiring: json_host(cline_settings.clone(), "mcpServers", JsonShape::Standard),
+            hints: vec![cline_settings.parent().map(Path::to_path_buf).unwrap_or(cline_settings)],
+        },
     ]
+}
+
+/// Terse constructor for a JSON-file host, so a registry entry reads as one line.
+fn json_host(path: PathBuf, key: &'static str, shape: JsonShape) -> Wiring {
+    Wiring::Json { path, key, shape }
 }
 
 /// How a host picks the new config up — per-host truth so "restart them" is never vague. Claude
@@ -194,6 +252,9 @@ fn restart_hint(id: &str) -> &'static str {
         "cursor" => "restart Cursor (or toggle the parler server under Settings → MCP)",
         "windsurf" => "restart Windsurf to load it",
         "claude-desktop" => "quit and reopen Claude Desktop",
+        "opencode" => "takes effect on the next `opencode` run",
+        "vscode" => "restart VS Code to load it",
+        "cline" => "reopen the Cline panel (or restart VS Code) to load it",
         _ => "restart it to load Parler Protocol",
     }
 }
@@ -207,6 +268,9 @@ fn canonical_id(token: &str) -> Option<&'static str> {
         "cursor" => Some("cursor"),
         "windsurf" => Some("windsurf"),
         "gemini" | "gemini-cli" => Some("gemini"),
+        "opencode" | "open-code" => Some("opencode"),
+        "vscode" | "vs-code" | "code" => Some("vscode"),
+        "cline" => Some("cline"),
         _ => None,
     }
 }
@@ -234,9 +298,9 @@ pub(crate) fn is_configured(def: &HostDef) -> bool {
                     .unwrap_or(false)
             })
             .unwrap_or(false),
-        Wiring::Json(path) => read_json(path)
+        Wiring::Json { path, key, .. } => read_json(path)
             .ok()
-            .and_then(|v| v.get("mcpServers").and_then(|s| s.get(SERVER_NAME)).cloned())
+            .and_then(|v| v.get(key).and_then(|s| s.get(SERVER_NAME)).cloned())
             .is_some(),
         Wiring::Toml(path) => std::fs::read_to_string(path)
             .ok()
@@ -261,9 +325,9 @@ fn configured_env(def: &HostDef) -> Option<(String, Option<String>)> {
             let hub = parse_env_from_text(&text, "PARLER_HUB")?;
             Some((hub, parse_env_from_text(&text, "PARLER_JOIN_SECRET")))
         }
-        Wiring::Json(path) => {
+        Wiring::Json { path, key, shape } => {
             let root = read_json(path).ok()?;
-            let env = root.get("mcpServers")?.get(SERVER_NAME)?.get("env")?;
+            let env = root.get(key)?.get(SERVER_NAME)?.get(shape.env_field())?;
             let hub = env.get("PARLER_HUB")?.as_str().map(String::from)?;
             let secret = env.get("PARLER_JOIN_SECRET").and_then(Value::as_str).map(String::from);
             Some((hub, secret))
@@ -315,8 +379,8 @@ fn resolve_claude() -> Option<PathBuf> {
 // Config writers — idempotent, never clobber the user's other servers.
 // ---------------------------------------------------------------------------------------------
 
-/// Write our server into a JSON `mcpServers` file, preserving everything else in it.
-fn write_json(path: &Path, env: &[(String, String)], binpath: &str) -> Result<()> {
+/// Write our server into a JSON host's servers object (under `key`), preserving everything else in it.
+fn write_json(path: &Path, key: &str, shape: JsonShape, env: &[(String, String)], binpath: &str) -> Result<()> {
     let mut root = if path.exists() {
         read_json(path)?
     } else {
@@ -326,11 +390,11 @@ fn write_json(path: &Path, env: &[(String, String)], binpath: &str) -> Result<()
         .as_object_mut()
         .ok_or_else(|| anyhow!("{} is not a JSON object — move it aside and re-run", path.display()))?;
     let servers = obj
-        .entry("mcpServers")
+        .entry(key)
         .or_insert_with(|| Value::Object(Default::default()))
         .as_object_mut()
-        .ok_or_else(|| anyhow!("{} has a non-object \"mcpServers\" — fix it and re-run", path.display()))?;
-    servers.insert(SERVER_NAME.to_string(), server_json(env, binpath));
+        .ok_or_else(|| anyhow!("{} has a non-object \"{key}\" — fix it and re-run", path.display()))?;
+    servers.insert(SERVER_NAME.to_string(), server_entry(shape, env, binpath));
     write_secure(path, &(serde_json::to_string_pretty(&root)? + "\n"))
 }
 
@@ -381,12 +445,22 @@ fn read_json(path: &Path) -> Result<Value> {
         .with_context(|| format!("{} isn't valid JSON — fix or move it, then re-run (or use --print)", path.display()))
 }
 
-fn server_json(env: &[(String, String)], binpath: &str) -> Value {
+/// Render our server entry in the host's `shape`. The env map is identical everywhere; only the
+/// wrapping keys differ (OpenCode wants `command` as an array + `environment`; VS Code stamps a
+/// `type: "stdio"`).
+fn server_entry(shape: JsonShape, env: &[(String, String)], binpath: &str) -> Value {
     let mut e = serde_json::Map::new();
     for (k, v) in env {
         e.insert(k.clone(), Value::String(v.clone()));
     }
-    json!({ "command": binpath, "args": ["mcp"], "env": Value::Object(e) })
+    let env_val = Value::Object(e);
+    match shape {
+        JsonShape::Standard => json!({ "command": binpath, "args": ["mcp"], "env": env_val }),
+        JsonShape::OpenCode => {
+            json!({ "type": "local", "command": [binpath, "mcp"], "enabled": true, "environment": env_val })
+        }
+        JsonShape::VsCode => json!({ "type": "stdio", "command": binpath, "args": ["mcp"], "env": env_val }),
+    }
 }
 
 /// Create parents, write, and lock to `0600` — configs we author can carry a join secret (team mode),
@@ -553,8 +627,8 @@ fn wire(def: &HostDef, env: &[(String, String)], binpath: &str) -> Result<String
             }
             Ok("claude mcp add (user scope)".to_string())
         }
-        Wiring::Json(path) => {
-            write_json(path, env, binpath)?;
+        Wiring::Json { path, key, shape } => {
+            write_json(path, key, *shape, env, binpath)?;
             Ok(display_path(path))
         }
         Wiring::Toml(path) => {
@@ -579,19 +653,20 @@ fn unwire(def: &HostDef) -> Result<bool> {
                 .context("running claude mcp remove")?;
             Ok(out.status.success())
         }
-        Wiring::Json(path) => remove_json(path),
+        Wiring::Json { path, key, .. } => remove_json(path, key),
         Wiring::Toml(path) => remove_toml(path),
     }
 }
 
-/// Drop `mcpServers.parler` from a JSON config, preserving everything else. `Ok(false)` if absent.
-fn remove_json(path: &Path) -> Result<bool> {
+/// Drop our entry from a JSON config's servers object (under `key`), preserving everything else.
+/// `Ok(false)` if absent.
+fn remove_json(path: &Path, key: &str) -> Result<bool> {
     if !path.exists() {
         return Ok(false);
     }
     let mut root = read_json(path)?;
     let removed = root
-        .get_mut("mcpServers")
+        .get_mut(key)
         .and_then(|s| s.as_object_mut())
         .map(|servers| servers.remove(SERVER_NAME).is_some())
         .unwrap_or(false);
@@ -632,8 +707,8 @@ fn render_shell_add(env: &[(String, String)], binpath: &str) -> String {
     format!("claude mcp add {SERVER_NAME} --scope user{flags} -- {binpath} mcp")
 }
 
-fn render_json_block(env: &[(String, String)], binpath: &str) -> String {
-    let block = json!({ "mcpServers": { SERVER_NAME: server_json(env, binpath) } });
+fn render_json_block(key: &str, shape: JsonShape, env: &[(String, String)], binpath: &str) -> String {
+    let block = json!({ key: { SERVER_NAME: server_entry(shape, env, binpath) } });
     serde_json::to_string_pretty(&block).unwrap_or_default()
 }
 
@@ -646,7 +721,9 @@ fn render_toml_block(env: &[(String, String)], binpath: &str) -> String {
 fn snippet_for(def: &HostDef, env: &[(String, String)], binpath: &str) -> String {
     match &def.wiring {
         Wiring::ClaudeCli => render_shell_add(env, binpath),
-        Wiring::Json(path) => format!("→ {}\n{}", display_path(path), render_json_block(env, binpath)),
+        Wiring::Json { path, key, shape } => {
+            format!("→ {}\n{}", display_path(path), render_json_block(key, *shape, env, binpath))
+        }
         Wiring::Toml(path) => format!("→ {}\n{}", display_path(path), render_toml_block(env, binpath)),
     }
 }
@@ -656,7 +733,7 @@ fn snippet_for(def: &HostDef, env: &[(String, String)], binpath: &str) -> String
 fn generic_snippet(env: &[(String, String)], binpath: &str) -> String {
     format!(
         "Most MCP hosts take this JSON (add it under their \"mcpServers\"):\n{}\n\nOr run this binary directly with these env vars:\n{}",
-        render_json_block(env, binpath),
+        render_json_block("mcpServers", JsonShape::Standard, env, binpath),
         env.iter().map(|(k, v)| format!("{k}={v} ")).collect::<String>() + binpath + " mcp"
     )
 }
@@ -1143,7 +1220,8 @@ fn print_list(as_json: bool) -> Result<()> {
             .map(|d| {
                 let path = match &d.wiring {
                     Wiring::ClaudeCli => "claude mcp (user scope)".to_string(),
-                    Wiring::Json(p) | Wiring::Toml(p) => display_path(p),
+                    Wiring::Json { path, .. } => display_path(path),
+                    Wiring::Toml(p) => display_path(p),
                 };
                 let connected = is_configured(d);
                 let hub = connected.then(|| configured_env(d)).flatten().map(|(h, _)| h);
@@ -1164,7 +1242,8 @@ fn print_list(as_json: bool) -> Result<()> {
         };
         println!("  {:<15} {:<11} {}", d.name, status, match &d.wiring {
             Wiring::ClaudeCli => "claude mcp (user scope)".to_string(),
-            Wiring::Json(p) | Wiring::Toml(p) => display_path(p),
+            Wiring::Json { path, .. } => display_path(path),
+            Wiring::Toml(p) => display_path(p),
         });
     }
     println!("\nWire the detected ones with:  parler connect\nOr a specific one with:       parler connect <name>\n");
@@ -1301,8 +1380,8 @@ mod tests {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, r#"{"mcpServers":{"other":{"command":"foo"}}}"#).unwrap();
 
-        write_json(&path, &env(), "/usr/local/bin/parler").unwrap();
-        write_json(&path, &env(), "/usr/local/bin/parler").unwrap(); // twice → still one entry
+        write_json(&path, "mcpServers", JsonShape::Standard, &env(), "/usr/local/bin/parler").unwrap();
+        write_json(&path, "mcpServers", JsonShape::Standard, &env(), "/usr/local/bin/parler").unwrap(); // twice → still one entry
 
         let v = read_json(&path).unwrap();
         let servers = v.get("mcpServers").unwrap().as_object().unwrap();
@@ -1314,6 +1393,58 @@ mod tests {
         // Exactly one parler entry (no duplication across runs).
         assert_eq!(servers.keys().filter(|k| *k == "parler").count(), 1);
 
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn opencode_shape_writes_reads_and_removes_under_its_own_dialect() {
+        // OpenCode's dialect: top-level `mcp`, `command` as an array, env under `environment`,
+        // plus `type`/`enabled`. Prove the whole round-trip so we never corrupt an opencode.json.
+        let path = tmp("opencode").join("opencode.json");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, r#"{"mcp":{"other":{"type":"local","command":["foo"]}}}"#).unwrap();
+        let mut e = env();
+        e.push(("PARLER_JOIN_SECRET".into(), "shh".into()));
+
+        write_json(&path, "mcp", JsonShape::OpenCode, &e, "/usr/local/bin/parler").unwrap();
+        write_json(&path, "mcp", JsonShape::OpenCode, &e, "/usr/local/bin/parler").unwrap();
+
+        let v = read_json(&path).unwrap();
+        let servers = v.get("mcp").unwrap().as_object().unwrap();
+        assert!(servers.contains_key("other"), "must keep the user's other server");
+        let parler = servers.get("parler").unwrap();
+        assert_eq!(parler["type"], "local");
+        assert_eq!(parler["enabled"], true);
+        assert_eq!(parler["command"][0], "/usr/local/bin/parler", "command is an array");
+        assert_eq!(parler["command"][1], "mcp");
+        assert_eq!(parler["environment"]["PARLER_HUB"], "wss://parler-hub.fly.dev", "env lives under `environment`");
+        assert!(parler.get("env").is_none() && parler.get("args").is_none(), "no standard-shape keys leak in");
+        assert_eq!(servers.keys().filter(|k| *k == "parler").count(), 1, "idempotent across runs");
+
+        // configured_env reads the hub + secret back out of the `environment` field.
+        let def = HostDef { id: "opencode", name: "OpenCode", wiring: Wiring::Json { path: path.clone(), key: "mcp", shape: JsonShape::OpenCode }, hints: vec![] };
+        assert_eq!(configured_env(&def), Some(("wss://parler-hub.fly.dev".to_string(), Some("shh".to_string()))));
+
+        assert!(remove_json(&path, "mcp").unwrap());
+        let v = read_json(&path).unwrap();
+        assert!(!v["mcp"].as_object().unwrap().contains_key("parler"), "our entry is gone");
+        assert!(v["mcp"].as_object().unwrap().contains_key("other"), "the user's server survives removal");
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn vscode_shape_uses_servers_key_and_stdio_type() {
+        // VS Code's dialect: top-level `servers`, `type: "stdio"`, otherwise the standard shape.
+        let path = tmp("vscode").join("mcp.json");
+        write_json(&path, "servers", JsonShape::VsCode, &env(), "/usr/local/bin/parler").unwrap();
+        let v = read_json(&path).unwrap();
+        let parler = v.get("servers").unwrap().get("parler").unwrap();
+        assert_eq!(parler["type"], "stdio");
+        assert_eq!(parler["command"], "/usr/local/bin/parler", "command is a plain string");
+        assert_eq!(parler["args"][0], "mcp");
+        assert_eq!(parler["env"]["PARLER_HUB"], "wss://parler-hub.fly.dev");
+        let def = HostDef { id: "vscode", name: "VS Code", wiring: Wiring::Json { path: path.clone(), key: "servers", shape: JsonShape::VsCode }, hints: vec![] };
+        assert_eq!(configured_env(&def), Some(("wss://parler-hub.fly.dev".to_string(), None)));
         std::fs::remove_dir_all(path.parent().unwrap()).ok();
     }
 
@@ -1362,10 +1493,10 @@ mod tests {
         let path = tmp("rm-json").join("mcp.json");
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, r#"{"mcpServers":{"other":{"command":"foo"}}}"#).unwrap();
-        write_json(&path, &env(), "/usr/local/bin/parler").unwrap();
+        write_json(&path, "mcpServers", JsonShape::Standard, &env(), "/usr/local/bin/parler").unwrap();
 
-        assert!(remove_json(&path).unwrap(), "first remove reports it removed something");
-        assert!(!remove_json(&path).unwrap(), "second remove is a no-op");
+        assert!(remove_json(&path, "mcpServers").unwrap(), "first remove reports it removed something");
+        assert!(!remove_json(&path, "mcpServers").unwrap(), "second remove is a no-op");
 
         let v = read_json(&path).unwrap();
         let servers = v.get("mcpServers").unwrap().as_object().unwrap();
@@ -1394,7 +1525,7 @@ mod tests {
     #[test]
     fn remove_json_on_missing_file_is_a_noop() {
         let path = tmp("rm-missing").join("mcp.json");
-        assert!(!remove_json(&path).unwrap());
+        assert!(!remove_json(&path, "mcpServers").unwrap());
     }
 
     #[test]
@@ -1501,11 +1632,11 @@ mod tests {
         let jpath = tmp("cfg-env-json").join("mcp.json");
         let mut env_with_secret = env();
         env_with_secret.push(("PARLER_JOIN_SECRET".into(), "shh".into()));
-        write_json(&jpath, &env_with_secret, "/bin/parler").unwrap();
+        write_json(&jpath, "mcpServers", JsonShape::Standard, &env_with_secret, "/bin/parler").unwrap();
         let jdef = HostDef {
             id: "cursor",
             name: "Cursor",
-            wiring: Wiring::Json(jpath.clone()),
+            wiring: Wiring::Json { path: jpath.clone(), key: "mcpServers", shape: JsonShape::Standard },
             hints: vec![],
         };
         assert_eq!(
@@ -1528,7 +1659,7 @@ mod tests {
         let missing = HostDef {
             id: "cursor",
             name: "Cursor",
-            wiring: Wiring::Json(tmp("cfg-env-none").join("mcp.json")),
+            wiring: Wiring::Json { path: tmp("cfg-env-none").join("mcp.json"), key: "mcpServers", shape: JsonShape::Standard },
             hints: vec![],
         };
         assert_eq!(configured_env(&missing), None);
@@ -1551,7 +1682,7 @@ mod tests {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, "{ this is not json").unwrap();
         // Must error, and must NOT overwrite the file.
-        assert!(write_json(&path, &env(), "/bin/parler").is_err());
+        assert!(write_json(&path, "mcpServers", JsonShape::Standard, &env(), "/bin/parler").is_err());
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "{ this is not json");
         std::fs::remove_dir_all(path.parent().unwrap()).ok();
     }
@@ -1570,6 +1701,9 @@ mod tests {
         assert_eq!(canonical_id("claude_code"), Some("claude-code"));
         assert_eq!(canonical_id("CODEX"), Some("codex"));
         assert_eq!(canonical_id("gemini-cli"), Some("gemini"));
+        assert_eq!(canonical_id("OpenCode"), Some("opencode"));
+        assert_eq!(canonical_id("vs code"), Some("vscode"));
+        assert_eq!(canonical_id("cline"), Some("cline"));
         assert_eq!(canonical_id("hermes"), None);
     }
 
@@ -1581,8 +1715,10 @@ mod tests {
         ids.dedup();
         assert_eq!(ids.len(), reg.len(), "host ids must be unique");
         for d in &reg {
-            if let Wiring::Json(p) | Wiring::Toml(p) = &d.wiring {
-                assert!(p.is_absolute(), "{} config path must be absolute", d.id);
+            match &d.wiring {
+                Wiring::Json { path, .. } => assert!(path.is_absolute(), "{} config path must be absolute", d.id),
+                Wiring::Toml(p) => assert!(p.is_absolute(), "{} config path must be absolute", d.id),
+                Wiring::ClaudeCli => {}
             }
         }
     }
@@ -1692,9 +1828,13 @@ mod tests {
         with_secret.retain(|(k, _)| k != "PARLER_HUB");
         with_secret.push(("PARLER_HUB".into(), "ws://127.0.0.1:7070".into()));
         with_secret.push(("PARLER_JOIN_SECRET".into(), "REUSE-ME".into()));
-        write_json(&path, &with_secret, "/bin/parler").unwrap();
-        let def =
-            HostDef { id: "cursor", name: "Cursor", wiring: Wiring::Json(path.clone()), hints: vec![] };
+        write_json(&path, "mcpServers", JsonShape::Standard, &with_secret, "/bin/parler").unwrap();
+        let def = HostDef {
+            id: "cursor",
+            name: "Cursor",
+            wiring: Wiring::Json { path: path.clone(), key: "mcpServers", shape: JsonShape::Standard },
+            hints: vec![],
+        };
         // Match on the same hub → the wired secret; a different hub → None (mint fresh).
         assert_eq!(
             configured_env(&def),
