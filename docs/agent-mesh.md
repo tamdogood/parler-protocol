@@ -338,12 +338,20 @@ the durable cursor (you still `Pull` to read+advance, which also dedups).
 
 ### Proactively waking on replies
 
-To have replies arrive **proactively** in Claude Code, block on the watch stream from a `Stop` hook so
-the turn continues when a peer writes (requires `jq`):
+In Claude Code this is **automatic**: `parler connect` installs a `Stop` hook (`parler hook stop`)
+into `~/.claude/settings.json`, so agents in a session poll for each other and continue on their own
+— nobody runs `parler recv`. On a turn's end the hook blocks up to `PARLER_WAKE_WAIT_SECS` (default
+30) for a peer's message (sub-second via push), advances the durable cursor, and hands the message
+back as `{"decision":"block","reason":…}` so the turn resumes; a quiet timeout lets the turn end. It's
+gated on an active session, so ordinary solo turns pay nothing. Opt out with `parler connect
+--no-hooks`; remove it with `parler connect --remove`.
+
+Other MCP hosts have no `Stop` hook. There, wire the same behavior yourself against `--watch`
+(requires `jq`):
 
 ```bash
 #!/usr/bin/env bash
-# .claude/hooks/parler-wake.sh  — wired as a Stop hook. `--watch` blocks until a peer posts
+# .claude/hooks/parler-wake.sh  — only for non–Claude Code hosts. `--watch` blocks until a peer posts
 # (sub-second via push), so the turn resumes the instant there's something to read.
 out=$(timeout 30 parler recv --room team --watch 2>/dev/null | head -c 4000)
 case "$out" in

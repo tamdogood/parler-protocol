@@ -87,6 +87,10 @@ pub struct Options {
     /// already-running hub, which still enforces the old secret — issue #101). Turning it on prints
     /// the exact `parler hub …` restart line the operator must run with the new secret.
     pub rotate_secret: bool,
+    /// Install the Claude Code `Stop` (wake) hook alongside the MCP server, so agents auto-poll for
+    /// peers' messages instead of the user running `parler recv`. On by default; `--no-hooks` clears
+    /// it. Only affects Claude Code (the one host with a Stop hook); ignored for every other host.
+    pub install_hooks: bool,
 }
 
 /// One successfully wired agent, as [`run`] reports it back — everything `--verify` needs to watch
@@ -400,6 +404,131 @@ fn write_secure(path: &Path, contents: &str) -> Result<()> {
     Ok(())
 }
 
+// ---------------------------------------------------------------------------------------------
+// Claude Code wake (Stop) hook — installed alongside the MCP server so agents auto-poll for peers.
+// ---------------------------------------------------------------------------------------------
+
+/// `~/.claude/settings.json` — where Claude Code reads user-scope hooks (the same scope we register
+/// the MCP server in, so the two travel together).
+fn claude_settings_path() -> PathBuf {
+    user_home().join(".claude/settings.json")
+}
+
+/// The shell command Claude Code runs on `Stop`. It carries the *same* identity env the MCP server
+/// got (a separate hook process doesn't inherit the server's env), so the hook shares this agent's
+/// cursor and only ever drains genuinely-new peer messages. Values are single-quoted so a home path
+/// with spaces — or a join secret with shell metacharacters — survives `sh -c` intact.
+fn stop_hook_command(env: &[(String, String)], binpath: &str) -> String {
+    let mut s = String::new();
+    for (k, v) in env {
+        s.push_str(&format!("{k}={} ", shell_single_quote(v)));
+    }
+    s.push_str(&format!("{} hook stop", shell_single_quote(binpath)));
+    s
+}
+
+/// POSIX single-quote a value: wrap in `'…'`, and encode any embedded quote as `'\''`.
+fn shell_single_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+/// Whether a `hooks.Stop` group is *ours* — identified by a command that runs `parler … hook stop`.
+/// Used to keep install idempotent and to remove only what we wrote, never a user's own Stop hook.
+fn is_parler_wake_group(group: &Value) -> bool {
+    group
+        .get("hooks")
+        .and_then(Value::as_array)
+        .map(|hs| {
+            hs.iter().any(|h| {
+                h.get("command").and_then(Value::as_str).map(|c| c.contains(" hook stop")).unwrap_or(false)
+            })
+        })
+        .unwrap_or(false)
+}
+
+/// Add the wake hook to `~/.claude/settings.json`, preserving every other setting and hook. Idempotent
+/// (drops any prior parler wake entry first). Locks the file to `0600` only when the command carries a
+/// join secret — otherwise it leaves the existing permissions untouched.
+fn install_claude_stop_hook(env: &[(String, String)], binpath: &str) -> Result<()> {
+    install_stop_hook_at(&claude_settings_path(), env, binpath)
+}
+
+/// Path-parameterized core of [`install_claude_stop_hook`], so the settings-merge logic is unit-
+/// testable without writing to the real `~/.claude/settings.json`.
+fn install_stop_hook_at(path: &Path, env: &[(String, String)], binpath: &str) -> Result<()> {
+    let mut root = if path.exists() { read_json(path)? } else { json!({}) };
+    let obj = root
+        .as_object_mut()
+        .ok_or_else(|| anyhow!("{} is not a JSON object — move it aside and re-run", path.display()))?;
+    let hooks = obj
+        .entry("hooks")
+        .or_insert_with(|| json!({}))
+        .as_object_mut()
+        .ok_or_else(|| anyhow!("{} has a non-object \"hooks\" — fix it and re-run", path.display()))?;
+    let stop = hooks
+        .entry("Stop")
+        .or_insert_with(|| json!([]))
+        .as_array_mut()
+        .ok_or_else(|| anyhow!("{} has a non-array \"hooks.Stop\" — fix it and re-run", path.display()))?;
+    stop.retain(|g| !is_parler_wake_group(g));
+    stop.push(json!({ "hooks": [ { "type": "command", "command": stop_hook_command(env, binpath) } ] }));
+
+    let text = serde_json::to_string_pretty(&root)? + "\n";
+    let has_secret = env.iter().any(|(k, _)| k == "PARLER_JOIN_SECRET");
+    if has_secret {
+        write_secure(path, &text) // 0600: the hook line embeds the join secret
+    } else {
+        write_config(path, &text) // preserve the user's existing settings.json mode
+    }
+}
+
+/// Drop our wake hook from `~/.claude/settings.json`, tidying empty `Stop`/`hooks` containers so we
+/// leave no debris. `Ok(false)` if there was nothing of ours to remove.
+fn remove_claude_stop_hook() -> Result<bool> {
+    remove_stop_hook_at(&claude_settings_path())
+}
+
+/// Path-parameterized core of [`remove_claude_stop_hook`] (unit-testable — see `install_stop_hook_at`).
+fn remove_stop_hook_at(path: &Path) -> Result<bool> {
+    if !path.exists() {
+        return Ok(false);
+    }
+    let mut root = read_json(path)?;
+    let removed = root
+        .get_mut("hooks")
+        .and_then(|h| h.get_mut("Stop"))
+        .and_then(Value::as_array_mut)
+        .map(|stop| {
+            let before = stop.len();
+            stop.retain(|g| !is_parler_wake_group(g));
+            before != stop.len()
+        })
+        .unwrap_or(false);
+    if removed {
+        if let Some(hooks) = root.get_mut("hooks").and_then(Value::as_object_mut) {
+            if hooks.get("Stop").and_then(Value::as_array).map(|a| a.is_empty()).unwrap_or(false) {
+                hooks.remove("Stop");
+            }
+            if hooks.is_empty() {
+                if let Some(obj) = root.as_object_mut() {
+                    obj.remove("hooks");
+                }
+            }
+        }
+        write_config(path, &(serde_json::to_string_pretty(&root)? + "\n"))?;
+    }
+    Ok(removed)
+}
+
+/// Write a config file, creating parents, without touching its permission bits — for files we edit in
+/// place (like the user's `settings.json`) that carry no secret and shouldn't be silently re-moded.
+fn write_config(path: &Path, contents: &str) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
+    }
+    std::fs::write(path, contents).with_context(|| format!("writing {}", path.display()))
+}
+
 /// Wire a known host in place. Returns a short human description of where it landed.
 fn wire(def: &HostDef, env: &[(String, String)], binpath: &str) -> Result<String> {
     match &def.wiring {
@@ -657,11 +786,22 @@ pub fn run(opts: Options) -> Result<Vec<WiredAgent>> {
                                 secret: host_secret.clone(),
                                 home: env_home(&env),
                             });
+                            // Claude Code is the one host with a Stop hook: install the wake hook so
+                            // agents auto-poll for peers. Best-effort — a hook write failure never fails
+                            // the wire (the MCP server is what matters); it's just noted in the detail.
+                            let detail = if def.id == "claude-code" && opts.install_hooks {
+                                match install_claude_stop_hook(&env, &binpath) {
+                                    Ok(()) => format!("{where_} + wake hook (auto-poll)"),
+                                    Err(e) => format!("{where_} (wake hook skipped: {e})"),
+                                }
+                            } else {
+                                where_.clone()
+                            };
                             reports.push(Report {
                                 id: def.id.into(),
                                 name: def.name.into(),
                                 status: "wired",
-                                detail: where_.clone(),
+                                detail,
                                 config: Some(where_),
                                 hub: Some(host_hub),
                                 kept,
@@ -728,35 +868,42 @@ fn run_remove(opts: &Options) -> Result<()> {
     let mut reports: Vec<Report> = Vec::new();
     for t in &targets {
         match t {
-            Target::Known(def) => match unwire(def) {
-                Ok(true) => reports.push(Report {
-                    id: def.id.into(),
-                    name: def.name.into(),
-                    status: "removed",
-                    detail: "removed".into(),
-                    config: None,
-                    hub: None,
-                    kept: false,
-                }),
-                Ok(false) => reports.push(Report {
-                    id: def.id.into(),
-                    name: def.name.into(),
-                    status: "not-configured",
-                    detail: "wasn't connected".into(),
-                    config: None,
-                    hub: None,
-                    kept: false,
-                }),
-                Err(e) => reports.push(Report {
-                    id: def.id.into(),
-                    name: def.name.into(),
-                    status: "error",
-                    detail: format!("{e}"),
-                    config: None,
-                    hub: None,
-                    kept: false,
-                }),
-            },
+            Target::Known(def) => {
+                // Symmetric with wiring: pull the Claude Code wake hook back out when we remove the
+                // server. Best-effort — a failed hook cleanup never masks the server removal result.
+                if def.id == "claude-code" {
+                    let _ = remove_claude_stop_hook();
+                }
+                match unwire(def) {
+                    Ok(true) => reports.push(Report {
+                        id: def.id.into(),
+                        name: def.name.into(),
+                        status: "removed",
+                        detail: "removed".into(),
+                        config: None,
+                        hub: None,
+                        kept: false,
+                    }),
+                    Ok(false) => reports.push(Report {
+                        id: def.id.into(),
+                        name: def.name.into(),
+                        status: "not-configured",
+                        detail: "wasn't connected".into(),
+                        config: None,
+                        hub: None,
+                        kept: false,
+                    }),
+                    Err(e) => reports.push(Report {
+                        id: def.id.into(),
+                        name: def.name.into(),
+                        status: "error",
+                        detail: format!("{e}"),
+                        config: None,
+                        hub: None,
+                        kept: false,
+                    }),
+                }
+            }
             Target::Unknown(name) => reports.push(Report {
                 id: name.clone(),
                 name: name.clone(),
@@ -1251,6 +1398,69 @@ mod tests {
     }
 
     #[test]
+    fn stop_hook_install_is_idempotent_and_preserves_other_hooks() {
+        let path = tmp("cc-settings").join("settings.json");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        // A user who already has an unrelated setting and their own Stop hook.
+        std::fs::write(
+            &path,
+            r#"{"model":"opus","hooks":{"Stop":[{"hooks":[{"type":"command","command":"echo mine"}]}]}}"#,
+        )
+        .unwrap();
+
+        install_stop_hook_at(&path, &env(), "/usr/local/bin/parler").unwrap();
+        install_stop_hook_at(&path, &env(), "/usr/local/bin/parler").unwrap(); // twice → still one of ours
+
+        let v = read_json(&path).unwrap();
+        assert_eq!(v["model"], "opus", "must preserve unrelated settings");
+        let stop = v["hooks"]["Stop"].as_array().unwrap();
+        // The user's own Stop hook survives, and exactly one parler wake entry exists.
+        assert!(
+            stop.iter().any(|g| g["hooks"][0]["command"].as_str() == Some("echo mine")),
+            "must keep the user's own Stop hook"
+        );
+        let ours: Vec<_> = stop.iter().filter(|g| is_parler_wake_group(g)).collect();
+        assert_eq!(ours.len(), 1, "exactly one parler wake entry across re-runs");
+        let cmd = ours[0]["hooks"][0]["command"].as_str().unwrap();
+        assert!(cmd.contains("hook stop"), "runs the wake command");
+        assert!(cmd.contains("PARLER_HOME="), "carries the identity env so the hook shares the cursor");
+        assert!(cmd.contains("wss://parler-hub.fly.dev"), "carries the hub");
+
+        // Remove drops only ours, tidies the empty container, and keeps the user's Stop hook.
+        assert!(remove_stop_hook_at(&path).unwrap(), "first remove reports a change");
+        assert!(!remove_stop_hook_at(&path).unwrap(), "second remove is a no-op");
+        let v = read_json(&path).unwrap();
+        let stop = v["hooks"]["Stop"].as_array().unwrap();
+        assert!(!stop.iter().any(is_parler_wake_group), "our entry is gone");
+        assert!(
+            stop.iter().any(|g| g["hooks"][0]["command"].as_str() == Some("echo mine")),
+            "the user's own Stop hook is untouched"
+        );
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn stop_hook_installs_into_a_fresh_settings_file() {
+        let path = tmp("cc-fresh").join("settings.json");
+        // A join-secret env exercises the 0600 path and the shell-quoting.
+        let mut e = env();
+        e.push(("PARLER_JOIN_SECRET".into(), "s3cr3t".into()));
+        install_stop_hook_at(&path, &e, "/usr/local/bin/parler").unwrap();
+
+        let v = read_json(&path).unwrap();
+        let cmd = v["hooks"]["Stop"][0]["hooks"][0]["command"].as_str().unwrap();
+        assert!(cmd.contains("PARLER_JOIN_SECRET='s3cr3t'"), "carries + quotes the join secret");
+        assert!(cmd.ends_with("'/usr/local/bin/parler' hook stop"));
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn remove_stop_hook_on_missing_file_is_a_noop() {
+        let path = tmp("cc-rm-missing").join("settings.json");
+        assert!(!remove_stop_hook_at(&path).unwrap());
+    }
+
+    #[test]
     fn sanitize_name_part_makes_a_clean_handle() {
         assert_eq!(sanitize_name_part("Tam Nguyen"), "tam-nguyen");
         assert_eq!(sanitize_name_part("  root  "), "root");
@@ -1397,6 +1607,7 @@ mod tests {
             json: false,
             hub_pinned: false,
             rotate_secret: false,
+            install_hooks: false,
         };
         let with = env_for("codex", &opts, "wss://h", Some("s3cr3t"), false);
         assert!(with.iter().any(|(k, v)| k == "PARLER_JOIN_SECRET" && v == "s3cr3t"));
@@ -1423,6 +1634,7 @@ mod tests {
             json: false,
             hub_pinned: false,
             rotate_secret: false,
+            install_hooks: false,
         };
         // A primary that adopts the bare identity points PARLER_HOME at ~/.parler itself, so
         // `parler mcp` loads the identity the user already minted there.

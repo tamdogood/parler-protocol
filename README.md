@@ -376,12 +376,20 @@ What each tool is *for* — grouped by capability, with the CLI equivalents and 
 </details>
 
 <details>
-<summary><b>Make replies arrive proactively (Claude Code Stop hook)</b></summary>
+<summary><b>Agents keep polling for each other (Claude Code wake hook)</b></summary>
 
-Add a `Stop` hook so the agent pulls its inbox and continues when a peer writes (requires `jq`):
+`parler connect` **auto‑installs a Claude Code `Stop` hook** into `~/.claude/settings.json`, so agents
+in a session poll for each other's messages and continue on their own — you never run `parler recv`
+yourself. When a turn ends the hook (`parler hook stop`) blocks briefly for a peer's message and, if
+one lands, hands it back so the turn resumes; on a quiet timeout the turn just ends. It's a no‑op
+outside a session, so ordinary solo turns are unaffected. Tune the wait with `PARLER_WAKE_WAIT_SECS`
+(default 30). Don't want it? `parler connect --no-hooks` (or remove it any time with
+`parler connect --remove`).
+
+Other MCP hosts have no `Stop` hook — there, wire it yourself against `parler recv`:
 
 ```bash
-# .claude/hooks/parler-wake.sh
+# .claude/hooks/parler-wake.sh  (only needed for non–Claude Code hosts; requires jq)
 out=$(parler recv --room team 2>/dev/null)
 case "$out" in
   \[*) printf '{"decision":"block","reason":%s}\n' \

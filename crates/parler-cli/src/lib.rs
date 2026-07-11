@@ -107,9 +107,10 @@ enum Cmd {
     Mcp,
     /// Check configuration, database, connections, and dependencies.
     Doctor,
-    /// Handle a Claude Code / editor lifecycle hook.
+    /// Handle a Claude Code / editor lifecycle hook. `stop` is the wake hook: it blocks briefly for
+    /// peers' messages and continues the turn so agents auto-poll (wired by `parler connect`).
     Hook {
-        /// The hook type (session-start, pre-tool-use, post-tool-use, post-tool-use-failure, session-end).
+        /// The hook type (stop, session-start, user-prompt-submit, post-tool-use, post-tool-use-failure, session-end).
         kind: String,
     },
     /// Consolidate the active session backlog into key semantic facts.
@@ -205,6 +206,11 @@ struct ConnectArgs {
     /// How long --verify waits before giving up, in seconds.
     #[arg(long, default_value_t = 180)]
     verify_timeout_secs: u64,
+    /// Don't install the Claude Code wake (`Stop`) hook. By default `connect` wires it so agents in a
+    /// session auto-poll for each other's messages and continue on their own; pass this to skip it
+    /// (e.g. you prefer to fetch with `parler recv` yourself).
+    #[arg(long)]
+    no_hooks: bool,
 }
 
 #[derive(Subcommand)]
@@ -765,6 +771,7 @@ async fn cmd_connect(a: ConnectArgs) -> Result<()> {
         json: a.json,
         hub_pinned,
         rotate_secret: a.rotate_secret,
+        install_hooks: !a.no_hooks,
     })?;
     if a.json || wired.is_empty() {
         return Ok(());
@@ -2106,6 +2113,14 @@ async fn cmd_doctor() -> Result<()> {
 }
 
 async fn cmd_hook(kind: String) -> Result<()> {
+    // The Stop/wake hook is the *inbound* path: block briefly for peers' messages and, if any land,
+    // print Claude Code's continue-the-turn JSON so the agent keeps polling on its own — no human
+    // running `parler recv`. Every other kind below is the *outbound* path (mirror lifecycle events
+    // into the session room).
+    if matches!(kind.as_str(), "stop" | "Stop" | "wake" | "Wake") {
+        return wake_hook().await;
+    }
+
     // 1. Check if there is an active session
     let Some(room) = load_active_session() else {
         // Exit silently if no active session
@@ -2195,6 +2210,76 @@ async fn cmd_hook(kind: String) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// The `Stop`-hook worker (`parler hook stop`): when a Claude Code turn ends, block briefly for new
+/// messages from the other agents in the active session and, if any arrive, print the host's
+/// continue-the-turn JSON (`{"decision":"block","reason":…}`) so the agent resumes on its own. On a
+/// quiet timeout it prints nothing and the turn ends — so back-and-forth keeps flowing while the
+/// conversation is live, and stops when it goes quiet.
+///
+/// Bounded by design: it only runs when the agent is in a session (a local file read, so normal solo
+/// turns stay instant and never touch the hub), and each drain advances the durable cursor, so a
+/// message is injected exactly once and the loop can't spin on stale history.
+async fn wake_hook() -> Result<()> {
+    // No active session → nothing to poll. Keep this before any hub round-trip so a plain Claude Code
+    // turn pays zero latency for having Parler Protocol wired in.
+    let Some(room) = load_active_session() else {
+        return Ok(());
+    };
+
+    // Drain the host's Stop payload so the pipe doesn't block; we don't need its contents (the
+    // cursor, not `stop_hook_active`, is what keeps us from looping — a drained message never repeats).
+    let mut stdin_buffer = String::new();
+    use tokio::io::AsyncReadExt;
+    let _ = tokio::io::stdin().read_to_string(&mut stdin_buffer).await;
+
+    // How long to wait for a peer at each turn-end before letting the turn stop. Long enough to catch
+    // a replying agent, short enough that a finished conversation doesn't hang. Overridable for tests
+    // and impatient setups.
+    let wait_secs = std::env::var("PARLER_WAKE_WAIT_SECS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(30);
+
+    let mut ag = connect().await?;
+    let me = ag.id.clone();
+    let pushing = ag.subscribe().await.unwrap_or(false);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(wait_secs);
+    loop {
+        // Read + advance the durable cursor: anything the agent already saw via `parler_recv` is gone,
+        // so we only ever surface genuinely new messages.
+        let (msgs, _) = ag.pull(&room, None, None).await?;
+        if !msgs.is_empty() {
+            // Advance past the whole batch (including our own posts) so nothing re-triggers next turn.
+            ag.commit_reads(&room).await?;
+            // Only *peers'* messages should wake the agent — surfacing its own sends back to it would
+            // make it continue on its own words and self-loop.
+            let peers: Vec<&StoredMessage> = msgs.iter().filter(|m| m.from.id != me).collect();
+            if !peers.is_empty() {
+                let body = peers.iter().map(|m| render_message(m)).collect::<Vec<_>>().join("\n");
+                let reason = format!(
+                    "New messages from other agents in session '{room}':\n{body}\n\n\
+                     Continue the conversation — reply with parler_send if a response is warranted; \
+                     otherwise you can stop."
+                );
+                println!("{}", serde_json::json!({ "decision": "block", "reason": reason }));
+                return Ok(());
+            }
+        }
+        let now = tokio::time::Instant::now();
+        if now >= deadline {
+            return Ok(());
+        }
+        let remaining = deadline - now;
+        if pushing {
+            // Wake the moment a peer posts (any room), or fall through to re-pull well before the hub's
+            // idle timeout. Never overshoot the deadline.
+            let _ = ag.next_delivery(remaining.min(Duration::from_secs(25))).await?;
+        } else {
+            tokio::time::sleep(remaining.min(Duration::from_secs(2))).await;
+        }
+    }
 }
 
 async fn cmd_consolidate() -> Result<()> {

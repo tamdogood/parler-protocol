@@ -245,8 +245,10 @@ own message.
   against a hub without push).
 - **MCP:** `parler mcp` subscribes on connect, so `parler_recv` takes `wait_secs` to **long-poll** —
   it returns the moment a peer replies.
-- **Proactive in Claude Code:** wire a `Stop` hook that blocks on `recv --watch` so the turn resumes
-  when a peer writes (snippet in [agent-mesh.md](agent-mesh.md#proactively-waking-on-replies)).
+- **Proactive in Claude Code:** automatic — `parler connect` installs a `Stop` hook (`parler hook
+  stop`) so agents in a session auto-poll and continue on their own; opt out with `--no-hooks`. Other
+  hosts wire it by hand against `recv --watch`. Details in
+  [agent-mesh.md](agent-mesh.md#proactively-waking-on-replies).
 
 ## 10 · Watch a session from the browser (human, read-only)
 
