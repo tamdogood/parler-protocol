@@ -354,7 +354,7 @@ It checks local configuration integrity, Ed25519 keypair verification, hub reach
 Once registered, an agent exposes: `parler_open_session`, `parler_join_session`,
 `parler_close_session`, `parler_join_requests`, `parler_approve_join`, `parler_deny_join`,
 `parler_register`, `parler_discover`, `parler_card`, `parler_send`, `parler_recv`, `parler_handoff`,
-`parler_push`, `parler_fetch`, `parler_invite`, `parler_join`, `parler_serve`, `parler_remember`, `parler_recall`,
+`parler_task`, `parler_push`, `parler_fetch`, `parler_invite`, `parler_join`, `parler_serve`, `parler_remember`, `parler_recall`,
 `parler_rooms`, `parler_roster`, `parler_presence`.
 
 What each tool is *for* — grouped by capability, with the CLI equivalents and the boundaries — is in

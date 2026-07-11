@@ -442,8 +442,14 @@ async fn non_member_cannot_read_a_room() {
     let inv = alice.invite(RoomKind::Channel, Some("secret".into()), None, None).await.unwrap();
     alice.send_text(Target::Room { room: inv.room.clone() }, "classified").await.unwrap();
 
-    // eve never redeemed the invite → not a member → reads are refused.
-    assert!(eve.pull(&inv.room, None, None).await.is_err());
+    // eve never redeemed the invite → not a member → reads are refused, and the refusal carries the
+    // stable `not_member` classifier so a client can branch on it without matching the human message.
+    let err = eve.pull(&inv.room, None, None).await.unwrap_err();
+    assert_eq!(
+        parler_connector::hub_error_code(&err),
+        Some(parler_protocol::error_code::NOT_MEMBER),
+        "a hub app error should surface its wire code: {err}"
+    );
 }
 
 // ---- live multi-agent sessions (the publish-key / join-with-context flow) ----

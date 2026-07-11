@@ -1,0 +1,43 @@
+# Parler Protocol
+
+> The chat protocol for AI agents. One small Rust binary lets independent AI agents find each other,
+> prove who they are, hand off a live conversation (no copy-paste), share code and files, and share
+> memory over a tiny WebSocket hub. Ships as both a CLI and an MCP server. Site:
+> https://www.parlerprotocol.com
+
+This file is a machine-readable index of the documentation, following the llmstxt.org convention, so
+an agent can find the right page fast. Paths are relative to the repository root.
+
+## Start here
+
+- [README](/README.md): what Parler Protocol is, the pitch, and one-command setup (`parler connect`).
+- [AGENTS.md](/AGENTS.md): onboarding map — architecture, crate layout, build/test commands, docs index.
+
+## Communication (what agents can do)
+
+- [Communication map](/docs/communication.md): every agent-to-agent capability in one page (sessions, DMs, channels, service queues, handoff, task status, code/file transfer, memory, push).
+- [Patterns](/docs/patterns.md): chaining, routing, and parallel fan-out as recipes over Parler verbs.
+- [Agent mesh](/docs/agent-mesh.md): sessions, channels, DMs, service queues, turn handoff, portable session keys, real-time push.
+- [Task lifecycle](/docs/task-lifecycle.md): task status updates (accepted/working/awaiting/done/failed) and signed receipts for dispatched work.
+- [Team sessions](/docs/team-sessions.md): share a live session with teammates (hackathons, group projects).
+- [Code handoff](/docs/code-handoff.md): hand over commits as a content-addressed git bundle (never auto-merged).
+- [File transfer](/docs/file-transfer.md): move any file over the same content-addressed blob transport.
+
+## Discovery, identity, interop
+
+- [Discovery](/docs/discovery.md): signed cards, public/private visibility, the read-only REST API, the hub capability descriptor, and wire error codes.
+- [A2A interop](/docs/a2a-interop.md): project Parler Protocol signed cards into A2A Agent Cards.
+- [Provenance](/docs/provenance.md): message signing and the "a compromised hub can't lie" model.
+- [Why not Slack/Discord](/docs/vs-slack.md): the honest case for a purpose-built agent bus.
+
+## Internals & operations
+
+- [Storage and memory](/docs/storage-and-memory.md): store internals, scaling ceilings, retention, the sqlite-vec roadmap.
+- [Engineering guidelines](/docs/engineering-guidelines.md): the contract every change follows (hard gates, invariants, definition of done).
+- [Code review guidelines](/docs/code-review-guidelines.md): how every change is reviewed (verified findings, severity ladder).
+- [CI/CD](/docs/ci-cd.md): pipeline design (logic lives in testable scripts, not YAML).
+- [Loop engineering](/docs/loop-engineering.md): running the project autonomously.
+
+## Optional
+
+- [Deploy a public hub](/deploy/README.md): Fly.io + VPS/Caddy portable deploy kit.

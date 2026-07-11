@@ -423,7 +423,7 @@ async fn handle(state: &mut McpState, method: &str, params: Value) -> Result<Val
             let result = match name.as_str() {
                 "parler_open_session" | "parler_join_session" | "parler_close_session"
                 | "parler_join" | "parler_send" | "parler_recv" | "parler_handoff"
-                | "parler_join_requests" | "parler_approve_join" | "parler_deny_join"
+                | "parler_task" | "parler_join_requests" | "parler_approve_join" | "parler_deny_join"
                 | "parler_watch_session" | "parler_bring" => {
                     call_session_tool(state, &name, &args).await
                 }
@@ -1092,6 +1092,31 @@ async fn call_session_tool(state: &mut McpState, name: &str, args: &Value) -> Re
                  banner on their next parler_recv (or sooner if they're long-polling with wait_secs)."
             ))
         }
+        "parler_task" => {
+            let status_str = s("status").ok_or_else(|| anyhow!("missing 'status'"))?;
+            let status = parler_protocol::TaskStatus::parse(&status_str).ok_or_else(|| {
+                anyhow!("unknown status '{status_str}' — use one of: {}", parler_protocol::TaskStatus::ALL.join(" | "))
+            })?;
+            let target = match select_target(s("room"), s("to"), s("service"))? {
+                Some(t) => t,
+                None => match state.active_session.clone() {
+                    Some(room) => Target::Room { room },
+                    None => bail!("provide one of room / to / service, or open/join a session first"),
+                },
+            };
+            let target = crate::resolve_target(&mut state.agent, target).await?;
+            let task = parler_protocol::TaskRef {
+                status,
+                task: s("task"),
+                note: s("note"),
+                result: s("result"),
+                tokens: args.get("tokens").and_then(Value::as_u64),
+                elapsed_ms: args.get("elapsed_ms").and_then(Value::as_u64),
+            };
+            let (_id, seq, room) = state.agent.send(target, vec![task.to_part()], None, None).await?;
+            let id = task.task.map(|i| format!(" ({i})")).unwrap_or_default();
+            Ok(format!("{} task {}{id} posted to '{room}' (seq {seq})", status.marker(), status.label()))
+        }
         "parler_recv" => {
             let room = s("room")
                 .or_else(|| state.active_session.clone())
@@ -1692,23 +1717,23 @@ fn tool_specs() -> Vec<Value> {
     vec![
         tool(
             "parler_open_session",
-            "Open a shared live session; returns a KEY to hand another agent so it joins your conversation already caught up. `context` is posted as the first message — recap the task, decisions, files, state. Joiners need YOUR approval by default (you're shown an accept/reject prompt; confirm with the user). Becomes your active session (parler_send/parler_recv then need no room). Keep a durable recap current with parler_remember key=\"session-digest\" so late joiners get it cheaply.",
+            "Open a shared live session; returns a KEY to hand another agent so it joins already caught up. `context` posts first — recap task/decisions/files/state. Joiners need your approval by default (confirm with the user). Becomes your active session (send/recv need no room).",
             json!({
-                "context": { "type": "string", "description": "summary of the conversation/state used to catch up whoever joins" },
-                "topic": { "type": "string", "description": "optional short name for the session" },
-                "approval": { "type": "boolean", "description": "require your approval before a joiner is admitted (default true). Set false for an open paste-and-join key." },
-                "ttl_secs": { "type": "integer", "description": "how long the key stays valid (default 24h)" },
-                "max_uses": { "type": "integer", "description": "how many agents may join with the key (default 50)" }
+                "context": { "type": "string", "description": "recap of the conversation/state to catch up joiners" },
+                "topic": { "type": "string", "description": "short session name" },
+                "approval": { "type": "boolean", "description": "require approval before a joiner is admitted (default true; false = open paste-and-join)" },
+                "ttl_secs": { "type": "integer", "description": "key validity (default 24h)" },
+                "max_uses": { "type": "integer", "description": "max joiners (default 50)" }
             }),
             &[],
         ),
         tool(
             "parler_join_session",
-            "Join a session with a KEY. If approval is required you're held pending until the host admits you; pass wait_secs to hold this call open until they decide. Once in, you get a digest of the context (seed + recent tail); backlog:\"full\" replays everything, or parler_recv since=<seq> re-reads a range in full. Becomes your active session (parler_send/parler_recv need no room).",
+            "Join a session with a KEY. If approval is required you're held pending; pass wait_secs to wait for the host in this call. You get a context digest (seed + recent tail); backlog:\"full\" replays all. Becomes your active session (send/recv need no room).",
             json!({
                 "key": { "type": "string", "description": "the session key or link you were handed" },
-                "backlog": { "type": "string", "enum": ["recent", "full"], "description": "recent (default): seed + recent tail; full: replay the entire backlog" },
-                "wait_secs": { "type": "integer", "description": "approval-gated join: seconds to wait in THIS call for the host to approve (≤60); resolves the moment they do. Omit to return 'pending' now." }
+                "backlog": { "type": "string", "enum": ["recent", "full"], "description": "recent (default): seed + recent tail; full: whole backlog" },
+                "wait_secs": { "type": "integer", "description": "approval-gated: seconds to wait for the host here (≤60); omit to return 'pending' now" }
             }),
             &["key"],
         ),
@@ -1726,7 +1751,7 @@ fn tool_specs() -> Vec<Value> {
         ),
         tool(
             "parler_approve_join",
-            "Approve a pending joiner (from parler_join_requests or the send/recv prompt) — they can then read and participate. Defaults to active session. Confirm with the user before approving.",
+            "Approve a pending joiner (from parler_join_requests) so they can read and participate. Defaults to active session. Confirm with the user first.",
             json!({
                 "agent": { "type": "string", "description": "the joiner's name or id (from parler_join_requests)" },
                 "room": { "type": "string", "description": "the session room (defaults to your active session)" }
@@ -1744,7 +1769,7 @@ fn tool_specs() -> Vec<Value> {
         ),
         tool(
             "parler_watch_session",
-            "Mint a read-only WATCH code so the user can watch this session live from the Parler Protocol website (/session page). Owner-only and separate from the join key (which can't read the backlog), so it's the safe way to let a human view it. Defaults to active session; hand the code to the user.",
+            "Mint a read-only WATCH code so the user can watch this session live on the Parler Protocol website (/session). Owner-only, separate from the join key (the safe way to let a human view it). Defaults to active session; hand the code to the user.",
             json!({
                 "room": { "type": "string", "description": "the session room (defaults to your active session)" },
                 "ttl_secs": { "type": "integer", "description": "how long the watch code stays valid (default 1h)" }
@@ -1753,7 +1778,7 @@ fn tool_specs() -> Vec<Value> {
         ),
         tool(
             "parler_bring",
-            "Get an independent second opinion from another AI agent (v1: codex) — no copy-paste. Runs it read-only on your context and posts its review into your active session (opening one if needed) as a normal message; call parler_recv to read it. Returns immediately; the review lands in a few minutes.",
+            "Get an independent second opinion from another AI agent (v1: codex) — no copy-paste. Posts its review into your active session (opening one if needed); call parler_recv to read it. Returns immediately; the review lands in a few minutes.",
             json!({
                 "agent": { "type": "string", "description": "which agent to ask (default and v1-only: codex)" },
                 "context": { "type": "string", "description": "what to review — recap of the code/decision and what you want a second opinion on" }
@@ -1787,7 +1812,7 @@ fn tool_specs() -> Vec<Value> {
         ),
         tool(
             "parler_send",
-            "Send a message and get back replies already waiting in the room (read-after-write). Defaults to your active session; else give exactly one of room (channel), to (peer agent id or name, DM), service (queue). For a reply not landed yet, don't poll — parler_recv wait_secs long-polls for it.",
+            "Send a message; returns replies already waiting (read-after-write). Defaults to active session; else exactly one of room (channel), to (peer id/name, DM), service (queue). For a reply not yet landed, use parler_recv wait_secs — don't poll.",
             json!({
                 "room": { "type": "string" },
                 "to": { "type": "string", "description": "a peer agent id or a directory name (resolved to a unique id)" },
@@ -1798,23 +1823,23 @@ fn tool_specs() -> Vec<Value> {
         ),
         tool(
             "parler_recv",
-            "Pull new messages since your cursor (advances it). Defaults to active session; pass room for another. wait_secs long-polls that many seconds for a pushed reply instead of returning empty (cheaper than repeated calls). Long bodies are truncated with a refetch hint; since+limit re-reads that range in FULL (never truncated). Default batch is bounded — a 'more waiting' line means call again.",
+            "Pull new messages since your cursor (advances it). Defaults to active session; or pass room. wait_secs long-polls that many seconds for a pushed reply (cheaper than re-calling). Long bodies truncate with a refetch hint; `since` re-reads a range in FULL. Batch is bounded — 'more waiting' means call again.",
             json!({
                 "room": { "type": "string" },
-                "since": { "type": "integer", "description": "read-only replay from seq in full (no cursor advance); default limit applies unless you pass limit" },
-                "limit": { "type": "integer", "description": "max messages this call (default bounded; raise to read more at once)" },
-                "wait_secs": { "type": "integer", "description": "block up to this many seconds for a pushed message when nothing is waiting (sub-second wake; max 60)" }
+                "since": { "type": "integer", "description": "read-only full replay from seq (no cursor advance)" },
+                "limit": { "type": "integer", "description": "max messages this call (default bounded)" },
+                "wait_secs": { "type": "integer", "description": "block up to N seconds for a pushed message when none waiting (max 60)" }
             }),
             &[],
         ),
         tool(
             "parler_handoff",
-            "Hand the turn to another agent: posts a 'HANDOFF TO YOU' banner they see on their next parler_recv (instant if long-polling with wait_secs), so they continue without a human re-prompting. Use it when you finish your part. Defaults to active session; or target room/to/service. `for`: address by agent name or role (omit = anyone). `bundle`: attach a code blob id from parler_push.",
+            "Hand the turn to another agent: posts a 'HANDOFF TO YOU' banner on their next parler_recv so they continue without a re-prompt. Defaults to active session; or room/to/service. `for`: address by agent name/role (omit = anyone). `bundle`: a code blob id from parler_push.",
             json!({
-                "next": { "type": "string", "description": "what the next agent should do — the instruction to act on" },
-                "summary": { "type": "string", "description": "recap of what you just finished / current state, for the next agent's context" },
-                "for": { "type": "string", "description": "address the handoff to a specific agent by name or role (default: anyone in the room)" },
-                "bundle": { "type": "string", "description": "optional blob id of a code bundle handed off alongside (from parler_push)" },
+                "next": { "type": "string", "description": "the instruction for the next agent to act on" },
+                "summary": { "type": "string", "description": "recap of what you finished / current state, for context" },
+                "for": { "type": "string", "description": "address by agent name or role (default: anyone in the room)" },
+                "bundle": { "type": "string", "description": "blob id of a code bundle from parler_push" },
                 "room": { "type": "string" },
                 "to": { "type": "string" },
                 "service": { "type": "string" }
@@ -1822,8 +1847,24 @@ fn tool_specs() -> Vec<Value> {
             &["next"],
         ),
         tool(
+            "parler_task",
+            "Report task status (accepted|working|awaiting|done|failed|cancelled) over service-queue work; a signed done/failed is a receipt. Defaults to active session, or room/to/service. `task` correlates updates to one job; `result` is a done blob id.",
+            json!({
+                "status": { "type": "string", "enum": ["accepted", "working", "awaiting", "done", "failed", "cancelled"] },
+                "task": { "type": "string", "description": "correlate updates to one job (the request's message id)" },
+                "note": { "type": "string", "description": "one-liner; the question when awaiting" },
+                "result": { "type": "string", "description": "blob id handed back on done" },
+                "tokens": { "type": "integer", "description": "tokens used (receipts)" },
+                "elapsed_ms": { "type": "integer", "description": "ms taken (receipts)" },
+                "room": { "type": "string" },
+                "to": { "type": "string" },
+                "service": { "type": "string" }
+            }),
+            &["status"],
+        ),
+        tool(
             "parler_remember",
-            "Save a fact. LOG reflex: after a decision, record what matters. Same key overwrites in place (idempotent); omit key to append a note. Reuse a small key vocabulary: status, strategy, progress, knowledge, session-digest. Optionally scope to a room or embedding.",
+            "Save a fact. LOG reflex: after a decision, record what matters. Same key overwrites (idempotent); omit key to append. Reuse a small key set: status, strategy, progress, knowledge, session-digest.",
             json!({
                 "text": { "type": "string" },
                 "key": { "type": "string", "description": "stable key for idempotent state; omit to append a note" },
@@ -1835,7 +1876,7 @@ fn tool_specs() -> Vec<Value> {
         ),
         tool(
             "parler_recall",
-            "Recall saved facts. PLAN reflex: pull what you need before acting, instead of re-reading history. BM25, or hybrid BM25 + vector KNN with an embedding. Query a key term or free text.",
+            "Recall saved facts. PLAN reflex: pull what you need before acting, not re-read history. BM25, or hybrid BM25+vector with an embedding. Query a key term or free text.",
             json!({
                 "query": { "type": "string" },
                 "room": { "type": "string" },
@@ -2008,14 +2049,20 @@ mod tests {
     /// raised to 12,000 to keep a meaningful guardrail against large regressions. Adding the
     /// `parler_send_file` tool (arbitrary file transfer) grew it ~170 B to 12,169; ceiling → 12,400.
     /// Adding the `parler_bring` tool (one-line second opinion from another agent) grew it ~560 B to
-    /// ~12,970; ceiling → 13,200 to keep ~20% headroom against real regressions.
-    const TOOL_SPECS_BUDGET: usize = 13_200;
+    /// ~12,970; ceiling → 13,200 to keep ~20% headroom against real regressions. Adding the
+    /// `parler_task` tool (task-lifecycle status/receipts, the ACP borrow) grew it ~750 B to ~13,946;
+    /// ceiling → 14,200. A **description diet** (2026-07-10 audit) then re-tightened all 27 tools to
+    /// 12,689 B — *below* the pre-`parler_task` baseline, so the new capability nets a reduction, not a
+    /// cost; ceiling → 13,000 (a real cut from 13,200) to lock the savings against creep-back.
+    const TOOL_SPECS_BUDGET: usize = 13_000;
     /// Just the human-readable descriptions (the part the diet targets; schema scaffolding is
     /// load-bearing). Pre-diet 5,261 B → post-diet (P0.2) 4,304 B; P1.2 adds ~230 B of cheap-path
     /// steering (name-based `to`/`card`, compact discover/roster, `detail`) that earns its bytes.
     /// Still ~730 B under the pre-diet baseline. `parler_bring`'s description adds ~280 B; ceiling
-    /// → 5,000 with headroom.
-    const TOOL_DESC_BUDGET: usize = 5_000;
+    /// → 5,000 with headroom. `parler_task`'s lean description adds ~190 B to ~5,190; ceiling → 5,400.
+    /// The 2026-07-10 description diet then cut all descriptions to 4,297 B (below even the P0.2
+    /// post-diet baseline); ceiling → 4,600 (a real cut from 5,000) to hold the diet.
+    const TOOL_DESC_BUDGET: usize = 4_600;
     /// Rendered `join_session` output with a ~100-message backlog. Full-replay baseline was 7,863
     /// chars; P0.3's digest render (seed + tail + omission line) brings it to ~1,458. Ceiling leaves
     /// headroom for a larger tail / longer messages.
@@ -2232,6 +2279,48 @@ mod tests {
         let mut bob = state(&hub, "bob").await;
         let joined = join_session(&mut bob, &key, Backlog::Recent, None).await.unwrap();
         assert!(!joined.contains("session digest"), "no digest header when the fact is absent:\n{joined}");
+    }
+
+    #[tokio::test]
+    async fn task_tool_posts_status_and_peer_sees_a_rendered_line() {
+        // The ACP-borrow task lifecycle end-to-end: alice posts a `working` update and a terminal
+        // `done` receipt into a session; bob (in the room) recvs and sees them rendered as one-line
+        // statuses — the observability the fire-and-hope service flow lacked.
+        let hub = start_hub().await;
+        let mut alice = state(&hub, "alice").await;
+        let opened = open_session(&mut alice, Some("seed"), Some("job".into()), None, None, false).await.unwrap();
+        let key = key_of(&opened);
+        let mut bob = state(&hub, "bob").await;
+        join_session(&mut bob, &key, Backlog::Recent, None).await.unwrap();
+        // Drain bob's own "joined" announce so his next recv starts from the task updates.
+        call_session_tool(&mut bob, "parler_recv", &json!({})).await.unwrap();
+
+        // An unknown status is a tool error, not a post.
+        assert!(call_session_tool(&mut alice, "parler_task", &json!({ "status": "bogus" })).await.is_err());
+
+        let working = call_session_tool(
+            &mut alice,
+            "parler_task",
+            &json!({ "status": "working", "task": "review-42", "note": "compiling" }),
+        )
+        .await
+        .unwrap();
+        assert!(working.contains("🔧 task working (review-42)"), "poster confirmation:\n{working}");
+
+        call_session_tool(
+            &mut alice,
+            "parler_task",
+            &json!({ "status": "done", "task": "review-42", "note": "LGTM", "result": "deadbeef", "tokens": 900 }),
+        )
+        .await
+        .unwrap();
+
+        let seen = call_session_tool(&mut bob, "parler_recv", &json!({})).await.unwrap();
+        assert!(seen.contains("🔧 task working (review-42): compiling"), "peer sees the working line:\n{seen}");
+        assert!(
+            seen.contains("✅ task done (review-42): LGTM — parler fetch deadbeef"),
+            "peer sees the done receipt with the result fetch command:\n{seen}"
+        );
     }
 
     #[tokio::test]
@@ -3256,18 +3345,11 @@ mod tests {
             .iter()
             .map(|t| t.get("name").unwrap().as_str().unwrap().to_string())
             .collect();
-        // Session-scoped tools registered on the fly by tools/list once you're in a session.
-        for t in [
-            "parler_open_session",
-            "parler_join_session",
-            "parler_close_session",
-            "parler_join_requests",
-            "parler_approve_join",
-            "parler_deny_join",
-            "parler_watch_session",
-            "parler_session_handoff",
-            "parler_consolidate_session",
-        ] {
+        // `parler_*` doc tokens that are NOT tools in `tool_specs()` above but must still be
+        // whitelisted for the docs-drift scan: the two MCP *prompts* (`prompts/list`), which read like
+        // tool tokens in the docs. There is no dynamic/on-the-fly tool registration — `tools/list` is
+        // static (`tool_specs()`), so every real tool is already covered by the set built above.
+        for t in ["parler_session_handoff", "parler_consolidate_session"] {
             valid.insert(t.to_string());
         }
         valid

@@ -120,6 +120,25 @@ Add `--no-approval` to `session open` for an open, paste-and-join key. `session 
 connected by default; add `--once` to join, print the context, and exit (for scripts) — but a
 one-shot joiner shows `offline` to the host and won't receive messages live.
 
+#### Portable keys (joining across hubs)
+
+A plain key only makes sense on the hub it was minted on. When the joiner's default hub is a
+*different* one, hand it the **portable key** `session open` also prints: `<code>@<hub>`. `session
+join <code>@<hub>` dials that hub for the join, so the key is self-contained — no need to also set
+`PARLER_HUB`. Identity is self-sovereign (any hub accepts any nkey) and only the hub for *this one
+command* is overridden; your saved config is untouched.
+
+```bash
+# host (on hub A) prints:  parler session join A3KELDJR@wss://parler-hub.fly.dev
+# joiner (default hub B) redeems it against hub A directly:
+parler session join A3KELDJR@wss://parler-hub.fly.dev
+```
+
+This is the lightest slice of cross-hub handoff — a portable *descriptor*, borrowed from ACP's
+distributed sessions, with **no hub-to-hub protocol**. It does not replicate history between hubs or
+gossip agents; the fuller federation questions (auth between parties, availability if the host hub
+goes away) stay in *Deferred* below.
+
 ### Watch a session from the browser
 
 Want a human to *watch* the conversation — to see what the agents are saying and how many are in the
@@ -244,12 +263,13 @@ with the `HandoffRef` type and the banner, is in
 | `parler init` | create this agent's identity, point it at a hub |
 | `parler invite [--group N\|--service N] [--ttl][--max-uses]` | mint a pairing code/link (default: 1:1 DM) |
 | `parler join <code\|link>` | redeem a pasted invite |
-| `parler session open [--context C][--topic T][--no-approval][--ttl][--max-uses]` / `session join <key> [--once]` | open a shared session (prints a key; approval-gated by default) / join one (prints the context, then stays connected; `--once` to exit after printing) |
+| `parler session open [--context C][--topic T][--no-approval][--ttl][--max-uses]` / `session join <key> [--once]` | open a shared session (prints a key + a portable `<code>@<hub>` for joiners on another hub; approval-gated by default) / join one — a `<code>@<hub>` dials that hub (prints the context, then stays connected; `--once` to exit after printing) |
 | `parler session requests --room R` / `session approve --room R <id>` / `session deny --room R <id>` | list pending joiners / admit one / reject one (owner only) |
 | `parler session watch --room R [--ttl]` | mint a read-only watch code to view the session from the website (owner only) |
 | `parler serve <svc>` | join a service queue as a worker |
 | `parler send (--room\|--to\|--service) <text>` | send (1:many / 1:1 / many:1) |
 | `parler handoff (--room\|--to\|--service) --next S [--summary S][--for WHO][--bundle ID]` | hand the turn to the next agent ("you're up next") |
+| `parler task <status> (--room\|--to\|--service) [--task ID][--note N][--result BLOB][--tokens N][--elapsed-ms N]` | report task status (accepted/working/awaiting/done/failed/cancelled); a terminal status is a signed receipt |
 | `parler recv --room <r> [--since N\|--all][--limit][--watch]` | pull new messages (advances cursor); `--watch` long-polls/streams |
 | `parler remember [--key K][--room R] <text>` | write a fact (keyed = idempotent) |
 | `parler recall [--room R][--limit] <query>` | full-text recall |
@@ -340,7 +360,9 @@ esac
 ## Deferred (intentionally)
 
 - A `NatsTransport` behind `MeshTransport`, reusing the full-rewrite NATS/JWT stack for scale.
-- Cross-hub federation (gossip public agents between hubs).
+- Cross-hub federation (gossip public agents between hubs). *Partial:* a **portable session key**
+  (`<code>@<hub>`, above) already lets a joiner cross to another hub for one session — a portable
+  descriptor, not replication.
 
 > **Done:** live server push (`subscribe` → `Delivery` frames) for sub-second latency — see
 > [Real-time push](#real-time-push-sub-second) above. `wss://` TLS termination shipped with the

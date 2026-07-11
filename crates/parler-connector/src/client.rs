@@ -15,7 +15,7 @@ use anyhow::{anyhow, bail, Result};
 use async_trait::async_trait;
 use futures::{SinkExt, StreamExt};
 use parler_auth::Identity;
-use parler_protocol::{ClientFrame, ServerFrame, StoredMessage};
+use parler_protocol::{ClientFrame, CodedError, ServerFrame, StoredMessage};
 use std::collections::VecDeque;
 use std::time::Duration;
 use tokio::net::TcpStream;
@@ -106,7 +106,7 @@ impl HubClient {
         .await?;
         let (nonce, hub_version) = match self.recv().await? {
             ServerFrame::Challenge { nonce, version } => (nonce, version),
-            ServerFrame::Error { message } => bail!("hub rejected hello: {message}"),
+            ServerFrame::Error { message, .. } => bail!("hub rejected hello: {message}"),
             other => return Err(crate::unexpected_reply("complete the handshake", &other)),
         };
         warn_on_protocol_mismatch(hub_version.as_deref());
@@ -129,7 +129,7 @@ impl HubClient {
         .await?;
         match self.recv().await? {
             ServerFrame::Welcome { .. } => Ok(()),
-            ServerFrame::Error { message } => bail!("authentication failed: {message}"),
+            ServerFrame::Error { message, .. } => bail!("authentication failed: {message}"),
             other => Err(crate::unexpected_reply("complete the handshake", &other)),
         }
     }
@@ -176,7 +176,9 @@ impl HubClient {
                 WsMessage::Binary(b) => return Ok(b),
                 WsMessage::Text(t) => match serde_json::from_str::<ServerFrame>(&t) {
                     Ok(ServerFrame::Delivery { message }) => self.buffer_push(message),
-                    Ok(ServerFrame::Error { message }) => bail!("{message}"),
+                    Ok(ServerFrame::Error { message, code }) => {
+                        return Err(CodedError::from_wire(code, message).into())
+                    }
                     _ => bail!("expected a binary blob, got a text frame"),
                 },
                 WsMessage::Close(_) => return Err(disconnected()),
@@ -194,7 +196,9 @@ impl HubClient {
             match msg.map_err(|_| disconnected())? {
                 WsMessage::Text(t) => match serde_json::from_str::<ServerFrame>(&t)? {
                     ServerFrame::Delivery { message } => return Ok(Some(message)),
-                    ServerFrame::Error { message } => bail!("{message}"),
+                    ServerFrame::Error { message, code } => {
+                        return Err(CodedError::from_wire(code, message).into())
+                    }
                     _ => continue,
                 },
                 WsMessage::Close(_) => return Ok(None),
@@ -210,8 +214,8 @@ impl MeshTransport for HubClient {
     async fn request(&mut self, frame: ClientFrame) -> Result<ServerFrame> {
         self.send(&frame).await?;
         let reply = self.recv().await?;
-        if let ServerFrame::Error { message } = &reply {
-            bail!("{message}");
+        if let ServerFrame::Error { message, code } = reply {
+            return Err(CodedError::from_wire(code, message).into());
         }
         Ok(reply)
     }

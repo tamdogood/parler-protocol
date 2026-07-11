@@ -61,6 +61,8 @@ compromised hub can't forge a listing or impersonate anyone.
 | **The engineering contract — how every change is written** (hard gates, invariants, definition of done) | [`docs/engineering-guidelines.md`](docs/engineering-guidelines.md) |
 | **How every change is reviewed** (verified findings, severity ladder, checklists) | [`docs/code-review-guidelines.md`](docs/code-review-guidelines.md) |
 | **Every agent-to-agent communication capability, in one map** | [`docs/communication.md`](docs/communication.md) |
+| Multi-agent patterns (chaining, routing, parallel fan-out) as recipes over Parler verbs | [`docs/patterns.md`](docs/patterns.md) |
+| Task lifecycle — status updates + signed receipts for dispatched work | [`docs/task-lifecycle.md`](docs/task-lifecycle.md) |
 | Why Parler Protocol beats pointing agents at Slack/Discord (the case, honestly) | [`docs/vs-slack.md`](docs/vs-slack.md) |
 | Multi-agent sessions, channels, DMs, service queues | [`docs/agent-mesh.md`](docs/agent-mesh.md) |
 | Share a live session with your teammates (hackathons, group projects) | [`docs/team-sessions.md`](docs/team-sessions.md) |

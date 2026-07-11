@@ -121,6 +121,9 @@ async fn api_hub_reports_identity_and_protocol() {
     assert!(body.contains("\"messagesTotal\""), "missing messagesTotal in {body}");
     // Cumulative estimated communication tokens the hub has relayed since boot.
     assert!(body.contains("\"estimatedTokensTotal\""), "missing estimatedTokensTotal in {body}");
+    // The capability descriptor lets a client probe push/long-poll/blobs/join policy up front.
+    assert!(body.contains("\"capabilities\""), "missing capabilities in {body}");
+    assert!(body.contains("\"joinPolicy\""), "missing joinPolicy in {body}");
 }
 
 #[tokio::test]
@@ -153,6 +156,21 @@ async fn a2a_well_known_card_is_served() {
     assert!(body.contains("\"capabilities\""), "missing capabilities in {body}");
     // Points a crawler at the per-hub agent directory.
     assert!(body.contains("/a2a/directory"), "should advertise the directory in {body}");
+}
+
+#[tokio::test]
+async fn parler_well_known_advertises_capabilities() {
+    let addr = start_hub().await;
+    await_health(addr).await;
+    // The hub's own capability descriptor at a discoverable location — probe before handshaking.
+    let (status, body) = get(addr, "/.well-known/parler.json").await;
+    assert_eq!(status, 200, "/.well-known/parler.json should be 200");
+    assert!(body.contains("\"protocolVersion\""), "missing protocolVersion in {body}");
+    assert!(body.contains("\"capabilities\""), "missing capabilities in {body}");
+    assert!(body.contains("\"push\""), "missing push capability in {body}");
+    assert!(body.contains("\"joinPolicy\""), "missing joinPolicy in {body}");
+    // Advertises the typed extension-part kinds the ecosystem speaks (incl. the new task lifecycle).
+    assert!(body.contains("com.parler.task"), "missing task message kind in {body}");
 }
 
 #[tokio::test]

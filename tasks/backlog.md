@@ -126,6 +126,31 @@ ideas. Each item additive + backward-compatible.*
 
 ## Next
 
+### Epic: ACP borrows — follow-ons (2026-07-10, branch moroni)
+*Audited https://agentcommunicationprotocol.dev (since merged into A2A). Shipped this pass (see
+`tasks/todo.md` 2026-07-10): wire **error codes** (`ServerFrame::Error.code` + `error_code` catalog +
+`CodedError` + `hub_error_code`), the **task lifecycle** rail (`com.parler.task` `TaskRef`/`TaskStatus`
++ `parler task` / `parler_task` + render), the **hub capability descriptor** (`/api/hub.capabilities`
++ `/.well-known/parler.json`), and **portable session keys** (`<code>@<hub>`). All additive. These are
+the follow-ons.*
+
+- [ ] **[P1] Hub-derived task telemetry** (folds into "Signed task receipts" below). Aggregate the
+  `com.parler.task` terminal **receipts** an agent authored (count, success rate, median
+  `elapsedMs`/`tokens`) hub-side and surface it in `discover`/`card` + `GET /api/agents/:id`. This is
+  the *strong* version of ACP's manifest `avg_run_tokens`/`success_rate` — **derived from real signed
+  receipts, never self-reported**. *Prereq:* the task rail (shipped) + verify receipts carry a signed
+  author. *Done when:* a store rollup over `com.parler.task` parts, a card/directory field, an e2e that
+  posts N receipts and asserts the derived count, and docs. `[HUMAN] web:` show it on the agent page.
+- [ ] **[P2] Portable session key — deeper federation questions.** The `<code>@<hub>` descriptor
+  (shipped) crosses a joiner to another hub for one session, but the fuller cross-hub story ACP raises
+  is open: auth between hubs/parties, history availability if the host hub goes away, and whether a
+  private hub's join secret should ride the portable form (today the joiner still needs
+  `PARLER_JOIN_SECRET` out-of-band). Decide before any hub-to-hub gossip. Design-only until then.
+- [ ] **[HUMAN] web: serve `llms.txt` + surface the task lifecycle.** A repo-root `llms.txt`
+  (machine-readable doc index, llmstxt.org) shipped this pass; serve it from parlerprotocol.com/llms.txt
+  too (ACP publishes theirs at the docs root). Also surface task status / receipts and the capability
+  descriptor on the site.
+
 ### Epic: From "connect agents" → "operate a hub" → "rent out an agent" (2026-07-02 UX audit)
 *Tranche 1 (zero-setup CLI, connect --verify, hub-preserving re-run, name-based `--to`, session
 `--room` defaults, per-host restart hints, mcp auto-self-list, desktop start-at-login + dial-in
@@ -198,8 +223,16 @@ remaining items touch the wire or need usage evidence, so they were gated out of
   `Pull.mentions_only` — a server-side skip is lossy under the shared cursor, and client-side tiering
   captures the same token savings.
 - [ ] **[P2] Tool merge/retire** — only with P0.1 budget evidence that a tool doesn't earn its
-  permanent context cost; default is to leave the 23 tools alone (the P0.2 diet already cut the
-  description weight). Needs real-usage data before touching the tool surface.
+  permanent context cost; default is to leave the tools alone. **2026-07-10 audit + diet done** (see
+  `tasks/todo.md`): re-tightened all 27 tool descriptions 5,190→4,297 B / specs 13,908→12,727 B — a
+  net reduction *below* the pre-`parler_task` baseline, no capability lost; budgets cut 13,200→13,000
+  and 5,000→4,600 to hold it. **Merge/retire proper is still pending a breaking-change call + usage
+  data.** Candidates identified: (a) fold `parler_join_session` into the one-door `parler_join` (add
+  its `backlog`/`wait_secs` — saves a ~900 B tool); (b) merge `parler_approve_join`/`parler_deny_join`
+  into one `parler_resolve_join {approve: bool}` (~400 B, at some ergonomic cost); (c) register the
+  owner-only approval tools (`join_requests`/`approve`/`deny`/`watch`) *only* once a session is open,
+  so they leave the default listing (~1.8 KB off the cold `tools/list`). Each removes a public tool
+  name → breaking for hosts + doc churn; needs a deliberate decision.
 
 ## Icebox (needs a human decision before the loop touches it)
 

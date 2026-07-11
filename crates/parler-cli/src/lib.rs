@@ -13,7 +13,7 @@ use clap::{Args, Parser, Subcommand};
 use parler_connector::{verify_message, BundleMeta, Config, MeshAgent, SigStatus};
 use parler_protocol::{
     is_message_sig_part, AgentSkill, BundleRef, DirectoryEntry, DiscoverScope, FileRef, HandoffRef,
-    Part, RoomKind, StoredMessage, Target, Visibility,
+    Part, RoomKind, StoredMessage, Target, TaskRef, TaskStatus, Visibility,
 };
 use std::path::Path;
 use std::sync::Arc;
@@ -71,6 +71,8 @@ enum Cmd {
     Send(SendArgs),
     /// Hand off the turn: post a structured "you're up next" so a watching agent continues.
     Handoff(HandoffArgs),
+    /// Post a task status update (accepted/working/awaiting/done/failed/cancelled) to a room/peer/queue.
+    Task(TaskArgs),
     /// Hand off code: bundle a git ref and push it to a room/peer/service.
     Push(PushArgs),
     /// Transfer a file to a room/peer/service (content-addressed; the peer runs `parler fetch`).
@@ -377,6 +379,36 @@ struct HandoffArgs {
 }
 
 #[derive(Args)]
+struct TaskArgs {
+    /// Where the work stands: accepted | working | awaiting | done | failed | cancelled.
+    status: String,
+    /// Post the update to a channel room (one-to-many).
+    #[arg(long)]
+    room: Option<String>,
+    /// Post the update as a DM to the requester's agent id (one-to-one).
+    #[arg(long)]
+    to: Option<String>,
+    /// Post the update to a service queue (many-to-one).
+    #[arg(long)]
+    service: Option<String>,
+    /// Correlate this update to one unit of work (the request's message id, or your own task id).
+    #[arg(long)]
+    task: Option<String>,
+    /// A one-liner: what's happening / why it failed / the question when `awaiting`.
+    #[arg(long)]
+    note: Option<String>,
+    /// A result blob id handed back with `done` (from a prior `parler push`/`send-file`).
+    #[arg(long)]
+    result: Option<String>,
+    /// Estimated model tokens this work consumed (terminal receipts) — feeds directory telemetry.
+    #[arg(long)]
+    tokens: Option<u64>,
+    /// Wall-clock milliseconds this work took (terminal receipts).
+    #[arg(long = "elapsed-ms")]
+    elapsed_ms: Option<u64>,
+}
+
+#[derive(Args)]
 struct PushArgs {
     /// Push to a channel room (one-to-many).
     #[arg(long)]
@@ -537,6 +569,7 @@ pub async fn run() -> Result<()> {
         Cmd::Token(a) => cmd_token(a).await,
         Cmd::Send(a) => cmd_send(a).await,
         Cmd::Handoff(a) => cmd_handoff(a).await,
+        Cmd::Task(a) => cmd_task(a).await,
         Cmd::Push(a) => cmd_push(a).await,
         Cmd::SendFile(a) => cmd_send_file(a).await,
         Cmd::Fetch(a) => cmd_fetch(a).await,
@@ -556,6 +589,14 @@ pub async fn run() -> Result<()> {
 }
 
 async fn connect() -> Result<MeshAgent> {
+    connect_with_hub(None).await
+}
+
+/// Connect, optionally overriding the configured hub for *this* command only (identity and config
+/// are untouched on disk). Used by a **portable session join** (`<key>@<hub>`): a joiner whose default
+/// hub differs from where the session lives dials the session's hub for that one call, so the key is
+/// self-contained — the lightest form of cross-hub handoff, with no hub-to-hub federation.
+async fn connect_with_hub(hub_override: Option<&str>) -> Result<MeshAgent> {
     // One env/config precedence rule for the whole CLI: hub/name/role resolve through the same
     // `explicit env > saved config > default` helper the MCP server uses, so `parler` and
     // `parler mcp` on the same machine can never dial different hubs (issue #99).
@@ -573,7 +614,10 @@ async fn connect() -> Result<MeshAgent> {
             } else if !Config::exists() {
                 // Zero-setup, same as `parler mcp`: mint an identity on first use (already env-aware)
                 // instead of telling the user to go run `parler init` first.
-                let cfg = mcp::load_or_bootstrap_config()?;
+                let mut cfg = mcp::load_or_bootstrap_config()?;
+                if let Some(h) = hub_override {
+                    cfg.hub_url = h.to_string();
+                }
                 eprintln!(
                     "✱ first run — created your identity at {} (hub: {})",
                     parler_connector::home_dir().display(),
@@ -593,9 +637,25 @@ async fn connect() -> Result<MeshAgent> {
             }
         }
     };
+    let mut cfg = cfg;
+    if let Some(h) = hub_override {
+        cfg.hub_url = h.to_string();
+    }
     MeshAgent::connect(&cfg).await.map_err(|e| {
         anyhow::anyhow!("{e} (run `parler doctor` to troubleshoot)")
     })
+}
+
+/// Split a **portable session key** `<code>@<hub>` into its code and optional host hub. A bare code
+/// or a full join link (which carries a `:`/`/` in its scheme/path) is returned unchanged — only a
+/// short code followed by `@<hub>` is treated as portable, so a normal key/link never mis-parses.
+fn split_portable_key(key: &str) -> (String, Option<String>) {
+    if let Some((code, hub)) = key.split_once('@') {
+        if !code.is_empty() && !hub.is_empty() && !code.contains([':', '/']) {
+            return (code.to_string(), Some(hub.to_string()));
+        }
+    }
+    (key.to_string(), None)
 }
 
 async fn cmd_hub(a: HubArgs) -> Result<()> {
@@ -1057,7 +1117,13 @@ async fn cmd_bring(a: BringArgs) -> Result<()> {
 }
 
 async fn cmd_session(c: SessionCmd) -> Result<()> {
-    let mut ag = connect().await?;
+    // A portable session key may embed the host hub (`<code>@<hub>`) so a joiner whose default hub
+    // differs still lands in the right room; dial that hub for the join, the configured one otherwise.
+    let hub_override = match &c {
+        SessionCmd::Join { key, .. } => split_portable_key(key).1,
+        _ => None,
+    };
+    let mut ag = connect_with_hub(hub_override.as_deref()).await?;
     match c {
         SessionCmd::Open { context, topic, no_approval, ttl, max_uses } => {
             let require_approval = !no_approval;
@@ -1082,13 +1148,18 @@ async fn cmd_session(c: SessionCmd) -> Result<()> {
                 println!();
             }
             println!("Hand the key to another agent:  parler session join {}", inv.code);
+            // Portable form: carries the host hub so a joiner on a *different* default hub still lands
+            // here — no need to also tell them PARLER_HUB. Redeemed by `session join <code>@<hub>`.
+            println!("…on a different hub, hand the portable key:  parler session join {}@{}", inv.code, ag.hub_url);
             println!("…or launch its MCP server with env  PARLER_SESSION_KEY={}", inv.code);
             println!();
             println!("Watch it live in your browser:  parler session watch --room {}", inv.room);
         }
         SessionCmd::Join { key, once } => {
+            // Strip any `@<hub>` (already applied to the connection above) before redeeming the code.
+            let code = split_portable_key(&key).0;
             // An approval-gated session holds us as a pending request until the host admits us.
-            let room = match ag.redeem(&key).await? {
+            let room = match ag.redeem(&code).await? {
                 parler_connector::JoinOutcome::Joined { room, .. } => room,
                 parler_connector::JoinOutcome::Pending { room } => {
                     println!("⏳ join request sent — waiting for the host to approve you into '{room}'.");
@@ -1349,6 +1420,26 @@ async fn cmd_handoff(a: HandoffArgs) -> Result<()> {
     let whom = handoff.to.as_deref().unwrap_or("anyone");
     println!("✓ handed off to {whom} in '{room}' (seq {seq})");
     println!("  next: {}", handoff.next);
+    Ok(())
+}
+
+async fn cmd_task(a: TaskArgs) -> Result<()> {
+    let status = TaskStatus::parse(&a.status)
+        .ok_or_else(|| anyhow::anyhow!("unknown status '{}' — use one of: {}", a.status, TaskStatus::ALL.join(" | ")))?;
+    let target = target_from(a.room, a.to, a.service)?;
+    let task = TaskRef {
+        status,
+        task: a.task,
+        note: a.note,
+        result: a.result,
+        tokens: a.tokens,
+        elapsed_ms: a.elapsed_ms,
+    };
+    let mut ag = connect().await?;
+    let target = resolve_target(&mut ag, target).await?;
+    let (_id, seq, room) = ag.send(target, vec![task.to_part()], None, None).await?;
+    let id = task.task.map(|i| format!(" ({i})")).unwrap_or_default();
+    println!("{} task {}{id} posted to '{room}' (seq {seq})", status.marker(), status.label());
     Ok(())
 }
 
@@ -1665,6 +1756,19 @@ pub fn render_parts(parts: &[Part]) -> String {
             }
             if let Some(blob) = &h.bundle {
                 line.push_str(&format!("  — parler apply {blob}"));
+            }
+            out.push(line);
+            continue;
+        }
+        if let Some(t) = TaskRef::from_part(p) {
+            let id = t.task.map(|i| format!(" ({i})")).unwrap_or_default();
+            let mut line = format!("{} task {}{id}", t.status.marker(), t.status.label());
+            if let Some(n) = &t.note {
+                line.push_str(&format!(": {n}"));
+            }
+            // A result rides the content-addressed blob store, so show the exact fetch command.
+            if let Some(blob) = &t.result {
+                line.push_str(&format!(" — parler fetch {blob}"));
             }
             out.push(line);
             continue;
@@ -2237,6 +2341,25 @@ fn run_curl_post_headers(url: &str, json_payload: &str, headers: &[(&str, &str)]
 mod tests {
     use super::*;
     use std::sync::Arc;
+
+    #[test]
+    fn portable_session_key_splits_code_and_hub() {
+        // The portable form carries the host hub; the code is stripped before redeeming and the hub
+        // dials that host.
+        assert_eq!(
+            split_portable_key("A3KELDJR@wss://parler-hub.fly.dev"),
+            ("A3KELDJR".into(), Some("wss://parler-hub.fly.dev".into()))
+        );
+        // A bare code is unchanged (no hub override).
+        assert_eq!(split_portable_key("A3KELDJR"), ("A3KELDJR".into(), None));
+        // A full join link (scheme/path on the left of any `@`) must NOT be mis-split into a hub.
+        assert_eq!(
+            split_portable_key("https://parler-hub.fly.dev/join/A3KELDJR"),
+            ("https://parler-hub.fly.dev/join/A3KELDJR".into(), None)
+        );
+        // A trailing `@` with no hub is not portable.
+        assert_eq!(split_portable_key("A3KELDJR@"), ("A3KELDJR@".into(), None));
+    }
 
     #[test]
     fn team_teammate_oneliner_resolves_to_the_team_hub_with_secret() {

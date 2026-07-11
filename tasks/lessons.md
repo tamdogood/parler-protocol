@@ -249,3 +249,53 @@ Format: `- **<short trigger>:** <the rule>. <why, in a clause>`
   comment intra-doc-linking a private method (`[`commit_reads`]` → private `request`) passes verify.sh
   but fails `make ci`'s `cargo doc -D warnings` gate. Run `CI_SKIP_WEB=1 make ci` before calling a task
   done even when verify.sh is green, and don't bracket-link private items from public docs. (2026-07-09.)
+
+- **A *dangling* intra-doc link (to a removed/renamed item) also only fails `cargo doc -D warnings`, not
+  verify.sh:** when I moved `ServerFrame::from_error` out of `parler-protocol`, a `[`ServerFrame::from_error`]`
+  in a *sibling* doc comment became a broken link that verify.sh happily passed and `make ci` failed. After
+  removing/renaming any item, `grep -rn '<old_name>' crates/**/*.rs` for lingering `[`…`]` references in doc
+  comments. (2026-07-10, ACP borrows.)
+
+- **Adding a field to a struct-enum variant ripples to *every* construction AND pattern-match site, in
+  every crate:** `ServerFrame::Error { message }` → `{ message, code }` broke ~20 hub construction sites +
+  client.rs/lib.rs match arms across three crates. Keep it terse and additive: give the variant serde
+  `#[serde(default, skip_serializing_if=...)]` on the new field, add `error()`/`error_coded()` constructor
+  helpers so call sites don't spell the field, and use `{ field, .. }` in every *match* so old patterns
+  compile. `grep -rn 'Variant::Name' crates/` workspace-wide before assuming you found them all. (2026-07-10.)
+
+- **`parler-protocol` is std-only (no `anyhow`) — keep it that way:** an `anyhow::Error → ServerFrame`
+  mapper I first wrote as `ServerFrame::from_error(&anyhow::Error)` didn't compile there. A shared coded
+  error type belongs in protocol as a hand-rolled `std::error::Error` (`CodedError`, `Display == message`
+  so `.to_string()`/downcast both work); the `anyhow`-flavored projection (`downcast_ref::<CodedError>()`
+  → frame) lives in the hub crate, which *does* depend on anyhow. Test the protocol half with
+  `Box<dyn std::error::Error>` downcast, the anyhow half in a crate that has anyhow (the connector e2e).
+  (2026-07-10.)
+
+- **Every new MCP tool costs ~900 B of `TOOL_SPECS_BUDGET` — it's a bloat guard, not a hard cap:** the
+  27th tool (`parler_task`) overshot the 13,200 B ceiling no matter how lean, because a whole tool's
+  schema is inherently ~900 B. Right move: trim the *new* tool hard (drop schema-prose descriptions where
+  the name is self-evident), then raise the ceiling by the minimum with a one-line reason in the budget
+  doc-comment (the comment records every prior raise — follow the pattern). A new *capability* is a
+  legitimate cost; the guardrail scales with tool count. (2026-07-10.)
+
+- **clippy `needless_borrows_for_generic_args` also fires on borrowing a *method-call temporary*:**
+  `serde_json::to_value(&minimal.to_part())` trips it (pass the owned temporary: `to_value(minimal.to_part())`),
+  same family as the `&"…".repeat(n)` case. Only surfaces under `-D warnings` on `--all-targets`, so run the
+  full gate after adding *test* code, not just the one test. (2026-07-10.)
+
+- **MCP tool "trim" = diet the descriptions, not retire tools (unless told + given usage data):** the
+  `tools/list` payload is a permanent per-session context cost, and it's dominated by *description* prose,
+  not schema structure. A description diet (drop verbosity, keep the load-bearing steering like "PLAN/LOG
+  reflex", read-after-write, truncation/re-read semantics) cut 27 tools 5,190→4,297 B desc / 13,908→12,727 B
+  specs with **zero capability loss** — enough to absorb a newly-added tool *and* net below baseline, so the
+  budgets came *down* (13,200→13,000, 5,000→4,600). Retiring/merging a tool removes a public name → breaking
+  for MCP hosts + doc churn, so it's gated on a deliberate call + real usage data (backlog). Measure per-tool
+  bytes first (a throwaway test serializing each spec) so the audit is data-driven, not vibes. (2026-07-10.)
+
+- **`ServerFrame::error_coded(CODE, msg)` beats string-encoding a code into the message:** to make a wire
+  error carry a machine-readable classifier without a store-wide typed-error refactor, code the *frame-
+  construction* sites structurally and, for store-origin `bail!`s, raise a downcastable `CodedError` (via a
+  local `coded()` helper) that survives `?` to a single `error_frame()` projection at the reply boundary.
+  Structural, non-fragile, centralized — not a substring match on the human message (which the repo forbids
+  as hacky). The client reconstructs `CodedError::from_wire(code, message)` so callers `downcast` one type.
+  (2026-07-10, ACP error codes.)

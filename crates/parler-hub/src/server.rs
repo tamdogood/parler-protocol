@@ -21,8 +21,9 @@ use axum::response::{Html, IntoResponse};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use parler_protocol::{
-    canonical_card_bytes, is_message_sig_part, normalize_mentions, token, ClientFrame, DirectoryEntry,
-    DiscoverScope, EndpointRef, Part, RoomKind, ServerFrame, StoredMessage, Target,
+    canonical_card_bytes, error_code, is_message_sig_part, normalize_mentions, token, ClientFrame,
+    CodedError, DirectoryEntry, DiscoverScope, EndpointRef, Part, RoomKind, ServerFrame,
+    StoredMessage, Target,
 };
 use rand::Rng;
 use serde::Deserialize;
@@ -506,6 +507,9 @@ pub fn app(state: Arc<HubState>) -> Router {
         // A2A ecosystem can find a Parler Protocol agent at the standard well-known location. See
         // `docs/a2a-interop.md`.
         .route("/.well-known/agent-card.json", get(a2a_well_known))
+        // The hub's own capability descriptor (protocol version + push/long-poll/blobs/join policy),
+        // so a client can probe before handshaking. See `hub_capabilities`.
+        .route("/.well-known/parler.json", get(parler_well_known))
         .route("/a2a/directory", get(a2a_directory))
         .route("/a2a/agents/:id", get(a2a_agent))
         // Per-IP flood guard, inside CORS so a preflight `OPTIONS` is answered (and not counted) by
@@ -817,6 +821,36 @@ async fn ws_handler(ws: WebSocketUpgrade, State(state): State<Arc<HubState>>) ->
 
 // ---- read-only directory REST API (consumed by the website) ----
 
+/// The hub's **capability descriptor** — what a client can rely on *before* it opens a WebSocket and
+/// handshakes. Lets the CLI / desktop app / any peer probe push, long-poll, blob transfer, the size
+/// caps, and the join policy up front instead of discovering them at `Challenge` time. Shared by
+/// `GET /api/hub` (nested under `capabilities`) and `GET /.well-known/parler.json` (the discoverable
+/// location, mirroring `/.well-known/agent-card.json`).
+fn hub_capabilities(state: &HubState) -> serde_json::Value {
+    serde_json::json!({
+        // This hub build supports the real-time push layer, server-side long-poll, and content-
+        // addressed blob transfer. A client that finds these `false` (a future minimal build) falls
+        // back to plain Pull polling / inline parts.
+        "push": true,
+        "longPoll": true,
+        "blobs": true,
+        "maxBlobBytes": state.max_blob_bytes,
+        "maxMessageBytes": state.max_message_bytes,
+        // "secret" ⇒ a `PARLER_JOIN_SECRET` is required to authenticate (a private hub on a public
+        // URL); "open" ⇒ key ownership alone admits. Never leaks the secret itself.
+        "joinPolicy": if state.join_secret.is_some() { "secret" } else { "open" },
+        // The reverse-DNS extension-part kinds the ecosystem speaks (the hub relays all parts
+        // verbatim; this advertises the typed ones a peer can expect to send/receive).
+        "messageKinds": [
+            parler_protocol::HANDOFF_KIND,
+            parler_protocol::TASK_KIND,
+            parler_protocol::BUNDLE_KIND,
+            parler_protocol::FILE_KIND,
+            parler_protocol::MESSAGE_SIG_KIND,
+        ],
+    })
+}
+
 /// `GET /api/hub` — the hub's public summary card.
 async fn api_hub(State(state): State<Arc<HubState>>) -> impl IntoResponse {
     let (agents, public_agents) = state.store.directory_counts().unwrap_or((0, 0));
@@ -827,6 +861,7 @@ async fn api_hub(State(state): State<Arc<HubState>>) -> impl IntoResponse {
         "agents": agents,
         "publicAgents": public_agents,
         "protocolVersion": parler_protocol::PROTOCOL_VERSION,
+        "capabilities": hub_capabilities(&state),
         // Cumulative-since-boot counters + the live connection gauge, for lightweight monitoring.
         "stats": {
             "liveConnections": state.conn_count.load(Ordering::Relaxed),
@@ -836,6 +871,18 @@ async fn api_hub(State(state): State<Arc<HubState>>) -> impl IntoResponse {
             "estimatedTokensTotal": m.tokens_total.load(Ordering::Relaxed),
             "pushesTotal": m.pushes_total.load(Ordering::Relaxed),
         },
+    }))
+}
+
+/// `GET /.well-known/parler.json` — the hub's capability descriptor at a discoverable location, so a
+/// client can probe protocol version + capabilities before dialing the WebSocket. A compact subset of
+/// `GET /api/hub` (no live stats / agent counts).
+async fn parler_well_known(State(state): State<Arc<HubState>>) -> impl IntoResponse {
+    Json(serde_json::json!({
+        "name": state.name,
+        "mode": state.mode.as_str(),
+        "protocolVersion": parler_protocol::PROTOCOL_VERSION,
+        "capabilities": hub_capabilities(&state),
     }))
 }
 
@@ -1381,7 +1428,7 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<HubState>) {
     if prev >= state.max_connections {
         let _ = send_frame(
             &mut socket,
-            &ServerFrame::Error { message: "hub at capacity — try again shortly".into() },
+            &ServerFrame::error_coded(error_code::AT_CAPACITY, "hub at capacity — try again shortly"),
         )
         .await;
         return;
@@ -1440,9 +1487,10 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<HubState>) {
                                 waited_pull(&state, &authed, room, since, limit, ack, secs).await
                             }
                             Ok(frame) => dispatch(&state, &mut conn, frame),
-                            Err(e) => Reply::Frame(ServerFrame::Error {
-                                message: format!("malformed frame: {e}"),
-                            }),
+                            Err(e) => Reply::Frame(ServerFrame::error_coded(
+                                error_code::BAD_FRAME,
+                                format!("malformed frame: {e}"),
+                            )),
                         };
                         if !send_reply(&mut socket, reply).await {
                             break;
@@ -1453,15 +1501,19 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<HubState>) {
                         // the blocking pool so it never stalls the async runtime. `pending` is
                         // consumed here.
                         let reply = match conn.pending.take() {
-                            None => ServerFrame::Error {
-                                message: "unexpected binary frame (no PutBlob in flight)".into(),
-                            },
+                            None => ServerFrame::error_coded(
+                                error_code::PROTOCOL,
+                                "unexpected binary frame (no PutBlob in flight)",
+                            ),
                             Some(p) => {
                                 let st = state.clone();
                                 tokio::task::spawn_blocking(move || finish_blob_upload(&st, p, data))
                                     .await
-                                    .unwrap_or_else(|_| ServerFrame::Error {
-                                        message: "blob upload task failed".into(),
+                                    .unwrap_or_else(|_| {
+                                        ServerFrame::error_coded(
+                                            error_code::INTERNAL,
+                                            "blob upload task failed",
+                                        )
                                     })
                             }
                         };
@@ -1486,7 +1538,7 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<HubState>) {
                     tracing::debug!("idle timeout — disconnecting an authenticated connection after inactivity");
                 } else {
                     // A slow-loris that never authenticated: say why, then drop it.
-                    let _ = send_frame(&mut socket, &ServerFrame::Error { message: "handshake timed out".into() }).await;
+                    let _ = send_frame(&mut socket, &ServerFrame::error_coded(error_code::TIMEOUT, "handshake timed out")).await;
                 }
                 break;
             }
@@ -1522,7 +1574,7 @@ async fn send_reply(socket: &mut WebSocket, reply: Reply) -> bool {
                 _ => {
                     send_frame(
                         socket,
-                        &ServerFrame::Error { message: "blob bytes unavailable".into() },
+                        &ServerFrame::error_coded(error_code::INTERNAL, "blob bytes unavailable"),
                     )
                     .await
                 }
@@ -1538,15 +1590,33 @@ async fn send_frame(socket: &mut WebSocket, f: &ServerFrame) -> bool {
     socket.send(WsMessage::Text(out)).await.is_ok()
 }
 
+/// Attach a stable [`error_code`] classifier to a hub error so it survives `?` to the reply path,
+/// where [`error_frame`] projects it onto the wire. `Display` is unchanged (just the message), so
+/// nothing that only reads the error text is affected.
+fn coded(code: &str, message: impl Into<String>) -> anyhow::Error {
+    CodedError::new(code, message).into()
+}
+
+/// Map an internal hub error onto its wire [`ServerFrame::Error`], preserving a [`CodedError`]'s
+/// classifier when the failure carried one (else an uncoded frame). The single place error→frame
+/// projection happens, so every reply path codes failures identically.
+fn error_frame(e: &anyhow::Error) -> ServerFrame {
+    match e.downcast_ref::<CodedError>() {
+        Some(c) => ServerFrame::Error { message: c.message.clone(), code: c.code.clone() },
+        None => ServerFrame::error(e.to_string()),
+    }
+}
+
 /// Route one client frame to its reply. Synchronous (the store never blocks across an await).
 fn dispatch(state: &HubState, conn: &mut ConnState, frame: ClientFrame) -> Reply {
     if let ClientFrame::Hello { id, name, role, sig, secret, .. } = frame {
         return Reply::Frame(handle_hello(state, conn, id, name, role, sig, secret));
     }
     let Some(authed) = conn.authed.clone() else {
-        return Reply::Frame(ServerFrame::Error {
-            message: "not authenticated — send `hello` first".into(),
-        });
+        return Reply::Frame(ServerFrame::error_coded(
+            error_code::UNAUTHENTICATED,
+            "not authenticated — send `hello` first",
+        ));
     };
     // The blob ops need the connection (to stash a pending upload) or a two-part reply, and
     // `Subscribe` needs the connection's push sender — so those are handled here; everything else is
@@ -1566,7 +1636,7 @@ fn dispatch(state: &HubState, conn: &mut ConnState, frame: ClientFrame) -> Reply
         }
         other => handle_authed(state, &authed, other).map(Reply::Frame),
     };
-    result.unwrap_or_else(|e| Reply::Frame(ServerFrame::Error { message: e.to_string() }))
+    result.unwrap_or_else(|e| Reply::Frame(error_frame(&e)))
 }
 
 /// Serve a **long-poll** `Pull { wait_secs }`: reply as soon as the room has new messages past the
@@ -1594,7 +1664,7 @@ async fn waited_pull(
 ) -> Reply {
     match store_waited_pull(state, me, &room, since, limit, ack, wait_secs).await {
         Ok((messages, cursor)) => Reply::Frame(ServerFrame::Pulled { room, messages, cursor }),
-        Err(e) => Reply::Frame(ServerFrame::Error { message: e.to_string() }),
+        Err(e) => Reply::Frame(error_frame(&e)),
     }
 }
 
@@ -1610,7 +1680,7 @@ async fn store_waited_pull(
 ) -> anyhow::Result<(Vec<StoredMessage>, i64)> {
     let store = &state.store;
     if !store.is_member(room, &me.id)? {
-        anyhow::bail!("not a member of '{room}'");
+        return Err(coded(error_code::NOT_MEMBER, format!("not a member of '{room}'")));
     }
     // A history re-read (`since` set) is a full-detail range read, not a live tail — never wait on it
     // (it also must not advance the cursor). Serve it immediately, exactly like a plain pull. The
@@ -1653,17 +1723,20 @@ fn handle_put_blob(
     media_type: Option<String>,
 ) -> anyhow::Result<Reply> {
     if size > state.max_blob_bytes {
-        anyhow::bail!("blob too large: {size} bytes > limit {}", state.max_blob_bytes);
+        return Err(coded(
+            error_code::TOO_LARGE,
+            format!("blob too large: {size} bytes > limit {}", state.max_blob_bytes),
+        ));
     }
     if !state.rate_allows(&me.id, RateKind::Blob, now_ms()) {
-        anyhow::bail!("rate limit: too many blob uploads — slow down");
+        return Err(coded(error_code::RATE_LIMITED, "rate limit: too many blob uploads — slow down"));
     }
     // Reject the reservation if accepting it could blow the total disk budget (approximate: a
     // duplicate of an existing blob won't actually grow the store, but erring toward rejection is
     // the safe DoS posture).
     let used = state.store.total_blob_bytes().unwrap_or(0).max(0) as u64;
     if used.saturating_add(size) > state.max_blob_dir_bytes {
-        anyhow::bail!("hub blob storage is full — try again later");
+        return Err(coded(error_code::STORAGE_FULL, "hub blob storage is full — try again later"));
     }
     let room = resolve_target(&state.store, me, &target)?;
     conn.pending = Some(PendingUpload { id: sha256.clone(), room, author: me.id.clone(), size, media_type });
@@ -1676,9 +1749,9 @@ fn handle_get_blob(state: &HubState, me: &Authed, id: &str) -> anyhow::Result<Re
     let meta = state
         .store
         .blob_meta(id)?
-        .ok_or_else(|| anyhow::anyhow!("no such blob '{id}'"))?;
+        .ok_or_else(|| coded(error_code::UNKNOWN_BLOB, format!("no such blob '{id}'")))?;
     if !state.store.blob_readable_by(id, &me.id)? {
-        anyhow::bail!("not authorized to fetch blob '{id}'");
+        return Err(coded(error_code::NOT_AUTHORIZED, format!("not authorized to fetch blob '{id}'")));
     }
     // Record the fetch as the LRU signal for blob GC; never fail a download over a bookkeeping write.
     let _ = state.store.touch_blob_fetched(id, now_ms());
@@ -1694,21 +1767,23 @@ fn handle_get_blob(state: &HubState, me: &Authed, id: &str) -> anyhow::Result<Re
 /// the store. Runs on the blocking pool (hashing + file write can be large).
 fn finish_blob_upload(state: &HubState, p: PendingUpload, data: Vec<u8>) -> ServerFrame {
     if data.len() as u64 != p.size {
-        return ServerFrame::Error {
-            message: format!("blob size mismatch: got {} bytes, expected {}", data.len(), p.size),
-        };
+        return ServerFrame::error_coded(
+            error_code::PROTOCOL,
+            format!("blob size mismatch: got {} bytes, expected {}", data.len(), p.size),
+        );
     }
     if data.len() as u64 > state.max_blob_bytes {
-        return ServerFrame::Error { message: "blob too large".into() };
+        return ServerFrame::error_coded(error_code::TOO_LARGE, "blob too large");
     }
     let id = parler_auth::content_id(&data);
     if id != p.id {
-        return ServerFrame::Error {
-            message: format!("content id mismatch: bytes hash to {id}, not {}", p.id),
-        };
+        return ServerFrame::error_coded(
+            error_code::PROTOCOL,
+            format!("content id mismatch: bytes hash to {id}, not {}", p.id),
+        );
     }
     if let Err(e) = std::fs::write(state.blob_dir.join(&id), &data) {
-        return ServerFrame::Error { message: format!("failed to store blob: {e}") };
+        return ServerFrame::error_coded(error_code::INTERNAL, format!("failed to store blob: {e}"));
     }
     if let Err(e) = state.store.put_blob_meta(
         &id,
@@ -1718,7 +1793,7 @@ fn finish_blob_upload(state: &HubState, p: PendingUpload, data: Vec<u8>) -> Serv
         data.len() as i64,
         now_ms(),
     ) {
-        return ServerFrame::Error { message: e.to_string() };
+        return ServerFrame::error_coded(error_code::INTERNAL, e.to_string());
     }
     ServerFrame::BlobStored { id, size: data.len() as u64 }
 }
@@ -1746,34 +1821,38 @@ fn handle_hello(
         // Step 2: verify the signature over the issued nonce.
         Some(sig) => {
             let Some(nonce) = conn.nonce.clone() else {
-                return ServerFrame::Error {
-                    message: "no challenge issued — send `hello` without a signature first".into(),
-                };
+                return ServerFrame::error_coded(
+                    error_code::PROTOCOL,
+                    "no challenge issued — send `hello` without a signature first",
+                );
             };
             // Reject a stale/foreign challenge before spending a signature verification on it.
             if !challenge_valid(&nonce, &state.public_url, now_ms()) {
-                return ServerFrame::Error {
-                    message: "challenge expired — reconnect and retry".into(),
-                };
+                return ServerFrame::error_coded(
+                    error_code::UNAUTHENTICATED,
+                    "challenge expired — reconnect and retry",
+                );
             }
             if !verify_sig(&id, &nonce, &sig) {
-                return ServerFrame::Error {
-                    message: "signature verification failed".into(),
-                };
+                return ServerFrame::error_coded(
+                    error_code::UNAUTHENTICATED,
+                    "signature verification failed",
+                );
             }
             // Owning a key proves identity, not authorization. On a hub with a join secret, the
             // connection must also present the matching secret (constant-time compared) — this is
             // the gate that keeps a private hub private even when its URL is publicly reachable.
             if let Some(expected) = &state.join_secret {
                 if !secret_matches(expected, secret.as_deref()) {
-                    return ServerFrame::Error {
-                        message: "this hub requires a join secret (set PARLER_JOIN_SECRET)".into(),
-                    };
+                    return ServerFrame::error_coded(
+                        error_code::NOT_AUTHORIZED,
+                        "this hub requires a join secret (set PARLER_JOIN_SECRET)",
+                    );
                 }
             }
             let now = now_ms();
             if let Err(e) = state.store.upsert_agent(&id, &name, role.as_deref(), now) {
-                return ServerFrame::Error { message: e.to_string() };
+                return ServerFrame::error_coded(error_code::INTERNAL, e.to_string());
             }
             let _ = state.store.touch_presence(&id, "idle", None, now);
             conn.authed = Some(Authed { id: id.clone(), name: name.clone(), role });
@@ -1791,7 +1870,10 @@ fn handle_authed(state: &HubState, me: &Authed, frame: ClientFrame) -> anyhow::R
         ClientFrame::Register { card, visibility, sig } => {
             // The card must describe the authenticated connection — you can only publish your own.
             if card.id != me.id {
-                anyhow::bail!("card id '{}' does not match your authenticated id", card.id);
+                return Err(coded(
+                    error_code::INVALID_CARD,
+                    format!("card id '{}' does not match your authenticated id", card.id),
+                ));
             }
             // A present signature must verify against the agent's own key; a forged/altered card is
             // rejected outright. An absent signature is allowed but the entry is marked unverified.
@@ -1800,7 +1882,7 @@ fn handle_authed(state: &HubState, me: &Authed, frame: ClientFrame) -> anyhow::R
                 None => false,
             };
             if sig.is_some() && !verified {
-                anyhow::bail!("card signature verification failed");
+                return Err(coded(error_code::INVALID_CARD, "card signature verification failed"));
             }
             store.register_card(&card, sig.as_deref(), verified, visibility, now_ms())?;
             Ok(ServerFrame::Registered { id: card.id, visibility, verified })
@@ -1917,16 +1999,19 @@ fn handle_authed(state: &HubState, me: &Authed, frame: ClientFrame) -> anyhow::R
 
         ClientFrame::Send { target, parts, mentions, reply_to, client_id } => {
             if !state.rate_allows(&me.id, RateKind::Send, now_ms()) {
-                anyhow::bail!("rate limit: too many messages — slow down");
+                return Err(coded(error_code::RATE_LIMITED, "rate limit: too many messages — slow down"));
             }
             // Bound per-message size (code rides blobs, not text) so a single send can't store an
             // outsized row.
             let parts_bytes = serde_json::to_vec(&parts).map(|v| v.len()).unwrap_or(0);
             if parts_bytes > state.max_message_bytes {
-                anyhow::bail!(
-                    "message too large: {parts_bytes} bytes > limit {} (hand off large payloads as a blob)",
-                    state.max_message_bytes
-                );
+                return Err(coded(
+                    error_code::TOO_LARGE,
+                    format!(
+                        "message too large: {parts_bytes} bytes > limit {} (hand off large payloads as a blob)",
+                        state.max_message_bytes
+                    ),
+                ));
             }
             let room = resolve_target(store, me, &target)?;
             let mentions = mentions.as_deref().and_then(normalize_mentions);
@@ -1968,7 +2053,7 @@ fn handle_authed(state: &HubState, me: &Authed, frame: ClientFrame) -> anyhow::R
         // immediate pull. `wait_secs` is deliberately ignored on this synchronous path.
         ClientFrame::Pull { room, since, limit, wait_secs: _, ack } => {
             if !store.is_member(&room, &me.id)? {
-                anyhow::bail!("not a member of '{room}'");
+                return Err(coded(error_code::NOT_MEMBER, format!("not a member of '{room}'")));
             }
             let (messages, cursor) = store.pull(&room, &me.id, since, limit, ack)?;
             Ok(ServerFrame::Pulled { room, messages, cursor })
@@ -1977,7 +2062,7 @@ fn handle_authed(state: &HubState, me: &Authed, frame: ClientFrame) -> anyhow::R
         ClientFrame::Remember { fact, embedding, embedding_model } => {
             if let Some(room) = &fact.room {
                 if !store.is_member(room, &me.id)? {
-                    anyhow::bail!("not a member of '{room}'");
+                    return Err(coded(error_code::NOT_MEMBER, format!("not a member of '{room}'")));
                 }
             }
             store.remember(
@@ -1993,7 +2078,7 @@ fn handle_authed(state: &HubState, me: &Authed, frame: ClientFrame) -> anyhow::R
         ClientFrame::Recall { query, room, limit, embedding, key } => {
             if let Some(room) = &room {
                 if !store.is_member(room, &me.id)? {
-                    anyhow::bail!("not a member of '{room}'");
+                    return Err(coded(error_code::NOT_MEMBER, format!("not a member of '{room}'")));
                 }
             }
             // A `key` is a deterministic keyed fetch (#91) — exact fact under that key, no BM25.
@@ -2008,7 +2093,7 @@ fn handle_authed(state: &HubState, me: &Authed, frame: ClientFrame) -> anyhow::R
 
         ClientFrame::Roster { room } => {
             if !store.is_member(&room, &me.id)? {
-                anyhow::bail!("not a member of '{room}'");
+                return Err(coded(error_code::NOT_MEMBER, format!("not a member of '{room}'")));
             }
             Ok(ServerFrame::Roster { room: room.clone(), entries: store.roster(&room, now_ms())? })
         }
@@ -2033,7 +2118,7 @@ fn resolve_target(store: &Store, me: &Authed, target: &Target) -> anyhow::Result
     match target {
         Target::Room { room } => {
             if !store.is_member(room, &me.id)? {
-                anyhow::bail!("not a member of '{room}'");
+                return Err(coded(error_code::NOT_MEMBER, format!("not a member of '{room}'")));
             }
             Ok(room.clone())
         }
@@ -2062,7 +2147,10 @@ fn resolve_target(store: &Store, me: &Authed, target: &Target) -> anyhow::Result
         Target::Service { service } => {
             let room = format!("svc.{}", token(service));
             if store.room_kind(&room)?.is_none() {
-                anyhow::bail!("no such service '{service}' — a worker must `serve` it first");
+                return Err(coded(
+                    error_code::UNKNOWN_SERVICE,
+                    format!("no such service '{service}' — a worker must `serve` it first"),
+                ));
             }
             // A requester auto-joins so it can also receive replies on the service room.
             store.add_member(&room, &me.id, now_ms())?;
