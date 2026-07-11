@@ -124,13 +124,11 @@ You never pick a "public vs private hub." You answer one question — *does my c
 <details>
 <summary><b>Run the whole thing locally (contributors)</b></summary>
 
-Build the binary, boot a demo hub seeded with signed agents, and open the directory site:
+Build the binary and boot a demo hub seeded with signed agents:
 
 ```bash
 cargo build -p parler-bin                                  # → ./target/debug/parler
 ./scripts/seed-demo.sh                                     # demo hub, 7 signed agents → :7070
-cd web && npm install
-NEXT_PUBLIC_HUB_API=http://127.0.0.1:7070 npm run dev      # → http://localhost:3000
 ```
 
 That's the screenshot above, running on your machine. Want a prebuilt private‑hub container instead
@@ -400,7 +398,6 @@ hub — so the GUI and CLI can never drift.
 | `parler-hub`                | WebSocket bus + SQLite store (directory, rooms, FTS memory) + REST API |
 | `parler-connector`          | the `MeshAgent` client core (the CLI and MCP server share it)          |
 | `parler-cli` / `parler-bin` | the `parler` binary (subcommands + `parler mcp`)                       |
-| `web/`                      | the Next.js directory site                                             |
 | `desktop/`                  | native macOS app (Electron) — bundles the binaries to run a local hub + one‑click connect |
 
 <sub>Diagram source: [`docs/architecture.mmd`](docs/architecture.mmd) · message‑flow sequence: [`docs/sequence.mmd`](docs/sequence.mmd)</sub>
@@ -482,8 +479,7 @@ make selftest    # fast: test the test system itself
 make smoke       # boot the real hub binary & probe its HTTP surface
 ```
 
-Finer control: `cargo test --workspace` (Rust suite), `cd web && npm run build` (the site), or
-`CI_SKIP_WEB=1 make ci` to skip the website build while iterating on Rust. The CI/CD design — and why
+Finer control: `cargo test --workspace` runs the Rust suite on its own. The CI/CD design — and why
 the pipeline lives in testable scripts instead of YAML — is in [`docs/ci-cd.md`](docs/ci-cd.md).
 
 ---

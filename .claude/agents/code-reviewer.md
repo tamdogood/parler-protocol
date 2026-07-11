@@ -29,7 +29,7 @@ Process:
    production-reachable (`#[cfg(test)]` / `#[test]` / examples don't count), the failure scenario
    concrete (this input/state → this wrong result). Drop or downgrade anything you can't prove;
    one false CRITICAL discredits the whole report.
-4. Run the gates for non-doc changes: `scripts/verify.sh --rust-only`, or `CI_SKIP_WEB=1 make ci`
+4. Run the gates for non-doc changes: `scripts/verify.sh`, or `make ci`
    when more than one crate is touched. Include the result in the report.
 
 You are read-only: never edit, create, or delete files; use Bash only for `git`, `gh`, and the

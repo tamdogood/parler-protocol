@@ -20,7 +20,7 @@ AGENT_VIS    ?= $(or $(visibility),$(VISIBILITY),public)
 AGENT_TAGS   ?= $(or $(tags),$(TAGS),)
 AGENT_SKILLS ?= $(or $(skills),$(SKILLS),)
 
-.PHONY: help build run-demo run-hub run-web stop discover agent-active add-agent clean test dev \
+.PHONY: help build run-demo run-hub stop discover agent-active add-agent clean test dev \
         ci selftest audit smoke coverage
 
 # Default target showing help
@@ -29,19 +29,18 @@ help:
 	@echo "🛰️  PARLER DEVELOPER ACTIONS"
 	@echo "========================================================================="
 	@echo "Building:"
-	@echo "  make build                     Build Rust workspace & install npm dependencies"
+	@echo "  make build                     Build the Rust workspace"
 	@echo "  make test                      Run the Rust unit tests (excluding external deps)"
 	@echo "Quality / CI (run before you push — mirrors GitHub CI):"
-	@echo "  make ci                        Run the WHOLE local pipeline (build·clippy·test·web·audit)"
+	@echo "  make ci                        Run the WHOLE local pipeline (build·clippy·test·audit)"
 	@echo "  make selftest                  Test the test system (scripts, lib.sh, config sanity)"
 	@echo "  make audit                     Supply-chain scan via cargo-deny (deny.toml)"
 	@echo "  make smoke                     Boot the real hub binary & probe its HTTP surface"
 	@echo "  make coverage                  Test coverage report (needs cargo-llvm-cov)"
 	@echo "Running:"
-	@echo "  make dev                       Start BOTH the demo hub and Web UI together"
+	@echo "  make dev                       Start the demo hub seeded with mock agents"
 	@echo "  make run-demo                  Start the demo hub seeded with mock agents"
 	@echo "  make run-hub                   Start a standalone public hub on port 7070"
-	@echo "  make run-web                   Start the Next.js directory website"
 	@echo "Monitoring & Management:"
 	@echo "  make discover                  List all registered public agents"
 	@echo "  make agent-active [name=<name>] [state=on|off]"
@@ -56,10 +55,8 @@ help:
 	@echo "📝 EXAMPLES FOR ALL COMMANDS:"
 	@echo "  * Build application and assets:             make build"
 	@echo "  * Run unit tests:                           make test"
-	@echo "  * Start Dev Mesh (Hub + Web UI):            make dev"
-	@echo "  * Start seeded hub only:                    make run-demo"
+	@echo "  * Start seeded hub:                         make run-demo"
 	@echo "  * Start blank hub only:                     make run-hub"
-	@echo "  * Start Web UI only:                        make run-web"
 	@echo "  * List all public agents:                   make discover"
 	@echo "  * Toggle agent presence (online):           make agent-active name=forge state=on"
 	@echo "  * Toggle agent presence (offline):          make agent-active name=forge state=off"
@@ -71,8 +68,6 @@ help:
 build:
 	@echo "→ Building Rust workspace using: $(CARGO)"
 	$(CARGO) build --workspace
-	@echo "→ Installing frontend dependencies..."
-	cd web && npm install
 
 # Run library unit tests (skips integration tests requiring external nats-server dependency)
 test:
@@ -81,7 +76,6 @@ test:
 
 # --- Quality / CI -----------------------------------------------------------------------------------
 # The full local pipeline — identical gates to .github/workflows/ci.yml. Run this before pushing.
-# Tip: CI_SKIP_WEB=1 make ci  skips the network-heavy website build while iterating on Rust.
 ci:
 	@./scripts/ci/all.sh
 
@@ -104,15 +98,10 @@ coverage:
 	$(CARGO) llvm-cov --workspace --html
 	@echo "→ Open target/llvm-cov/html/index.html"
 
-# Start BOTH the demo hub and Web UI concurrently
+# Start the demo hub seeded with mock agents (the website now lives in the parler-web repo)
 dev:
-	@echo "→ Starting seeded demo hub in background..."
-	@PATH="$$HOME/.cargo/bin:$$PATH" ./scripts/seed-demo.sh > .demo_hub.log 2>&1 & HUB_PID=$$!; \
-	echo "→ Waiting for hub to initialize..." && sleep 4; \
-	echo "→ Starting Web UI on http://localhost:3000..."; \
-	cd web && NEXT_PUBLIC_HUB_API=http://$(HUB_ADDR) npm run dev; \
-	echo "→ Shutting down background hub (PID $$HUB_PID)..."; \
-	kill $$HUB_PID 2>/dev/null || true
+	@echo "→ Starting seeded demo..."
+	PATH="$$HOME/.cargo/bin:$$PATH" ./scripts/seed-demo.sh
 
 # Start a public seed hub (includes 7 mock agents with automatic refresher)
 run-demo:
@@ -123,11 +112,6 @@ run-demo:
 run-hub:
 	@echo "→ Starting standalone Parler Protocol Hub..."
 	$(PARLER_RUN) hub --public --name "Parler Protocol Hub" --db ./hub.sqlite --addr $(HUB_ADDR)
-
-# Start the web directory site
-run-web:
-	@echo "→ Starting Web UI on http://localhost:3000..."
-	cd web && NEXT_PUBLIC_HUB_API=http://$(HUB_ADDR) npm run dev
 
 # List all public agents registered in the hub (requires demo workspace configuration)
 discover:

@@ -6,11 +6,10 @@ green locally it'll be green on GitHub.
 
 ## Setup
 
-You need **Rust** (stable) and **Node 20+**.
+You need **Rust** (stable).
 
 - Rust: nothing to pin by hand — [`rust-toolchain.toml`](rust-toolchain.toml) makes `rustup` install
   the right toolchain (stable + clippy) the first time you run `cargo` in the repo.
-- Node: any 20+ works; the website lives in [`web/`](web/).
 
 ```bash
 make build        # compile the Rust workspace + install web deps
@@ -27,13 +26,11 @@ CI is not a pile of YAML you can't reproduce. Every gate is a small script in
 | `make ci`              | **Everything below** — this is what the cloud sees                        |
 | `make selftest`        | The pipeline scripts themselves (syntax, the `lib.sh` runner, config)     |
 | `scripts/ci/rust.sh`   | `cargo build` · `clippy -D warnings` · `cargo test` · `cargo doc`         |
-| `scripts/ci/web.sh`    | `npm ci` + `next build` (type-checks every route)                         |
 | `make audit`           | `cargo-deny` — vulnerabilities, licenses, dependency sources              |
 | `make smoke`           | Boots the real hub binary and probes its HTTP surface                     |
 
 `make ci` runs **every** gate even if an earlier one fails, then reports the full list — so you fix
-everything in one pass. To skip the (slow, network-heavy) website build while iterating on Rust:
-`CI_SKIP_WEB=1 make ci`.
+everything in one pass.
 
 ## House rules
 

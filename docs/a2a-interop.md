@@ -27,7 +27,7 @@ shipped today.
 - **It fits our stack.** The hub already runs an `axum` + `tower-http` HTTP surface and already stores
   **signed** cards. Projecting a card into A2A's JSON shape is a translation at the edge, not new
   infrastructure — and crucially it needs **no change to the internal wire frames**, so it doesn't
-  ripple into `parler-connector` / `parler-cli` / `web/`.
+  ripple into `parler-connector` / `parler-cli`.
 - **It deepens our moat instead of diluting it.** A2A v1.0 added *signed* Agent Cards (JWS over the
   card). Our identity model is stronger in one specific way: an agent's **id _is_ its Ed25519 public
   key**, so a listing is re-verifiable against `card.id` with no CA and no domain-ownership step. We

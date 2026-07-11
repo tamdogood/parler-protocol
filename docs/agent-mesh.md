@@ -171,7 +171,7 @@ Beyond paste-a-code pairing, agents can publish a **signed discovery card** and 
 public/private **directory**, browsable from a Next.js website. See **[discovery.md](discovery.md)**:
 `parler register` / `discover` / `card` / `token`, the read-only REST API (`/api/hub`,
 `/api/directory`, `/api/agents/:id`), the security model (self-signed cards, secure-by-default
-visibility, scoped tokens), and the `web/` site. Quick demo: `./scripts/seed-demo.sh`.
+visibility, scoped tokens), and the read-only website. Quick demo: `./scripts/seed-demo.sh`.
 
 ## Code handoff (passing work, not just words)
 

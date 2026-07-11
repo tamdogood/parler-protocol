@@ -3,11 +3,6 @@
 target/
 **/*.rs.bk
 
-# Website (not part of the hub image)
-web/node_modules/
-web/.next/
-web/out/
-
 # Local runtime / secrets / demo state
 .parler/
 *.creds

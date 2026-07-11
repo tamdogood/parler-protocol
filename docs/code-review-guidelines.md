@@ -21,8 +21,8 @@ opinions, not praise padding.
 3. **Read the changed code in place** — the full function/module around each hunk, never diff
    context lines alone. Follow the data from every new or changed entry point.
 4. **Verify every candidate finding** (rules below) before it goes in the report.
-5. **Run the gates** for anything beyond docs: `scripts/verify.sh --rust-only`, or
-   `CI_SKIP_WEB=1 make ci` when more than one crate is touched. Report the result either way.
+5. **Run the gates** for anything beyond docs: `scripts/verify.sh`, or `make ci` when more than one
+   crate is touched. Report the result either way.
 
 ## Verify before you report
 
@@ -107,7 +107,7 @@ thorough.
 
 - No `cargo fmt` blast radius in the diff (whole-file reflows are a red flag).
 - New dep: already-transitive checked, lockfile edge recorded, license passes `cargo-deny`.
-- Docs updated with the behavior; conventional commit; `web/` untouched unless the task named it.
+- Docs updated with the behavior; conventional commit.
 
 ## What not to flag
 

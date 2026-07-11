@@ -21,7 +21,7 @@ bad()  { fail=$((fail + 1)); ci::err "$1"; }
 want_ok()   { local d="$1"; shift; if "$@" >/dev/null 2>&1; then ok "$d"; else bad "$d"; fi; }
 want_fail() { local d="$1"; shift; if "$@" >/dev/null 2>&1; then bad "$d (expected non-zero)"; else ok "$d"; fi; }
 
-scripts=(lib.sh rust.sh web.sh audit.sh smoke.sh all.sh selftest.sh)
+scripts=(lib.sh rust.sh audit.sh smoke.sh all.sh selftest.sh)
 
 ci::group "every CI script is present, syntactically valid, and (except lib.sh) executable"
 for s in "${scripts[@]}"; do

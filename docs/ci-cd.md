@@ -12,7 +12,7 @@ are ordinary scripts, the pipeline is itself unit-tested — see [Testing the te
 ```
 ┌──────────────┐     calls      ┌──────────────────────┐
 │ GitHub       │ ─────────────► │ scripts/ci/*.sh      │ ◄──── `make ci` (same scripts, locally)
-│ workflows    │                │  rust · web · audit  │
+│ workflows    │                │  rust · audit        │
 │ (thin YAML)  │                │  smoke · selftest    │
 └──────────────┘                └──────────────────────┘
 ```
@@ -24,7 +24,6 @@ are ordinary scripts, the pipeline is itself unit-tested — see [Testing the te
 | **Pipeline** | `selftest.sh` + shellcheck + actionlint | the test system & workflows are themselves valid |
 | **Rust** | `rust.sh` | `cargo build` · `clippy -D warnings` · `cargo test` · `cargo doc -D warnings` |
 | **Smoke** | `smoke.sh --boot` | the *real* compiled hub binary boots and serves its HTTP contract |
-| **Web** | `web.sh` | `npm ci` + `next build` type-checks and compiles every route |
 | **Supply chain** | `audit.sh` (cargo-deny) | no known vulnerabilities, no unexpected dependency sources |
 | **Dockerfile** | hadolint | the deploy image definition isn't broken |
 
@@ -48,7 +47,6 @@ make selftest           # just the meta-tests (fast)
 make smoke              # boot the real binary and probe it
 make audit              # cargo-deny (auto-installs it if missing)
 make coverage           # HTML coverage (needs cargo-llvm-cov)
-CI_SKIP_WEB=1 make ci   # skip the slow website build while iterating on Rust
 ```
 
 `all.sh` runs **every** gate even when one fails, then reports the full list — so a contributor fixes

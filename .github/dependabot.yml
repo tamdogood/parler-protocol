@@ -14,17 +14,6 @@ updates:
       cargo-minor:
         update-types: ["minor", "patch"]
 
-  - package-ecosystem: npm
-    directory: "/web"
-    schedule:
-      interval: weekly
-    open-pull-requests-limit: 5
-    commit-message:
-      prefix: "deps(web)"
-    groups:
-      npm-minor:
-        update-types: ["minor", "patch"]
-
   # Pin and patch the actions used by the workflows themselves.
   - package-ecosystem: github-actions
     directory: "/"

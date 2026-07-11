@@ -50,7 +50,6 @@ compromised hub can't forge a listing or impersonate anyone.
 | `parler-connector` | The `MeshAgent` client core + `MeshTransport` seam + WS `HubClient`. Shared by CLI & MCP. |
 | `parler-cli` | `parler` subcommands (incl. `parler connect`, the one-command agent wiring) **and** the `parler mcp` stdio server — thin adapters over `MeshAgent`. |
 | `parler-bin` | The umbrella `parler` binary. |
-| `web/` | Next.js / Tailwind v4 directory site (reads the hub's REST API). |
 
 ---
 
@@ -82,15 +81,13 @@ Toolchain is pinned (`rust-toolchain.toml`, stable + clippy). The `Makefile` mir
 `make ci` locally == the cloud pipeline.
 
 ```bash
-make ci          # full pipeline (build · clippy -D warnings · test --locked · web build · audit)
+make ci          # full pipeline (build · clippy -D warnings · test --locked · audit)
 make selftest    # fast: test the test scripts themselves
 make smoke       # boot the real hub binary and probe its HTTP surface
 cargo test --workspace          # Rust suite only
-CI_SKIP_WEB=1 make ci           # skip the website build while iterating on Rust
 
 cargo build -p parler-bin       # → ./target/debug/parler
 ./scripts/seed-demo.sh          # demo hub seeded with 7 signed agents → http://127.0.0.1:7070
-cd web && NEXT_PUBLIC_HUB_API=http://127.0.0.1:7070 npm run dev   # directory site
 ```
 
 CI logic lives in `scripts/ci/*.sh` wrapped by thin GitHub workflows. The autonomous-loop gate is
@@ -118,8 +115,8 @@ per session, whatever tool you are. The bullets below are the load-bearing summa
 - **Protocol is a contract.** Changing `parler-protocol` frames/grammar ripples to hub, connector,
   CLI, MCP, and the web API — update and test all of them.
 - **Docs track code — no drift.** Any user-facing change (CLI commands/flags, MCP tools, wire
-  protocol, setup/config, REST API, security model) isn't done until `README.md`, `AGENTS.md`,
-  `docs/`, and `web/` match it — grep the changed name/flag/behavior across all of them and update
+  protocol, setup/config, REST API, security model) isn't done until `README.md`, `AGENTS.md`, and
+  `docs/` match it — grep the changed name/flag/behavior across all of them and update
   every hit in the same PR. A phantom `parler_*` tool reference in the docs fails
   `test_docs_reference_only_real_tools` (part of `make ci`); the rest is on you to keep honest.
 - **Security invariants:** the seed never leaves the device; cards are self-signed and re-verifiable
@@ -129,9 +126,9 @@ per session, whatever tool you are. The bullets below are the load-bearing summa
   claim end-to-end privacy.
 - **Writing a blog post?** Use the shared `write-blog` skill in
   [`.claude/skills/write-blog/`](.claude/skills/write-blog/) (invoke it in Claude Code, or read its
-  `SKILL.md`). It enforces the house voice (no em dashes), picks a non-cannibalizing SEO angle, wires
-  the post into `web/`, and runs the humanizer pass. `bash .claude/skills/write-blog/check.sh <file>`
-  scans a draft for style fails.
+  `SKILL.md`). It enforces the house voice (no em dashes), picks a non-cannibalizing SEO angle, and
+  runs the humanizer pass. `bash .claude/skills/write-blog/check.sh <file>`
+  scans a draft for style fails. (The site itself is maintained in its own repo.)
 - Conduct: [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md). License: Apache-2.0, attribution required
   ([`LICENSE`](LICENSE) / [`NOTICE`](NOTICE)).
 

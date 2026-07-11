@@ -16,21 +16,14 @@ Ensure that your cargo bin directory (usually `~/.cargo/bin`) is added to your s
 
 ---
 
-## 2. Start the Hub Relay and Web App
+## 2. Start the Hub Relay
 
-If you are running Parler Protocol locally, boot the Hub WebSocket relay and the directory web app:
+If you are running Parler Protocol locally, boot the Hub WebSocket relay:
 
 * **Start the Hub Relay**:
   ```bash
   parler hub --addr 127.0.0.1:7070
   ```
-
-* **Start the Web App**:
-  ```bash
-  cd web
-  npm run dev
-  ```
-  The session viewer page is now live at `http://localhost:3000/session`.
 
 ---
 

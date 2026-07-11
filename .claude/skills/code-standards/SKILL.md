@@ -28,8 +28,7 @@ session (it's short). This skill is the execution order.
    **Never `cargo fmt`.**
 5. **Test:** new behavior gets a test that fails without the change; security gates get
    negative-assertion tests (wrong token → 401, cursor unchanged, no leak).
-6. **Verify:** `CI_SKIP_WEB=1 make ci` while iterating; full `make ci` if `web/` or dependencies
-   changed. Green before "done".
+6. **Verify:** run `make ci` until green before "done".
 7. **Self-review** your own diff against `docs/code-review-guidelines.md` (or invoke
    `parler-review`). Fix findings before presenting.
 8. **Close out:** docs updated in the same change; append to `tasks/lessons.md` if you were
@@ -42,7 +41,6 @@ session (it's short). This skill is the execution order.
 - touch membership, tokens, or any auth path → audit every writer/reader path, negative tests
 - write a secret to disk → `parler_auth::write_private_file`, never write-then-chmod
 - hold a lock near an `.await`, or read env inside logic → extract a pure decision fn
-- edit `web/` during an autonomous loop → don't; leave a `[HUMAN] web: …` note instead
 
 ## No-progress guard
 

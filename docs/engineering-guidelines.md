@@ -30,8 +30,8 @@ wins — and fix the drift in the same change.
    drive-by refactors, no scope creep. Match the surrounding hand-formatted style exactly.
 5. **Test.** New behavior ships with a test that fails without the change. Security behavior ships
    with negative assertions — the thing the gate must *prevent*, proven prevented.
-6. **Verify.** `CI_SKIP_WEB=1 make ci` while iterating on Rust; full `make ci` before calling it
-   done. Green means done; "should work" doesn't.
+6. **Verify.** Run `make ci` until green before calling it done. Green means done; "should work"
+   doesn't.
 7. **Self-review.** Walk [`code-review-guidelines.md`](code-review-guidelines.md) against your own
    diff before presenting it. Fix what you find; don't ship it for the reviewer to catch.
 
@@ -109,10 +109,7 @@ Concurrency & resources:
 ## Boundaries and ripple
 
 - A change to `parler-protocol` ripples into `parler-hub`, `parler-connector`, `parler-cli` (CLI
-  *and* MCP), and the `web/` REST consumers. Update and test all of them, not one crate.
-- `web/` is human-driven **for the autonomous loop** — leave a `[HUMAN] web: …` note instead of
-  editing it. A direct request that names the site overrides this: then build it and verify with
-  `npm run build`.
+  *and* MCP), and the hub's REST API consumers. Update and test all of them, not one crate.
 
 ## Testing standards
 
@@ -147,7 +144,7 @@ Every box, no exceptions:
 - [ ] Root cause fixed; no temporary patch left behind
 - [ ] Smallest coherent diff; surrounding style matched by hand; no `cargo fmt`
 - [ ] New behavior has a test that fails without the change; security behavior has negative tests
-- [ ] `CI_SKIP_WEB=1 make ci` (or full `make ci`) green — build, clippy, tests, doc, audit
-- [ ] Protocol ripple handled across all crates + web, if the wire changed
+- [ ] `make ci` green — build, clippy, tests, doc, audit
+- [ ] Protocol ripple handled across all crates, if the wire changed
 - [ ] Docs updated in the same change; lesson appended if you were corrected or surprised
 - [ ] Self-reviewed against [`code-review-guidelines.md`](code-review-guidelines.md)

@@ -13,8 +13,8 @@
 # rewrite every file. (See tasks/lessons.md.)
 #
 # Usage:
-#   scripts/verify.sh              # full gate: Rust (build · clippy · test) + web (build)
-#   scripts/verify.sh --rust-only  # skip the web build (faster; use when you only touched crates)
+#   scripts/verify.sh              # full gate: Rust (build · clippy · test)
+#   scripts/verify.sh --rust-only  # accepted for backward compatibility; identical to the default
 
 set -euo pipefail
 
@@ -28,33 +28,17 @@ CARGO="$(command -v cargo 2>/dev/null || echo "$HOME/.cargo/bin/cargo")"
 export RUSTFLAGS="${RUSTFLAGS:--D warnings}"
 export CARGO_TERM_COLOR=always
 
-RUST_ONLY=0
-[ "${1:-}" = "--rust-only" ] && RUST_ONLY=1
-
+# --rust-only is still accepted (the loop passes it) but no longer changes anything: the website
+# moved to its own repo, so this gate is Rust-only in both forms.
 fail() { echo "VERIFY: FAIL ($1)"; exit 1; }
 
-echo "→ [1/4] cargo build --workspace --all-targets --locked"
+echo "→ [1/3] cargo build --workspace --all-targets --locked"
 "$CARGO" build --workspace --all-targets --locked || fail "rust-build"
 
-echo "→ [2/4] cargo clippy --workspace --all-targets --locked -- -D warnings"
+echo "→ [2/3] cargo clippy --workspace --all-targets --locked -- -D warnings"
 "$CARGO" clippy --workspace --all-targets --locked -- -D warnings || fail "clippy"
 
-echo "→ [3/4] cargo test --workspace --locked"
+echo "→ [3/3] cargo test --workspace --locked"
 "$CARGO" test --workspace --locked || fail "rust-test"
-
-if [ "$RUST_ONLY" -eq 1 ]; then
-  echo "→ [4/4] web build SKIPPED (--rust-only)"
-else
-  echo "→ [4/4] web: next build (type-checks every route)"
-  (
-    cd web
-    # `next build` needs a COMPLETE dep tree. npm writes node_modules/.package-lock.json only on a
-    # successful install, so use it as the "deps are good" sentinel: a missing-or-partial install
-    # (e.g. one aborted by ENOSPC) lacks it and triggers a clean reinstall instead of failing later
-    # on a half-unpacked module. Reruns with intact deps still skip straight to the build.
-    [ -f node_modules/.package-lock.json ] || npm ci
-    npm run build
-  ) || fail "web-build"
-fi
 
 echo "VERIFY: PASS"

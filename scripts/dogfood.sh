@@ -196,9 +196,7 @@ Per-agent transcripts:   $DIR/*.log
 Hub log:                 $DIR/hub.log
 Inspect the hub:         curl -s http://$ADDR/api/hub | jq .
 
-Replay it in the browser (another terminal):
-   cd web && npm install && NEXT_PUBLIC_HUB_API=http://$ADDR npm run dev
-   → open http://localhost:3000/session and paste the watch code:  ${WATCH:-<run session watch to mint one>}
+Replay it:  parler session watch ${WATCH:-<run session watch to mint one>}
 
 The hub is still up. Press Ctrl-C to tear it all down.
 EOF

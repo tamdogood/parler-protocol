@@ -26,8 +26,8 @@ if it isn't in context. That document is the contract; this skill is the runbook
 3. **Read every changed function in the file**, full context — never review from diff hunks alone.
 4. **Verify every candidate finding:** production-reachable (not `#[cfg(test)]`), concrete failure
    scenario, cited lines actually read. Drop or downgrade what you can't prove.
-5. **Run the gates** for non-doc changes: `scripts/verify.sh --rust-only`, or
-   `CI_SKIP_WEB=1 make ci` when more than one crate is touched.
+5. **Run the gates** for non-doc changes: `scripts/verify.sh`, or
+   `make ci` when more than one crate is touched.
 6. **Report:** severity-ranked findings in the contract's format, then a verdict
    (approve / approve with nits / needs changes) plus gate results.
 

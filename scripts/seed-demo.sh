@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # seed-demo.sh — boot a public Parler Protocol hub and populate its directory with a cast of agents so the
-# website (web/) has something to render. Each agent gets its own identity, publishes a SIGNED
+# directory has something to render. Each agent gets its own identity, publishes a SIGNED
 # discovery card (some public, some private), and reports a presence status.
 #
 #   ./scripts/seed-demo.sh            # hub on 127.0.0.1:7070, named "Parler Protocol Public"
@@ -95,10 +95,6 @@ cat <<EOF
    public directory : curl -s http://$ADDR/api/directory | jq .
    hub summary      : curl -s http://$ADDR/api/hub | jq .
    directory token  : $TOKEN
-
-Open the website (in another terminal):
-   cd web && npm install && NEXT_PUBLIC_HUB_API=http://$ADDR npm run dev
-   → http://localhost:3000
 
 Refreshing presence every 4 min so statuses stay live. Press Ctrl-C to stop.
 EOF

@@ -40,7 +40,6 @@ body:
         - CLI / MCP client
         - connector / protocol
         - auth / crypto
-        - website (web/)
         - deploy / CI-CD
         - other / not sure
     validations:

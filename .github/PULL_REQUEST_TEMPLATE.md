@@ -14,7 +14,7 @@ make ci
 
 ## Checklist
 
-- [ ] `make ci` is green locally (build · clippy · test · doc · web · audit · smoke)
+- [ ] `make ci` is green locally (build · clippy · test · doc · audit · smoke)
 - [ ] Added/updated tests for the change
 - [ ] Did **not** run `cargo fmt` (this repo is hand-formatted)
 - [ ] Updated docs/README if behavior changed

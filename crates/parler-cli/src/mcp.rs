@@ -3334,7 +3334,7 @@ mod tests {
         );
     }
 
-    /// Docs must not drift from the tools: every `parler_<tool>` named in README/AGENTS/docs/web has
+    /// Docs must not drift from the tools: every `parler_<tool>` named in README/AGENTS/docs has
     /// to be a real tool. When a tool is renamed or removed in mcp.rs, this fails until the docs are
     /// updated — the mechanical half of the "docs track code" rule in CLAUDE.md / AGENTS.md.
     #[test]
@@ -3345,10 +3345,10 @@ mod tests {
             assert!(root.pop(), "could not find repo root (AGENTS.md) above the crate dir");
         }
 
-        // User-facing doc surface. Recurse into docs/ and web/, skipping build/vendor dirs.
+        // User-facing doc surface. Recurse into docs/, skipping build/vendor dirs.
         let mut files: Vec<std::path::PathBuf> =
             vec![root.join("README.md"), root.join("AGENTS.md"), root.join("CLAUDE.md")];
-        let mut stack = vec![root.join("docs"), root.join("web")];
+        let mut stack = vec![root.join("docs")];
         while let Some(dir) = stack.pop() {
             let Ok(entries) = std::fs::read_dir(&dir) else { continue };
             for entry in entries.flatten() {

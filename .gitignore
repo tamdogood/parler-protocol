@@ -12,17 +12,11 @@ __pycache__/
 *.creds
 *.seed
 
-# Demo runtime (seed-demo.sh / hackathon-demo.sh / demo-handoff.sh / dogfood.sh) + website build artifacts
+# Demo runtime (seed-demo.sh / hackathon-demo.sh / demo-handoff.sh / dogfood.sh)
 /.demo/
 /.hackathon-demo/
 /.demo-handoff/
 /.dogfood/
-/web/node_modules/
-/web/.next/
-/web/out/
-/web/next-env.d.ts
-/web/*.tsbuildinfo
-/web/.verify-tmp/
 
 # Architect-loop runtime state (worktrees, research findings, dispatch blocks)
 .architect/

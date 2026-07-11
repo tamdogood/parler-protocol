@@ -4,8 +4,7 @@
 # calls. It does NOT stop at the first failure: every gate runs so a contributor sees the complete
 # list of problems in one pass, then it exits non-zero if any failed.
 #
-#   scripts/ci/all.sh                # selftest + rust + web + audit
-#   CI_SKIP_WEB=1 scripts/ci/all.sh  # skip the (network-heavy) website build
+#   scripts/ci/all.sh                # selftest + rust + audit
 set -uo pipefail   # NB: no -e — we want to run every gate and aggregate the result
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib.sh
@@ -21,7 +20,6 @@ ci::log "${_CI_BOLD}Parler Protocol local CI${_CI_RST} — mirrors .github/workf
 
 gate "selftest" "$here/selftest.sh"
 gate "rust"     "$here/rust.sh"
-if [ "${CI_SKIP_WEB:-0}" = "1" ]; then ci::warn "skipping web gate (CI_SKIP_WEB=1)"; else gate "web" "$here/web.sh"; fi
 gate "audit"    "$here/audit.sh"
 
 printf '\n'

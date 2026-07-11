@@ -41,15 +41,9 @@ tasks/backlog.md   ──▶  /work-next  ──▶  scripts/verify.sh  ──�
 
 - **`tasks/backlog.md`** — the forward queue of small, shippable, prioritized items. The loop pulls the
   top unchecked item. *Distinct from* `tasks/todo.md`, which is the append-only log of finished work.
-- **`scripts/verify.sh`** — the feedback signal. The loop runs it as **`--rust-only`** (build ·
-  clippy `-D warnings` · test). The full form additionally runs the web `next build` and mirrors
-  `.github/workflows/ci.yml` exactly — that's for Tam's manual pre-push check, **not** the loop. It
-  prints `VERIFY: PASS` / `VERIFY: FAIL (<stage>)`. **It never runs `cargo fmt`** — this repo is
-  hand-formatted.
-- **The `web/` app is human-driven and out of the loop's scope.** The loop never edits `web/` or runs
-  the web build; Tam drives the site by hand. A backlog item that needs UI work does only its
-  Rust/CLI/protocol part and leaves a `[HUMAN] web: …` note. (This also keeps the loop off the
-  disk-constrained `npm ci` path.)
+- **`scripts/verify.sh`** — the feedback signal. It runs the Rust gate (build · clippy `-D warnings`
+  · test) and mirrors the Rust job in `.github/workflows/ci.yml`. It prints `VERIFY: PASS` /
+  `VERIFY: FAIL (<stage>)`. **It never runs `cargo fmt`** — this repo is hand-formatted.
 - **`.claude/commands/work-next.md`** — the per-iteration prompt. Does exactly one item: orient → plan
   (split if too big) → baseline → modify → verify → land (commit on the current branch) → stop.
 - **`tasks/lessons.md`** — the self-improvement memory; read at the top of every iteration, appended to

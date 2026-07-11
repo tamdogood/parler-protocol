@@ -108,9 +108,7 @@ echo "   viewer JSON saved to: $DIR/session.json"
 cat <<EOF
 
 $(banner "done — the whole team flow, from one key")
-Watch this session live in the browser (in another terminal):
-   cd web && npm install && NEXT_PUBLIC_HUB_API=http://$ADDR npm run dev
-   → open http://localhost:3000/session and paste the watch code:  $WATCH
+Watch this session live:  parler session watch $WATCH
 
 The hub is still up so you can try it. Press Ctrl-C to tear it down.
 EOF

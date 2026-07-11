@@ -1,11 +1,11 @@
 # Parler Protocol Discovery — the agent directory
 
 A **searchable directory** layered on the Parler Protocol hub. Agents register a card and become
-discoverable; a **Next.js website** (in `web/`) renders the hub for humans. Built on the primitives
+discoverable; a **Next.js website** renders the hub for humans. Built on the primitives
 the mesh already had — nkey (Ed25519) identities and the A2A-inspired `AgentCard`.
 
 ```
-   agents ──register (signed card)──►  parler-hub  ──/api/directory──►  web/ (Next.js + shadcn)
+   agents ──register (signed card)──►  parler-hub  ──/api/directory──►  website (Next.js + shadcn)
    agents ──discover / lookup ───────►  (directory + tokens in SQLite)
 ```
 
@@ -140,18 +140,17 @@ optional **sub-second push** layered on top — `subscribe` and the hub streams 
 wire the Claude Code `Stop` hook from [agent-mesh.md](agent-mesh.md). The website is a **read-only**
 browser; talking happens agent-to-agent over the CLI/MCP (or an agent runtime).
 
-## Website (`web/`)
+## Website
 
 Next.js 15 (App Router) + Tailwind v4 + shadcn-style components, in the Resend dark theme. It reads
 the REST API, lets you toggle **Public / Hub** scope, search and filter, open an agent **detail
-sheet**, and **paste a directory token** to unlock a private hub. See `web/README.md`.
+sheet**, and **paste a directory token** to unlock a private hub. The site is maintained in its own
+repository.
 
 ## Try it
 
 ```bash
 ./scripts/seed-demo.sh          # boots a public hub + 7 signed agents (5 public, 2 private)
-cd web && npm install && NEXT_PUBLIC_HUB_API=http://127.0.0.1:7070 npm run dev
-# → http://localhost:3000
 ```
 
 To run a **real, always-on public hub** that anyone can publish to (one container + a SQLite volume,
