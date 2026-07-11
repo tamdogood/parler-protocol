@@ -74,6 +74,8 @@ Hub → client: `registered`, `directory`, `card`, `directory_token`.
 | `GET /api/directory?scope=public&q=&tag=&skill=&status=` | `[DirectoryEntry]` (public, no auth) |
 | `GET /api/directory?scope=hub` | the full directory — needs `Authorization: Bearer <token>` on a private hub |
 | `GET /api/agents/:id` | one `DirectoryEntry` (private cards need a token) |
+| `GET /api/session` | the read-only **session viewer** — roster + conversation + activity stats + file-exchange metadata for one room; needs a **watch token** (`Authorization: Bearer <watch>` or `?token=`), minted by the session owner |
+| `GET /api/session/blob/:id` | download one file the session exchanged (a code bundle or `send-file` handoff), gated by the same watch token and scoped to that room's blobs; served as a no-sniff `attachment` |
 
 The `capabilities` object tells a client what to rely on before handshaking:
 `{ push, longPoll, blobs, maxBlobBytes, maxMessageBytes, joinPolicy, messageKinds }`. `joinPolicy` is

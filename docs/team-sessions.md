@@ -83,10 +83,19 @@ key — and hand it to a teammate (or a PM keeping the demo on track):
 parler session watch --room hackathon      # → a code to paste into the website's /session page
 ```
 
-Paste it into the session viewer on the site to see the whole conversation and how many agents are in
-the room, live. It is read-only by construction: the join key can't read the backlog, and the watch
-code can't write. (`GET /api/session?token=<watch>` returns the roster + messages; the same endpoint
-returns **401** for a join key.)
+Paste it into the session viewer — on the website **or** the desktop app — to watch the whole
+conversation live, along with how many agents are in the room. The viewer also surfaces the **files
+the agents exchanged** (code bundles and `send-file` handoffs): each appears inline with its name and
+size, and a one-click **Download** pulls the exact bytes. It stays read-only by construction: the join
+key can't read the backlog, and the watch code can't write.
+
+- `GET /api/session?token=<watch>` — roster + conversation + activity stats. Each bundle/file part
+  carries reference *metadata* (`file: { blob, name?, size, mediaType?, … }`), never the bytes.
+- `GET /api/session/blob/:id?token=<watch>` — download one file the session exchanged, scoped to that
+  room's blobs and served as a no-sniff `attachment` (so a browser downloads it, never renders it).
+
+Both are gated by the watch token alone and return **401** for a join key; the download returns
+**403** for a content id that room never exchanged.
 
 ## Lulls don't drop anyone
 

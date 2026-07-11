@@ -59,6 +59,36 @@ export function fetchDirectory(
   return getJson<DirectoryEntry[]>(base, `/api/directory?${qs.toString()}`, params.scope === "hub" ? token : undefined);
 }
 
+/**
+ * Download one file the session exchanged (a code bundle or a handed-off file), gated by the same
+ * watch token as {@link fetchSession} and scoped to that room's blobs. Returns the raw bytes as a Blob
+ * so the caller can save or open them. `name` only suggests the download filename (sanitized by the
+ * hub); the token rides as a Bearer header, out of the URL.
+ */
+export async function fetchSessionBlob(
+  base: string,
+  token: string,
+  blob: string,
+  name?: string,
+): Promise<Blob> {
+  const qs = name ? `?name=${encodeURIComponent(name)}` : "";
+  const res = await fetch(`${base}/api/session/blob/${encodeURIComponent(blob)}${qs}`, {
+    headers: { Authorization: `Bearer ${token.trim()}` },
+    cache: "no-store",
+  });
+  if (!res.ok) {
+    let msg = `${res.status} ${res.statusText}`;
+    try {
+      const body = (await res.json()) as { error?: string };
+      if (body.error) msg = body.error;
+    } catch {
+      /* non-JSON error body */
+    }
+    throw new HubError(msg, res.status);
+  }
+  return res.blob();
+}
+
 /** Read a session the caller holds a watch token for (Bearer, kept out of the URL). */
 export function fetchSession(base: string, token: string, since?: number): Promise<SessionView> {
   const qs = since ? `?since=${since}` : "";

@@ -670,6 +670,14 @@ async fn expired_invite_is_rejected() {
 /// The session viewer is plain HTTP (a browser, not an agent), so we exercise it over a real socket —
 /// the same dependency-free client style as the hub's smoke test.
 async fn http_get(hub_ws: &str, path: &str, bearer: Option<&str>) -> (u16, String) {
+    let (status, _head, body) = http_get_full(hub_ws, path, bearer).await;
+    (status, body)
+}
+
+/// Like [`http_get`] but also returns the raw (lowercased) response head, so a test can assert
+/// security headers — `Content-Disposition: attachment`, `X-Content-Type-Options: nosniff` — on a
+/// file download.
+async fn http_get_full(hub_ws: &str, path: &str, bearer: Option<&str>) -> (u16, String, String) {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let addr = hub_ws.strip_prefix("ws://").expect("ws url");
     let mut stream = tokio::net::TcpStream::connect(addr).await.expect("connect");
@@ -686,7 +694,7 @@ async fn http_get(hub_ws: &str, path: &str, bearer: Option<&str>) -> (u16, Strin
         .and_then(|l| l.split_whitespace().nth(1))
         .and_then(|c| c.parse().ok())
         .unwrap_or(0);
-    (status, body.to_string())
+    (status, head.to_lowercase(), body.to_string())
 }
 
 #[tokio::test]
@@ -759,6 +767,81 @@ async fn web_session_viewer_reads_a_watched_session() {
     // A bogus or absent token is refused.
     assert_eq!(http_get(&hub, "/api/session", Some("NOPE")).await.0, 401);
     assert_eq!(http_get(&hub, "/api/session", None).await.0, 401);
+}
+
+/// The viewer surfaces file *exchanges* (not just chat): a handed-off file shows up as `com.parler.file`
+/// metadata, and the same watch token can download the bytes — scoped to this room's blobs, served as a
+/// no-sniff attachment. This is the "monitor the files + access them" flow end to end.
+#[tokio::test]
+async fn web_session_viewer_downloads_an_exchanged_file() {
+    let hub = start_hub().await;
+    let mut alice = agent(&hub, "alice", Some("planner")).await;
+
+    // Alice opens a session and hands a file into it (a path in the name — the hub keeps only basename).
+    let inv = alice
+        .invite_with_approval(RoomKind::Channel, Some("design".into()), None, None, false)
+        .await
+        .unwrap();
+    let contents = b"the quick brown fox\njumps over the lazy dog\n";
+    let receipt = alice
+        .send_file(
+            Target::Room { room: inv.room.clone() },
+            "notes/report.txt",
+            contents,
+            Some("text/plain".into()),
+            Some("Q3 notes".into()),
+        )
+        .await
+        .unwrap();
+
+    // The owner mints a read-only watch code for the viewer.
+    let (watch, _exp) = alice.mint_watch_token(&inv.room, None).await.unwrap();
+
+    // The viewer payload carries the file's *metadata* (never the bytes) so it can render the exchange:
+    // basename, size, media type, summary, and the content id to download.
+    let (status, body) = http_get(&hub, "/api/session", Some(&watch)).await;
+    assert_eq!(status, 200, "watch token authorizes the viewer; body={body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    // The handoff is one message carrying the note as a text part plus the file reference part.
+    let msg = v["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["parts"].as_array().unwrap().iter().any(|p| p["kind"] == "com.parler.file"))
+        .expect("a message carries the file handoff");
+    let parts = msg["parts"].as_array().unwrap();
+    assert!(
+        parts.iter().any(|p| p["kind"] == "text" && p["text"] == "Q3 notes"),
+        "the note rides alongside the file as visible text: {parts:?}",
+    );
+    let file = parts.iter().find(|p| p["kind"] == "com.parler.file").map(|p| p["file"].clone()).unwrap();
+    assert_eq!(file["blob"], receipt.blob_id, "the content id is exposed for download");
+    assert_eq!(file["name"], "report.txt", "the basename is surfaced (the path is stripped)");
+    assert_eq!(file["size"].as_u64().unwrap(), contents.len() as u64);
+    assert_eq!(file["mediaType"], "text/plain");
+
+    // ...and the bytes are downloadable with the same watch token — as a no-sniff attachment.
+    let (status, head, dl) = http_get_full(
+        &hub,
+        &format!("/api/session/blob/{}?name=report.txt", receipt.blob_id),
+        Some(&watch),
+    )
+    .await;
+    assert_eq!(status, 200, "the watch token downloads the exchanged file; body={dl}");
+    assert_eq!(dl.as_bytes(), contents, "the downloaded bytes match exactly");
+    assert!(head.contains("x-content-type-options: nosniff"), "download must be nosniff: {head}");
+    assert!(head.contains("content-disposition: attachment"), "download must be an attachment: {head}");
+    assert!(head.contains("report.txt"), "the sanitized filename names the download: {head}");
+
+    // Negative: a content id this room never exchanged is refused (403), not silently served.
+    let bogus = "0".repeat(64);
+    let (status, _b) = http_get(&hub, &format!("/api/session/blob/{bogus}"), Some(&watch)).await;
+    assert_eq!(status, 403, "a watcher can't pull a blob that wasn't exchanged in this room");
+
+    // Negative: the join key is not a watch token, and an absent token is refused.
+    let path = format!("/api/session/blob/{}", receipt.blob_id);
+    assert_eq!(http_get(&hub, &path, Some(&inv.code)).await.0, 401, "a join key can't download files");
+    assert_eq!(http_get(&hub, &path, None).await.0, 401, "an absent token is refused");
 }
 
 #[tokio::test]

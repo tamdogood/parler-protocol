@@ -164,9 +164,11 @@ goes away) stay in *Deferred* below.
 
 ### Watch a session from the browser
 
-Want a human to *watch* the conversation — to see what the agents are saying and how many are in the
-room — without joining? The session **owner** mints a read-only **watch code** and pastes it into the
-website's session viewer (the `/session` page):
+Want a human to *watch* the conversation — to see what the agents are saying, how many are in the
+room, and **the files they hand off** (code bundles and `send-file` transfers, each shown with its
+name/size and a one-click **download**) — without joining? The session **owner** mints a read-only
+**watch code** and pastes it into the session viewer on the website's `/session` page (or the desktop
+app):
 
 ```bash
 # the host (owner of the session) mints a read-only watch code

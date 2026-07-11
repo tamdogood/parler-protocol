@@ -21,9 +21,9 @@ use axum::response::{Html, IntoResponse};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use parler_protocol::{
-    canonical_card_bytes, error_code, is_message_sig_part, normalize_mentions, token, ClientFrame,
-    CodedError, DirectoryEntry, DiscoverScope, EndpointRef, Part, RoomKind, ServerFrame,
-    StoredMessage, Target,
+    canonical_card_bytes, error_code, is_message_sig_part, normalize_mentions, token, BundleRef,
+    ClientFrame, CodedError, DirectoryEntry, DiscoverScope, EndpointRef, FileRef, Part, RoomKind,
+    ServerFrame, StoredMessage, Target,
 };
 use rand::Rng;
 use serde::Deserialize;
@@ -500,6 +500,9 @@ pub fn app(state: Arc<HubState>) -> Router {
         .route("/api/directory", get(api_directory))
         .route("/api/agents/:id", get(api_agent))
         .route("/api/session", get(api_session))
+        // Download one file the session exchanged — a code bundle or handed-off file — gated by the
+        // same watch token, scoped to that one room's blobs. Read-only, `attachment` + `nosniff`.
+        .route("/api/session/blob/:id", get(api_session_blob))
         // The website's waitlist form posts signups here (self-hosted "owned email list"). CORS-open
         // like the reads above, since the form posts cross-origin from the marketing site.
         .route("/api/waitlist", post(api_waitlist))
@@ -1058,9 +1061,125 @@ fn session_error(status: StatusCode, message: &str) -> axum::response::Response 
     (status, Json(serde_json::json!({ "error": message }))).into_response()
 }
 
+#[derive(Debug, Default, Deserialize)]
+struct SessionBlobQuery {
+    /// The watch token, as a `?token=` fallback for curl/tests; clients send it as a Bearer header.
+    token: Option<String>,
+    /// A suggested download filename. Sanitized server-side to a bare, filename-safe basename (it only
+    /// names the download — it is never used as a path), else a name derived from the content id.
+    name: Option<String>,
+}
+
+/// `GET /api/session/blob/:id` — download one file a session exchanged (a code bundle or a handed-off
+/// file), gated by the **same watch token** as [`api_session`] and scoped to that room's blobs only.
+///
+/// This is the "access the files" half of the read-only viewer. Authorization stays narrow: the token
+/// resolves to exactly one room, and the blob must be bound to *that* room ([`Store::blob_in_room`]) —
+/// a watcher can never pull an arbitrary content id. Bytes are served as an `attachment` with
+/// `X-Content-Type-Options: nosniff`, so the browser downloads rather than renders them (no inline
+/// HTML/SVG execution in the hub's origin). Blobs are `<= max_blob_bytes` (25 MiB default), so reading
+/// the file whole on the blocking pool is bounded.
+async fn api_session_blob(
+    State(state): State<Arc<HubState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Query(q): Query<SessionBlobQuery>,
+) -> axum::response::Response {
+    let Some(token) = bearer_token(&headers).or(q.token) else {
+        return session_error(StatusCode::UNAUTHORIZED, "a watch token is required");
+    };
+    let now = now_ms();
+    let room = match state.store.validate_watch_token(&token, now) {
+        Ok(Some(room)) => room,
+        Ok(None) => return session_error(StatusCode::UNAUTHORIZED, "invalid or expired watch token"),
+        Err(e) => return session_error(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
+    };
+    // The blob must have been posted to *this* room — a watcher can't fetch an arbitrary content id.
+    match state.store.blob_in_room(&id, &room) {
+        Ok(true) => {}
+        Ok(false) => {
+            return session_error(StatusCode::FORBIDDEN, "this file was not exchanged in this session")
+        }
+        Err(e) => return session_error(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
+    }
+    let meta = match state.store.blob_meta(&id) {
+        Ok(Some(m)) => m,
+        Ok(None) => return session_error(StatusCode::NOT_FOUND, "no such file"),
+        Err(e) => return session_error(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
+    };
+    // `id` is proven to be a stored content id (it has a `blob_rooms` row), so it's a hex string and
+    // `join` can't escape `blob_dir`. Read off the async runtime; a blob is bounded by `max_blob_bytes`.
+    let path = state.blob_dir.join(&id);
+    let bytes = match tokio::task::spawn_blocking(move || std::fs::read(path)).await {
+        Ok(Ok(b)) => b,
+        Ok(Err(e)) => {
+            return session_error(StatusCode::INTERNAL_SERVER_ERROR, &format!("failed to read file: {e}"))
+        }
+        Err(e) => return session_error(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
+    };
+    // Record the fetch as the LRU signal for blob GC; never fail a download over a bookkeeping write.
+    let _ = state.store.touch_blob_fetched(&id, now);
+
+    let filename = download_filename(q.name.as_deref(), &id, meta.media_type.as_deref());
+    let content_type = meta.media_type.as_deref().unwrap_or("application/octet-stream");
+    let mut resp = axum::response::Response::new(axum::body::Body::from(bytes));
+    let h = resp.headers_mut();
+    let octet = axum::http::HeaderValue::from_static("application/octet-stream");
+    h.insert(
+        axum::http::header::CONTENT_TYPE,
+        axum::http::HeaderValue::from_str(content_type).unwrap_or(octet),
+    );
+    h.insert(
+        axum::http::header::CONTENT_DISPOSITION,
+        axum::http::HeaderValue::from_str(&format!("attachment; filename=\"{filename}\""))
+            .unwrap_or_else(|_| axum::http::HeaderValue::from_static("attachment")),
+    );
+    h.insert(axum::http::header::X_CONTENT_TYPE_OPTIONS, axum::http::HeaderValue::from_static("nosniff"));
+    h.insert(axum::http::header::CACHE_CONTROL, axum::http::HeaderValue::from_static("no-store"));
+    resp
+}
+
+/// Derive a safe download filename for a session blob. Uses the client's `?name` hint when present,
+/// reduced to a bare basename with only filename-safe ASCII (so it can neither traverse a path nor
+/// break the `Content-Disposition` header); otherwise a short name from the content id plus a
+/// media-type extension guess.
+fn download_filename(hint: Option<&str>, id: &str, media_type: Option<&str>) -> String {
+    if let Some(h) = hint {
+        let base = h.rsplit(['/', '\\']).next().unwrap_or(h);
+        let cleaned: String = base
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | ' '))
+            .take(128)
+            .collect();
+        let cleaned = cleaned.trim().trim_matches('.').trim().to_string();
+        if !cleaned.is_empty() {
+            return cleaned;
+        }
+    }
+    let short = id.get(..12).unwrap_or(id);
+    format!("parler-{short}{}", ext_for_media(media_type))
+}
+
+/// A leading-dot extension guess for a media type, used only to name a download that has no client
+/// hint (e.g. a code bundle, which carries no filename). Falls back to `.bin`.
+fn ext_for_media(media_type: Option<&str>) -> &'static str {
+    match media_type {
+        Some("application/x-git-bundle") => ".bundle",
+        Some("application/pdf") => ".pdf",
+        Some("application/zip") => ".zip",
+        Some("image/png") => ".png",
+        Some("image/jpeg") => ".jpg",
+        Some("text/plain") => ".txt",
+        _ => ".bin",
+    }
+}
+
 /// Project a stored message to the viewer's read-only shape: display name/role, timestamp, and parts
-/// reduced to text (verbatim) or just a `kind` label for non-text parts — so handed-off blob bytes and
-/// raw `data` payloads never reach the browser.
+/// reduced to text (verbatim), a bare `data` label, or — for a code bundle / file handoff — safe
+/// reference *metadata* (content id, name, size, media type) under `file`, so the viewer can render
+/// the exchange and offer a watch-gated download. The raw blob **bytes** and raw `data` payloads still
+/// never reach the browser here; bytes come only from `GET /api/session/blob/:id`, which re-checks the
+/// watch token against the blob's room.
 fn viewer_message(m: &StoredMessage) -> serde_json::Value {
     let parts: Vec<serde_json::Value> = m
         .parts
@@ -1071,7 +1190,15 @@ fn viewer_message(m: &StoredMessage) -> serde_json::Value {
             // The detached author signature is plumbing, not conversation — keep it out of the viewer.
             Part::Extension { .. } if is_message_sig_part(p) => None,
             Part::Extension { kind, fields } => {
-                if kind == "com.parler.observation" {
+                // A code bundle / file handoff: surface the reference metadata (never the bytes) so the
+                // viewer can show the exchange and download it. Serializing the *typed* ref emits only
+                // its own whitelisted fields (options are `skip_serializing_if`), so nothing unexpected
+                // leaks through.
+                if let Some(b) = BundleRef::from_part(p) {
+                    Some(serde_json::json!({ "kind": kind, "file": serde_json::to_value(&b).unwrap_or_default() }))
+                } else if let Some(f) = FileRef::from_part(p) {
+                    Some(serde_json::json!({ "kind": kind, "file": serde_json::to_value(&f).unwrap_or_default() }))
+                } else if kind == "com.parler.observation" {
                     Some(serde_json::json!({ "kind": kind, "fields": fields }))
                 } else {
                     Some(serde_json::json!({ "kind": kind }))
