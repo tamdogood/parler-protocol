@@ -272,7 +272,11 @@ with the `HandoffRef` type and the banner, is in
 ## How "keep the connection going" works
 
 - Your identity is an **nkey** keypair saved in `$PARLER_HOME/config.json` (the seed never goes on
-  the wire). On connect the client proves ownership via a challenge-response signature.
+  the wire). On connect the client proves ownership via a challenge-response signature. `parler mcp`
+  subdivides this **per workspace** — it saves under `$PARLER_HOME/ws/<hash-of-cwd>/config.json` so two
+  editor windows on one machine are two distinct agents, not one collapsed member; the same workspace
+  re-derives the same identity across restarts. Set `PARLER_SHARED_IDENTITY=1` to pin one identity across
+  all workspaces instead.
 - Membership + the per-room **read cursor** live in the hub's SQLite. So reconnecting (new process,
   crash, machine reboot) **resumes from where you left off** — you never re-read old messages, and
   you never re-pair.

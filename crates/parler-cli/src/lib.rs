@@ -970,8 +970,9 @@ async fn verify_dial_in(wired: Vec<connect::WiredAgent>, timeout: Duration) -> R
                 // Match on the wired identity's id (read from its PARLER_HOME once `parler mcp` has
                 // launched and minted/saved it), never on name — an id is the agent's public key, so
                 // this can't confirm a same-named stranger that happens to be online (#103). If the
-                // agent hasn't booted yet its config.json is absent → `None` → still pending.
-                let online = wired_agent_id(&w.home).is_some_and(|id| online_ids.contains(&id.as_str()));
+                // agent hasn't booted yet its config.json is absent → no ids → still pending. A wired
+                // host may have several per-workspace identities; it's "in" once any one is online.
+                let online = wired_agent_ids(&w.home).iter().any(|id| online_ids.contains(&id.as_str()));
                 if online {
                     println!("  ✓ {} dialed in ({}s)", w.name, started.elapsed().as_secs());
                 }
@@ -989,14 +990,25 @@ async fn verify_dial_in(wired: Vec<connect::WiredAgent>, timeout: Duration) -> R
     Ok(())
 }
 
-/// Read the wired agent's id from `<home>/config.json` — the file `parler mcp` writes when it mints
-/// or loads its identity on launch. `None` when the agent hasn't started yet (no config), the file
-/// is unreadable, or it has no `id` field. Kept a pure path→id function (no process env) so it's
-/// testable with a tempdir and the `--verify` match stays deterministic.
-fn wired_agent_id(home: &std::path::Path) -> Option<String> {
-    let text = std::fs::read_to_string(home.join("config.json")).ok()?;
-    let v: serde_json::Value = serde_json::from_str(&text).ok()?;
-    v.get("id").and_then(|id| id.as_str()).map(str::to_string)
+/// Read every wired identity id under `home` — the flat `<home>/config.json` **plus** any per-workspace
+/// `<home>/ws/<hash>/config.json` (`parler mcp` scopes its identity per workspace, so one wired host can
+/// have several). Returns them all so `--verify` reports the host "dialed in" once *any* of its
+/// workspace agents is online. Empty before the agent has launched (no config yet), or when a file is
+/// unreadable / has no `id`. Pure path→ids (no process env) so it's testable and the match stays
+/// deterministic.
+fn wired_agent_ids(home: &std::path::Path) -> Vec<String> {
+    fn id_at(path: &std::path::Path) -> Option<String> {
+        let text = std::fs::read_to_string(path).ok()?;
+        let v: serde_json::Value = serde_json::from_str(&text).ok()?;
+        v.get("id").and_then(|id| id.as_str()).map(str::to_string)
+    }
+    let mut ids: Vec<String> = id_at(&home.join("config.json")).into_iter().collect();
+    if let Ok(entries) = std::fs::read_dir(home.join("ws")) {
+        for e in entries.flatten() {
+            ids.extend(id_at(&e.path().join("config.json")));
+        }
+    }
+    ids
 }
 
 fn cmd_init(a: InitArgs) -> Result<()> {
@@ -1190,7 +1202,19 @@ async fn cmd_session(c: SessionCmd) -> Result<()> {
             println!("  (already on this hub? the bare key works too:  parler session join {})", inv.code);
             println!("…or launch its MCP server with env  PARLER_SESSION_KEY={}", inv.code);
             println!();
-            println!("Watch it live in your browser:  parler session watch --room {}", inv.room);
+            // Mint the read-only WATCH code up front (same lifetime as the key) so the host has the
+            // *right* code for the web/desktop viewer — pasting the join KEY there 401s and reads as
+            // "invalid or expired". Best-effort: fall back to the manual command on an older hub.
+            match ag.mint_watch_token(&inv.room, Some(ttl.unwrap_or(24 * 3600))).await {
+                Ok((code, _)) => {
+                    println!("Watch it live (read-only) in the web/desktop viewer — paste this WATCH code, not the key:");
+                    println!("    {code}");
+                    println!("  (re-mint anytime:  parler session watch --room {})", inv.room);
+                }
+                Err(_) => {
+                    println!("Watch it live in your browser:  parler session watch --room {}", inv.room);
+                }
+            }
         }
         SessionCmd::Join { key, once } => {
             // Strip any `@<hub>` (already applied to the connection above) before redeeming the code.
@@ -2594,12 +2618,26 @@ mod tests {
     }
 
     #[test]
-    fn wired_agent_id_reads_the_saved_id_or_none() {
-        // A pure path→id read: present after `parler mcp` saves its config, `None` before it launches.
+    fn wired_agent_ids_reads_flat_and_per_workspace_configs() {
+        // A pure path→ids read: empty before `parler mcp` launches, then the flat config's id, then —
+        // because `parler mcp` scopes its identity per workspace under `<home>/ws/<hash>/` — every
+        // per-workspace id too, so `--verify` confirms a scoped agent, not just a flat one.
         let home = tempfile::tempdir().unwrap();
-        assert_eq!(wired_agent_id(home.path()), None, "no config yet → not booted → None");
-        write_config_json(home.path(), "UWIREDID123");
-        assert_eq!(wired_agent_id(home.path()).as_deref(), Some("UWIREDID123"));
+        assert!(wired_agent_ids(home.path()).is_empty(), "no config yet → not booted → empty");
+
+        write_config_json(home.path(), "UFLATID000");
+        assert_eq!(wired_agent_ids(home.path()), vec!["UFLATID000".to_string()]);
+
+        // Two workspaces each mint their own identity under ws/<hash>.
+        let ws_a = home.path().join("ws").join("aaaa");
+        let ws_b = home.path().join("ws").join("bbbb");
+        std::fs::create_dir_all(&ws_a).unwrap();
+        std::fs::create_dir_all(&ws_b).unwrap();
+        write_config_json(&ws_a, "UWSAAAA111");
+        write_config_json(&ws_b, "UWSBBBB222");
+        let mut ids = wired_agent_ids(home.path());
+        ids.sort();
+        assert_eq!(ids, vec!["UFLATID000".to_string(), "UWSAAAA111".to_string(), "UWSBBBB222".to_string()]);
     }
 
     #[tokio::test]
@@ -2630,13 +2668,13 @@ mod tests {
         let online_ids: Vec<&str> = seen.iter().map(|e| e.card.id.as_str()).collect();
         assert!(online_ids.iter().filter(|id| **id == wired_id || **id == stranger_cfg.identity.id).count() == 2, "both same-named cards are online");
 
-        // The id read from the wired home matches the wired identity, and only that id is confirmed.
-        let read = wired_agent_id(home.path());
-        assert_eq!(read.as_deref(), Some(wired_id.as_str()), "id comes from the wired home, not the name");
+        // The ids read from the wired home include the wired identity, and never the stranger's.
+        let read = wired_agent_ids(home.path());
+        assert!(read.contains(&wired_id), "id comes from the wired home, not the name");
         assert!(online_ids.contains(&wired_id.as_str()), "the wired id confirms");
         // The name-based check the old code used would have matched the stranger too — prove the
         // id-based check does not confirm the stranger's id via the wired home.
-        assert_ne!(read.as_deref(), Some(stranger_cfg.identity.id.as_str()), "the stranger is never confirmed as the wired agent");
+        assert!(!read.contains(&stranger_cfg.identity.id), "the stranger is never confirmed as the wired agent");
     }
 
     #[tokio::test]

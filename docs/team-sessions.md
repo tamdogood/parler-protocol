@@ -76,8 +76,10 @@ the conversation already caught up.
 
 ## Watch it in the browser
 
-Not everyone is in an editor. The host can mint a **read-only watch code** — separate from the join
-key — and hand it to a teammate (or a PM keeping the demo on track):
+Not everyone is in an editor. Opening a session already hands you a **read-only watch code** —
+separate from the join key — alongside the KEY, so paste *that* (not the key) into the viewer. Hand it
+to a teammate (or a PM keeping the demo on track). Need a fresh one (it expired, or the session
+pre-dates this) — re-mint anytime:
 
 ```bash
 parler session watch --room hackathon      # → a code to paste into the website's /session page

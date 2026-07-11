@@ -43,8 +43,78 @@ impl McpState {
     }
 }
 
+/// Opt out of per-workspace identity scoping: set this (truthy) to pin **one** identity for a
+/// `PARLER_HOME` across every workspace, for a user who deliberately wants a single agent regardless
+/// of where `parler mcp` is launched. Absent it, each workspace gets its own identity (the default,
+/// so a live session shows every agent, not a single collapsed member).
+const SHARED_IDENTITY_ENV: &str = "PARLER_SHARED_IDENTITY";
+
+/// The un-scoped home whose `mcp.log` breadcrumb we keep writing to even after scoping `PARLER_HOME`
+/// down into a per-workspace subdir — so `parler doctor` (run outside the workspace) still finds the
+/// log where it has always lived. Set once by [`scope_identity_to_workspace`].
+static LOG_ROOT: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+
+/// Namespace this `parler mcp` process's identity by its **workspace** (the working directory), so two
+/// agents launched on one machine get *distinct* hub identities instead of collapsing onto one saved
+/// `config.json` — the bug where a 3-agent session shows a single member, because every process read
+/// and re-registered the same id (idempotent add) and signed every message as the same author.
+///
+/// The seam is a single `PARLER_HOME` redirect done *before* any identity resolution, so the identity,
+/// the active-session pointer, and everything else keyed off `home_dir()` follow consistently — no
+/// scattered path plumbing. Restart-stable: the same workspace re-derives the same home, so the agent
+/// keeps its id across restarts (only a genuinely different workspace mints a new one).
+///
+/// It can only ever *add* isolation, never regress an existing flat setup: it no-ops (keeping the one
+/// flat identity) when [`SHARED_IDENTITY_ENV`] is set or the working directory can't be determined.
+/// `parler connect`'s per-host `PARLER_HOME` still applies — this just subdivides it per workspace, so
+/// two windows of the same wired host no longer share one identity.
+fn scope_identity_to_workspace() {
+    if env_flag(SHARED_IDENTITY_ENV) {
+        return;
+    }
+    let Some(key) = workspace_key() else {
+        return; // No usable CWD → leave the flat home (no worse than before).
+    };
+    let base = parler_connector::home_dir();
+    // Pin the breadcrumb log to the un-scoped home so `parler doctor` keeps finding it in one place,
+    // instead of it fragmenting into every per-workspace subdir.
+    let _ = LOG_ROOT.set(base.join("mcp.log"));
+    std::env::set_var("PARLER_HOME", workspace_home(&base, &key));
+}
+
+/// The stable key identifying the current workspace: its canonicalized working directory. `None` when
+/// there's no usable CWD, so the caller falls back to the flat (un-scoped) home.
+fn workspace_key() -> Option<String> {
+    let cwd = std::env::current_dir().ok()?;
+    let canon = std::fs::canonicalize(&cwd).unwrap_or(cwd);
+    Some(canon.to_string_lossy().into_owned())
+}
+
+/// The per-workspace identity home: `<base>/ws/<hash(key)>`. A stable 64-bit FNV-1a hash keeps the
+/// path short and — unlike `std`'s `DefaultHasher`, whose output isn't guaranteed stable across runs
+/// or std versions — maps a given workspace to the *same* home every launch, so the identity persists
+/// across restarts.
+fn workspace_home(base: &std::path::Path, key: &str) -> std::path::PathBuf {
+    base.join("ws").join(fnv1a_hex(key))
+}
+
+/// 64-bit FNV-1a as 16 lowercase hex chars — a tiny, dependency-free, deterministic hash (we only need
+/// a stable short directory name from a path, not cryptographic strength).
+fn fnv1a_hex(s: &str) -> String {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in s.as_bytes() {
+        h ^= u64::from(*b);
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("{h:016x}")
+}
+
 /// Connect to the hub, then serve the MCP JSON-RPC loop on stdin/stdout until EOF.
 pub async fn serve_stdio() -> Result<()> {
+    // Give each workspace its own identity *before* any identity resolution, so two agents launched on
+    // one machine (two Claude Code windows, or Claude + Codex sharing a wired PARLER_HOME) don't
+    // collapse onto one saved identity — one hub member, one message author. See the fn doc.
+    scope_identity_to_workspace();
     let cfg = match load_or_bootstrap_config() {
         Ok(c) => c,
         Err(e) => {
@@ -303,9 +373,12 @@ fn apply_overrides(
     cfg
 }
 
-/// Where the MCP connection breadcrumb log lives (`~/.parler/mcp.log`).
+/// Where the MCP connection breadcrumb log lives (`~/.parler/mcp.log`). Pinned to the un-scoped home
+/// captured by [`scope_identity_to_workspace`] when workspace scoping is active, so it doesn't
+/// fragment into per-workspace subdirs and `parler doctor` keeps finding it in one place; otherwise
+/// the plain `home_dir()` default.
 fn mcp_log_path() -> std::path::PathBuf {
-    parler_connector::home_dir().join("mcp.log")
+    LOG_ROOT.get().cloned().unwrap_or_else(|| parler_connector::home_dir().join("mcp.log"))
 }
 
 const LOG_KEEP: usize = 200;
@@ -1477,6 +1550,16 @@ async fn open_session(
         }
         format!("claude mcp add parler {env} -- parler mcp")
     };
+    // Mint the read-only WATCH code up front so the host already has it. The #1 confusion is pasting the
+    // *join* KEY into the web/desktop viewer — that 401s and reads as "invalid or expired". Give the watch
+    // code the same lifetime as the session key so it can't expire mid-session. Best-effort: an older hub
+    // that can't mint one keeps the session open and falls back to the manual `parler_watch_session`.
+    let watch_line = match state.agent.mint_watch_token(&room, Some(ttl_secs.unwrap_or(24 * 3600))).await {
+        Ok((token, _)) => format!(
+            "WATCH code — the user pastes THIS (not the KEY) into the web/desktop viewer to watch read-only: {token}\n"
+        ),
+        Err(_) => "parler_watch_session mints a read-only WATCH code for the web/desktop session viewer.\n".to_string(),
+    };
     Ok(format!(
         "session open — room '{room}', now your active session.\n\
          KEY: {code}@{hub}\n\
@@ -1485,8 +1568,8 @@ async fn open_session(
          Either lands them in this same conversation, caught up — no copy-paste. The `@{hub}` on the \
          KEY carries this hub, so a teammate whose default hub differs still lands here.\n\
          {gate}\n\
+         {watch_line}\
          Keep late joiners cheap: parler_remember key=\"session-digest\" room=\"{room}\" text=\"SESSION DIGEST: …\" (re-save to update).\n\
-         parler_watch_session gives the user a read-only web viewer code.\n\
          link: {url}",
         code = inv.code,
         hub = state.agent.hub_url,
@@ -1982,7 +2065,7 @@ fn tool_specs() -> Vec<Value> {
     vec![
         tool(
             "parler_open_session",
-            "Open a shared live session; returns a KEY to hand another agent so it joins already caught up. `context` posts first — recap task/decisions/files/state. Joiners need your approval by default (confirm with the user). Becomes your active session (send/recv need no room).",
+            "Open a shared live session; returns a KEY to hand another agent so it joins already caught up, plus a read-only WATCH code the user pastes into the web/desktop viewer (do NOT paste the KEY there). `context` posts first — recap task/decisions/files/state. Joiners need your approval by default (confirm with the user). Becomes your active session (send/recv need no room).",
             json!({
                 "context": { "type": "string", "description": "recap of the conversation/state to catch up joiners" },
                 "topic": { "type": "string", "description": "short session name" },
@@ -2348,8 +2431,10 @@ mod tests {
     const SEND_RENDER_BUDGET: usize = 2_000;
     /// `open_session` result string (P1.4 trim). Measured 615 chars on the public hub; a private-hub
     /// one-liner adds a PARLER_HUB/PARLER_JOIN_SECRET env, so leave headroom. Keeps the prose from
-    /// bloating back up.
-    const OPEN_RESULT_BUDGET: usize = 800;
+    /// bloating back up. Auto-minting the read-only WATCH code up front (so the host never pastes the
+    /// join KEY into the viewer — that 401s) adds the 32-char token + a one-line label, ~200 B → ~815;
+    /// ceiling → 900 to restore headroom.
+    const OPEN_RESULT_BUDGET: usize = 900;
 
     /// A body of exactly `len` ASCII chars (deterministic sizing for budget assertions).
     fn body_of(len: usize) -> String {
@@ -2366,6 +2451,55 @@ mod tests {
                 .await
                 .unwrap();
         }
+    }
+
+    // ---- per-workspace identity (two same-machine agents don't collapse into one member) ----------
+
+    #[test]
+    fn workspace_home_is_stable_per_workspace_and_distinct_across_them() {
+        // The seam that fixes the collapse: each workspace maps to its *own* identity home under the
+        // shared base, deterministically (same workspace → same home every launch, so the id is stable
+        // across restarts) and distinctly (a different workspace → a different home → its own identity).
+        let base = std::path::Path::new("/home/u/.parler/agents/claude-code");
+        let a1 = workspace_home(base, "/work/proj-a");
+        let a2 = workspace_home(base, "/work/proj-a");
+        let b = workspace_home(base, "/work/proj-b");
+
+        assert_eq!(a1, a2, "same workspace re-derives the same home → id persists across restarts");
+        assert_ne!(a1, b, "a different workspace gets its own home → its own identity");
+        assert!(a1.starts_with(base.join("ws")), "scoped under <base>/ws/");
+        // The tag is the stable FNV-1a hash of the workspace key, not std's unstable DefaultHasher.
+        assert_eq!(a1.file_name().unwrap().to_str().unwrap(), fnv1a_hex("/work/proj-a"));
+        assert_eq!(fnv1a_hex("/work/proj-a").len(), 16, "16 hex chars");
+        assert_ne!(fnv1a_hex("/work/proj-a"), fnv1a_hex("/work/proj-b"));
+    }
+
+    #[tokio::test]
+    async fn two_same_machine_identities_show_as_two_members() {
+        // End state the fix guarantees: two agents launched on one machine — which, before scoping,
+        // shared one saved `config.json` and collapsed onto a *single* hub member (the reported bug) —
+        // now carry the two distinct identities their two workspace homes mint, so a live session's
+        // roster shows both. (`workspace_home_…` above proves the two homes are distinct; a fresh home
+        // mints a fresh identity, exactly as these two Configs stand in for.)
+        let hub = start_hub().await;
+        let mut ws_a = state(&hub, "claude-code-tam").await; // same wired name…
+        let mut ws_b = state(&hub, "claude-code-tam").await; // …distinct identity (distinct workspace)
+        assert_ne!(
+            ws_a.agent.id, ws_b.agent.id,
+            "two workspaces = two identities, even under one wired PARLER_NAME"
+        );
+
+        // Workspace A opens a session (a multi-use channel key); workspace B joins it.
+        let inv = ws_a.agent.invite(RoomKind::Channel, Some("tutor-project".into()), None, None).await.unwrap();
+        ws_b.agent.join(&inv.code).await.unwrap();
+
+        // The hub's roster — what the desktop app and the website `/session` viewer render — lists both,
+        // keyed by their distinct ids, not one collapsed member.
+        let roster = ws_a.agent.roster(&inv.room).await.unwrap();
+        let ids: std::collections::HashSet<_> = roster.iter().map(|e| e.id.clone()).collect();
+        assert_eq!(ids.len(), 2, "two distinct members, not one collapsed identity: {roster:?}");
+        assert!(ids.contains(&ws_a.agent.id));
+        assert!(ids.contains(&ws_b.agent.id));
     }
 
     #[tokio::test]
@@ -2880,7 +3014,9 @@ mod tests {
         // Every actionable artifact survives the P1.4 trim.
         assert!(opened.contains("link:"), "share link present");
         assert!(opened.contains("session-digest"), "digest guidance present");
-        assert!(opened.contains("parler_watch_session"), "watch-viewer pointer present");
+        // Opening a session mints the read-only web/desktop viewer code up front (against a current hub),
+        // so the host never reaches for the join KEY in the viewer (which 401s).
+        assert!(opened.contains("WATCH code"), "watch-viewer code minted up front");
         assert!(alice.active_session.is_some());
         // P1.4: the result is trimmed. The one-liner + a variable-length key/link dominate; assert a
         // ceiling so the prose can't bloat back up.
