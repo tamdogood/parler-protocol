@@ -595,14 +595,22 @@ pub async fn run() -> Result<()> {
 }
 
 async fn connect() -> Result<MeshAgent> {
-    connect_with_hub(None).await
+    connect_with_hub(None, None).await
 }
 
-/// Connect, optionally overriding the configured hub for *this* command only (identity and config
-/// are untouched on disk). Used by a **portable session join** (`<key>@<hub>`): a joiner whose default
-/// hub differs from where the session lives dials the session's hub for that one call, so the key is
-/// self-contained — the lightest form of cross-hub handoff, with no hub-to-hub federation.
-async fn connect_with_hub(hub_override: Option<&str>) -> Result<MeshAgent> {
+/// Connect, optionally overriding the configured hub — and its join secret — for *this* command only
+/// (identity and config are untouched on disk). Used by a **portable descriptor** (`<code>@<hub>` or
+/// `<code>@<hub>#<secret>`): a joiner whose default hub differs from where the session lives dials the
+/// session's hub for that one call, presenting the descriptor's secret if it carried one, so the code
+/// is self-contained — the lightest form of cross-hub handoff, with no hub-to-hub federation.
+async fn connect_with_hub(hub_override: Option<&str>, secret_override: Option<&str>) -> Result<MeshAgent> {
+    // A descriptor's secret is paired with its hub, so it's authoritative for this command. The
+    // connector reads PARLER_JOIN_SECRET from the environment at handshake (and again on reconnect),
+    // so set it here before connecting — no connector API or wire change. This process is a one-shot
+    // CLI command, so mutating its env for the rest of the run is safe.
+    if let Some(secret) = secret_override {
+        std::env::set_var("PARLER_JOIN_SECRET", secret);
+    }
     // One env/config precedence rule for the whole CLI: hub/name/role resolve through the same
     // `explicit env > saved config > default` helper the MCP server uses, so `parler` and
     // `parler mcp` on the same machine can never dial different hubs (issue #99).
@@ -652,16 +660,54 @@ async fn connect_with_hub(hub_override: Option<&str>) -> Result<MeshAgent> {
     })
 }
 
-/// Split a **portable session key** `<code>@<hub>` into its code and optional host hub. A bare code
-/// or a full join link (which carries a `:`/`/` in its scheme/path) is returned unchanged — only a
-/// short code followed by `@<hub>` is treated as portable, so a normal key/link never mis-parses.
-fn split_portable_key(key: &str) -> (String, Option<String>) {
-    if let Some((code, hub)) = key.split_once('@') {
-        if !code.is_empty() && !hub.is_empty() && !code.contains([':', '/']) {
-            return (code.to_string(), Some(hub.to_string()));
+/// A pasted invite/session key, decomposed. A **portable descriptor** carries the hub the code was
+/// minted on (`<code>@<hub>`) and, for a secret-gated private/team hub, its join secret too
+/// (`<code>@<hub>#<secret>`) — so one string fully onboards a stranger, not just points at the hub.
+#[derive(Debug, PartialEq)]
+struct PortableKey {
+    /// The bare code to redeem against the hub.
+    code: String,
+    /// The host hub to dial for this join, when the descriptor names one.
+    hub: Option<String>,
+    /// The join secret to present at the handshake, when the descriptor carries one.
+    secret: Option<String>,
+}
+
+/// Parse a pasted key into its [`PortableKey`] parts. A bare code or a full join link (which carries a
+/// `:`/`/` in its scheme/path) yields just the code — only a short code followed by `@<hub>` is treated
+/// as portable, so a normal key/link never mis-parses. An optional `#<secret>` after the hub is the
+/// join secret. `#` never appears in a ws hub URL, so it's an unambiguous delimiter.
+fn split_portable_key(key: &str) -> PortableKey {
+    if let Some((code, rest)) = key.split_once('@') {
+        if !code.is_empty() && !rest.is_empty() && !code.contains([':', '/']) {
+            // `rest` is `<hub>` or `<hub>#<secret>`; split on the first `#` (hubs never contain one).
+            let (hub, secret) = match rest.split_once('#') {
+                Some((h, s)) if !h.is_empty() => (h.to_string(), (!s.is_empty()).then(|| s.to_string())),
+                _ => (rest.to_string(), None),
+            };
+            return PortableKey { code: code.to_string(), hub: Some(hub), secret };
         }
     }
-    (key.to_string(), None)
+    PortableKey { code: key.to_string(), hub: None, secret: None }
+}
+
+/// The portable descriptor to hand another agent: `<code>@<hub>`, plus `#<secret>` when this agent is
+/// on a secret-gated hub, so one string carries hub *and* secret. The secret is read from this
+/// process's `PARLER_JOIN_SECRET` — the same source the connector presents at the handshake — so a
+/// descriptor is only secret-bearing when the minting agent itself needed a secret. **It must then be
+/// shared like a password.**
+fn portable_descriptor(code: &str, hub: &str) -> String {
+    let secret = std::env::var("PARLER_JOIN_SECRET").ok().filter(|s| !s.is_empty());
+    portable_descriptor_with(code, hub, secret.as_deref())
+}
+
+/// Pure core of [`portable_descriptor`], with the join secret passed in (kept env-free so it's unit
+/// testable without mutating this process's `PARLER_JOIN_SECRET`, which the connect path also reads).
+fn portable_descriptor_with(code: &str, hub: &str, secret: Option<&str>) -> String {
+    match secret {
+        Some(secret) => format!("{code}@{hub}#{secret}"),
+        None => format!("{code}@{hub}"),
+    }
 }
 
 /// The hub returns a bare `invalid or unknown invite code` for any code it doesn't hold — and the
@@ -1045,20 +1091,28 @@ async fn cmd_invite(a: InviteArgs) -> Result<()> {
         println!("  parler session requests --room {0}    parler session approve --room {0} <id>", inv.room);
         println!();
     }
-    // Lead with the *portable* code — the trailing `@<hub>` carries this hub, so it redeems even when
-    // the other agent's default hub differs (the usual cause of "invalid or unknown invite code" on a
-    // cross-hub hand-off). The bare code still works for an agent already on this hub.
-    println!("Hand it to another agent and have it run:  parler join {}@{}", inv.code, ag.hub_url);
-    println!("  (already on this hub? the bare code works too:  parler join {})", inv.code);
+    // Lead with the *portable* descriptor — the trailing `@<hub>` carries this hub (and `#<secret>`
+    // when the hub is secret-gated), so it redeems even when the other agent's default hub differs
+    // (the usual cause of "invalid or unknown invite code" on a cross-hub hand-off). The bare code
+    // still works for an agent already on this hub.
+    let descriptor = portable_descriptor(&inv.code, &ag.hub_url);
+    println!("Hand it to another agent and have it run:  parler join {descriptor}");
+    if descriptor.contains('#') {
+        println!("  ⚠ this carries your hub's join secret — share it like a password.");
+    } else {
+        println!("  (already on this hub? the bare code works too:  parler join {})", inv.code);
+    }
     Ok(())
 }
 
 async fn cmd_join(code: String) -> Result<()> {
-    // A portable code `<code>@<hub>` carries the hub that minted it, so a joiner whose default hub
-    // differs still lands in the right room (same trick as `session join`). Dial the embedded hub for
-    // this one call; a bare code redeems against the configured hub, unchanged.
-    let (bare, hub_override) = split_portable_key(&code);
-    let mut ag = connect_with_hub(hub_override.as_deref()).await?;
+    // A portable descriptor `<code>@<hub>[#<secret>]` carries the hub that minted it (and its join
+    // secret when gated), so a joiner whose default hub differs still lands in the right room (same
+    // trick as `session join`). Dial the embedded hub — presenting the secret — for this one call; a
+    // bare code redeems against the configured hub, unchanged.
+    let pk = split_portable_key(&code);
+    let (bare, hub_override) = (pk.code, pk.hub);
+    let mut ag = connect_with_hub(hub_override.as_deref(), pk.secret.as_deref()).await?;
     let hub = ag.hub_url.clone();
     let (room, kind) = ag
         .join(&bare)
@@ -1153,13 +1207,18 @@ async fn cmd_bring(a: BringArgs) -> Result<()> {
 }
 
 async fn cmd_session(c: SessionCmd) -> Result<()> {
-    // A portable session key may embed the host hub (`<code>@<hub>`) so a joiner whose default hub
-    // differs still lands in the right room; dial that hub for the join, the configured one otherwise.
-    let hub_override = match &c {
-        SessionCmd::Join { key, .. } => split_portable_key(key).1,
-        _ => None,
+    // A portable session key may embed the host hub (`<code>@<hub>`) and its join secret
+    // (`#<secret>`) so a joiner whose default hub differs still lands in the right room, even on a
+    // secret-gated hub; dial that hub — presenting the secret — for the join, the configured one
+    // otherwise.
+    let (hub_override, secret_override) = match &c {
+        SessionCmd::Join { key, .. } => {
+            let pk = split_portable_key(key);
+            (pk.hub, pk.secret)
+        }
+        _ => (None, None),
     };
-    let mut ag = connect_with_hub(hub_override.as_deref()).await?;
+    let mut ag = connect_with_hub(hub_override.as_deref(), secret_override.as_deref()).await?;
     match c {
         SessionCmd::Open { context, topic, no_approval, ttl, max_uses } => {
             let require_approval = !no_approval;
@@ -1183,18 +1242,24 @@ async fn cmd_session(c: SessionCmd) -> Result<()> {
                 println!("  approve / reject:   parler session approve --room {0} <id>  |  parler session deny --room {0} <id>", inv.room);
                 println!();
             }
-            // Lead with the *portable* key — the trailing `@<hub>` carries this hub, so a joiner on a
-            // *different* default hub still lands here without also being told PARLER_HUB (redeemed by
-            // `session join <code>@<hub>`). The bare key still works for an agent already on this hub.
-            println!("Hand the key to another agent:  parler session join {}@{}", inv.code, ag.hub_url);
-            println!("  (already on this hub? the bare key works too:  parler session join {})", inv.code);
+            // Lead with the *portable* key — the trailing `@<hub>` carries this hub (and `#<secret>`
+            // when the hub is secret-gated), so a joiner on a *different* default hub still lands here
+            // without also being told PARLER_HUB/PARLER_JOIN_SECRET (redeemed by
+            // `session join <code>@<hub>[#<secret>]`). The bare key still works on this hub.
+            let descriptor = portable_descriptor(&inv.code, &ag.hub_url);
+            println!("Hand the key to another agent:  parler session join {descriptor}");
+            if descriptor.contains('#') {
+                println!("  ⚠ this carries your hub's join secret — share it like a password.");
+            } else {
+                println!("  (already on this hub? the bare key works too:  parler session join {})", inv.code);
+            }
             println!("…or launch its MCP server with env  PARLER_SESSION_KEY={}", inv.code);
             println!();
             println!("Watch it live in your browser:  parler session watch --room {}", inv.room);
         }
         SessionCmd::Join { key, once } => {
-            // Strip any `@<hub>` (already applied to the connection above) before redeeming the code.
-            let code = split_portable_key(&key).0;
+            // Strip any `@<hub>[#<secret>]` (already applied to the connection above) before redeeming.
+            let code = split_portable_key(&key).code;
             let hub = ag.hub_url.clone();
             // An approval-gated session holds us as a pending request until the host admits us.
             let room = match ag
@@ -2462,23 +2527,47 @@ mod tests {
     use super::*;
     use std::sync::Arc;
 
+    fn pk(code: &str, hub: Option<&str>, secret: Option<&str>) -> PortableKey {
+        PortableKey { code: code.into(), hub: hub.map(Into::into), secret: secret.map(Into::into) }
+    }
+
     #[test]
-    fn portable_session_key_splits_code_and_hub() {
+    fn portable_session_key_splits_code_hub_and_secret() {
         // The portable form carries the host hub; the code is stripped before redeeming and the hub
         // dials that host.
         assert_eq!(
             split_portable_key("A3KELDJR@wss://parler-hub.fly.dev"),
-            ("A3KELDJR".into(), Some("wss://parler-hub.fly.dev".into()))
+            pk("A3KELDJR", Some("wss://parler-hub.fly.dev"), None)
         );
-        // A bare code is unchanged (no hub override).
-        assert_eq!(split_portable_key("A3KELDJR"), ("A3KELDJR".into(), None));
+        // …and, for a secret-gated hub, the join secret after `#` — one string, hub *and* secret.
+        assert_eq!(
+            split_portable_key("A3KELDJR@ws://10.0.0.4:7070#Pd9TW46EG4Pt"),
+            pk("A3KELDJR", Some("ws://10.0.0.4:7070"), Some("Pd9TW46EG4Pt"))
+        );
+        // A bare code is unchanged (no hub/secret override).
+        assert_eq!(split_portable_key("A3KELDJR"), pk("A3KELDJR", None, None));
         // A full join link (scheme/path on the left of any `@`) must NOT be mis-split into a hub.
         assert_eq!(
             split_portable_key("https://parler-hub.fly.dev/join/A3KELDJR"),
-            ("https://parler-hub.fly.dev/join/A3KELDJR".into(), None)
+            pk("https://parler-hub.fly.dev/join/A3KELDJR", None, None)
         );
-        // A trailing `@` with no hub is not portable.
-        assert_eq!(split_portable_key("A3KELDJR@"), ("A3KELDJR@".into(), None));
+        // A trailing `@` with no hub is not portable; a trailing `#` with no secret is just the hub.
+        assert_eq!(split_portable_key("A3KELDJR@"), pk("A3KELDJR@", None, None));
+        assert_eq!(split_portable_key("A3KELDJR@ws://h#"), pk("A3KELDJR", Some("ws://h"), None));
+    }
+
+    #[test]
+    fn portable_descriptor_appends_the_join_secret_only_when_gated() {
+        // No secret (public/shared hub) → hub-only descriptor.
+        assert_eq!(
+            portable_descriptor_with("A3KELDJR", "wss://parler-hub.fly.dev", None),
+            "A3KELDJR@wss://parler-hub.fly.dev"
+        );
+        // On a secret-gated hub the minting agent has a join secret → fold it in as `#<secret>`.
+        assert_eq!(
+            portable_descriptor_with("A3KELDJR", "ws://10.0.0.4:7070", Some("s3cr3t")),
+            "A3KELDJR@ws://10.0.0.4:7070#s3cr3t"
+        );
     }
 
     #[test]

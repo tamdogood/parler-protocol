@@ -608,14 +608,20 @@ async fn call_tool(agent: &mut MeshAgent, name: &str, args: &Value) -> Result<St
             let inv = agent
                 .invite(kind, s("name"), args.get("ttl_secs").and_then(Value::as_u64), u32opt("max_uses"))
                 .await?;
+            // The portable descriptor carries this hub (and its join secret when gated), so it works
+            // even if the other agent's default hub differs — one string, no separate PARLER_HUB.
+            let descriptor = crate::portable_descriptor(&inv.code, &agent.hub_url);
+            let secret_note = if descriptor.contains('#') {
+                "\n(this carries your hub's join secret — share it like a password)"
+            } else {
+                ""
+            };
             Ok(format!(
                 "invite ready — {kind} room '{room}'.\ncode: {code}\n\
-                 The other agent calls parler_join with the portable code (carries this hub, so it \
-                 works even if that agent's default hub differs):  {code}@{hub}\nlink: {url}",
+                 The other agent calls parler_join with the portable code:  {descriptor}{secret_note}\nlink: {url}",
                 kind = inv.kind.as_str(),
                 room = inv.room,
                 code = inv.code,
-                hub = agent.hub_url,
                 url = inv.url,
             ))
         }
@@ -1549,16 +1555,29 @@ fn same_hub(a: &str, b: &str) -> bool {
 /// *different* hub fails with the exact fix (which hub to relaunch on) instead of the hub's cryptic
 /// "invalid or unknown invite code".
 fn portable_code_for_hub(key: &str, agent_hub: &str) -> Result<String> {
-    let (code, hub) = crate::split_portable_key(key);
-    if let Some(hub) = hub {
-        if !same_hub(&hub, agent_hub) {
+    let pk = crate::split_portable_key(key);
+    if let Some(hub) = &pk.hub {
+        if !same_hub(hub, agent_hub) {
+            // A gated hub also needs its join secret; fold it into the relaunch line when the
+            // descriptor carried one, so the fix is complete.
+            let secret_env = pk
+                .secret
+                .as_deref()
+                .map(|s| format!(" PARLER_JOIN_SECRET={s}"))
+                .unwrap_or_default();
+            let connect_secret = pk
+                .secret
+                .as_deref()
+                .map(|s| format!(" --join-secret {s}"))
+                .unwrap_or_default();
             bail!(
                 "this invite is on hub {hub}, but your Parler MCP server is connected to {agent_hub}. \
-                 Relaunch it with PARLER_HUB={hub} (e.g. `parler connect --hub {hub}`), then try again."
+                 Relaunch it with PARLER_HUB={hub}{secret_env} (e.g. \
+                 `parler connect --hub {hub}{connect_secret}`), then try again."
             );
         }
     }
-    Ok(code)
+    Ok(pk.code)
 }
 
 /// A bare code the hub doesn't hold surfaces as "invalid or unknown invite code" — and for a
@@ -2697,6 +2716,17 @@ mod tests {
             .to_string();
         assert!(err.contains("ws://127.0.0.1:7071"), "names the invite's hub: {err}");
         assert!(err.contains("PARLER_HUB=ws://127.0.0.1:7071"), "shows the relaunch fix: {err}");
+        // A gated hub's descriptor also carries a secret → the relaunch line includes it, so the fix
+        // is complete (hub + secret).
+        let gated = portable_code_for_hub("ZX6Y2QPX@ws://10.0.0.4:7070#s3cr3t", "wss://parler-hub.fly.dev")
+            .unwrap_err()
+            .to_string();
+        assert!(gated.contains("PARLER_JOIN_SECRET=s3cr3t"), "folds the secret into the fix: {gated}");
+        // Same hub, even with a secret suffix → strip both and redeem the bare code locally.
+        assert_eq!(
+            portable_code_for_hub("ZX6Y2QPX@wss://parler-hub.fly.dev#s3cr3t", "wss://parler-hub.fly.dev").unwrap(),
+            "ZX6Y2QPX"
+        );
     }
 
     #[test]

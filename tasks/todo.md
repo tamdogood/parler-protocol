@@ -42,6 +42,29 @@ A portable form `<code>@<hub>` already exists, but:
 ## Gate
 - [ ] `make ci` green (clippy -D warnings, tests, fmt untouched by hand).
 
+## Follow-up: portable descriptor optionally carries the join secret
+Format: `<code>@<hub>#<secret>` — so one string fully onboards a stranger to a secret-gated
+private/team hub (hub *and* secret), not just points at the hub.
+
+- [ ] `split_portable_key` → parse optional `#<secret>`; return a `PortableKey { code, hub, secret }`.
+- [ ] `portable_descriptor(code, hub)` → append `#<secret>` from this process's PARLER_JOIN_SECRET
+      when the hub is secret-gated (same source the connector presents).
+- [ ] `connect_with_hub(hub, secret)` → set PARLER_JOIN_SECRET from the descriptor's secret for the
+      command (connector reads it from env at handshake; no connector API / wire change).
+- [ ] `cmd_join` + `cmd_session` Join: thread the parsed secret; hand off via `portable_descriptor`.
+- [ ] `cmd_invite` + `session open`: hand off `portable_descriptor`; warn "share like a password"
+      when it carries a secret.
+- [ ] MCP: `portable_code_for_hub` reads the struct (secret ignored — single persistent conn); its
+      different-hub error includes `PARLER_JOIN_SECRET=<secret>` in the relaunch line when present;
+      `parler_invite` output uses `portable_descriptor`.
+- [x] Tests: secret parsing; `portable_descriptor` gated/ungated (env-free pure helper to dodge a
+      parallel-test env race); MCP relaunch hint includes the secret.
+- [x] Docs: agent-mesh.md portable section — the `#<secret>` form + "share like a password" caveat +
+      command-table rows.
+- [x] make ci green + E2E against a secret-gated hub (secret in the handoff; stranger with no env
+      secret + dead default hub joins via the full descriptor; secretless descriptor correctly
+      rejected `this hub requires a join secret`).
+
 ## Review — ✅ DONE
 - **CLI** (`lib.rs`): `explain_unknown_code` signposts the wrong-hub error; `cmd_join` now accepts
   `<code>@<hub>` (strips + dials the embedded hub) and wraps the error; `cmd_invite` + `session open`

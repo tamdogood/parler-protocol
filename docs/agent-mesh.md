@@ -150,12 +150,24 @@ portable form to use instead — no more guessing.
 parler join A3KELDJR@wss://parler-hub.fly.dev
 ```
 
+**Secret-gated hubs** (a private/team hub) also need their join secret, so the descriptor optionally
+carries it too: `<code>@<hub>#<secret>`. When the minting agent is itself on a gated hub (it has
+`PARLER_JOIN_SECRET` set), `parler invite` / `parler session open` append the secret automatically, so
+one string fully onboards a stranger — hub *and* secret — with nothing else to configure. Because that
+string now embeds the join secret, **share it like a password** (the same rule as the `--team`
+teammate one-liner). The join presents the secret for that one command; your saved config is untouched.
+
+```bash
+# host on a private hub prints:  parler join A3KELDJR@ws://10.0.0.4:7070#Pd9TW…  ⚠ shared like a password
+parler join A3KELDJR@ws://10.0.0.4:7070#Pd9TW46EG4PtEzpC4mg6zheFFsMNRTgV
+```
+
 **Through the MCP tools** (`parler_join`, `parler_join_session`) it works the same *when the code
 names the agent's own hub*. A `parler mcp` server dials exactly one hub for its whole life (issue
 #99), so it can't transparently cross hubs; hand it a code for a *different* hub and it fails with the
-exact fix — relaunch the server with `PARLER_HUB=<that-hub>` (or `parler connect --hub <that-hub>`) —
-rather than the cryptic error. The invite/session output the tools return already hands off the
-portable `<code>@<hub>`.
+exact fix — relaunch the server with `PARLER_HUB=<that-hub>` (folding in `PARLER_JOIN_SECRET=<secret>`
+when the descriptor carried one), or `parler connect --hub <that-hub>` — rather than the cryptic error.
+The invite/session output the tools return already hands off the portable `<code>@<hub>[#<secret>]`.
 
 This is the lightest slice of cross-hub handoff — a portable *descriptor*, borrowed from ACP's
 distributed sessions, with **no hub-to-hub protocol**. It does not replicate history between hubs or
@@ -285,8 +297,8 @@ with the `HandoffRef` type and the banner, is in
 | `parler hub` | run the bus + memory store |
 | `parler init` | create this agent's identity, point it at a hub |
 | `parler invite [--group N\|--service N] [--ttl][--max-uses]` | mint a pairing code/link (default: 1:1 DM) |
-| `parler join <code\|link>` | redeem a pasted invite — a `<code>@<hub>` dials that hub so it joins from any default hub |
-| `parler session open [--context C][--topic T][--no-approval][--ttl][--max-uses]` / `session join <key> [--once]` | open a shared session (prints a key + a portable `<code>@<hub>` for joiners on another hub; approval-gated by default) / join one — a `<code>@<hub>` dials that hub (prints the context, then stays connected; `--once` to exit after printing) |
+| `parler join <code\|link>` | redeem a pasted invite — a `<code>@<hub>[#<secret>]` dials that hub (presenting the secret on a gated hub) so it joins from any default hub |
+| `parler session open [--context C][--topic T][--no-approval][--ttl][--max-uses]` / `session join <key> [--once]` | open a shared session (prints a key + a portable `<code>@<hub>[#<secret>]` for joiners on another/private hub; approval-gated by default) / join one — a `<code>@<hub>[#<secret>]` dials that hub (prints the context, then stays connected; `--once` to exit after printing) |
 | `parler session requests --room R` / `session approve --room R <id>` / `session deny --room R <id>` | list pending joiners / admit one / reject one (owner only) |
 | `parler session watch --room R [--ttl]` | mint a read-only watch code to view the session from the website (owner only) |
 | `parler serve <svc>` | join a service queue as a worker |
