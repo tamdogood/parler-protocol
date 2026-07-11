@@ -11,9 +11,11 @@ import { DialInList } from "@/components/dial-in";
 /** First-run setup: a welcome, then connect the first agent to the auto-started local hub. */
 export function Onboarding({
   status,
+  autoConnect,
   onFinish,
 }: {
   status: HubStatus | null;
+  autoConnect: boolean;
   onFinish: () => void;
 }) {
   const [step, setStep] = useState(0);
@@ -28,7 +30,11 @@ export function Onboarding({
     <div className="canvas-glow fixed inset-0 z-50 flex items-center justify-center bg-black">
       <div className="drag absolute inset-x-0 top-0 h-11" />
       <div className="relative z-10 w-full max-w-[520px] px-8">
-        {step === 0 ? <Welcome onNext={start} /> : <ConnectFirst status={status} onFinish={onFinish} />}
+        {step === 0 ? (
+          <Welcome onNext={start} />
+        ) : (
+          <ConnectFirst status={status} autoConnect={autoConnect} onFinish={onFinish} />
+        )}
         <div className="mt-8 flex items-center justify-center gap-1.5">
           {[0, 1].map((i) => (
             <span key={i} className={cn("h-1 rounded-full transition-all", i === step ? "w-6 bg-electric-blue" : "w-1.5 bg-graphite-rail")} />
@@ -71,10 +77,19 @@ function Welcome({ onNext }: { onNext: () => void }) {
   );
 }
 
-function ConnectFirst({ status, onFinish }: { status: HubStatus | null; onFinish: () => void }) {
+function ConnectFirst({
+  status,
+  autoConnect,
+  onFinish,
+}: {
+  status: HubStatus | null;
+  autoConnect: boolean;
+  onFinish: () => void;
+}) {
   const [installed, setInstalled] = useState<McpHost[] | null>(null);
   const [snippet, setSnippet] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [autoTried, setAutoTried] = useState(false);
   const [result, setResult] = useState<ConnectAllResult | null>(null);
   const localUrl = useHubUrl("local", status);
 
@@ -96,6 +111,18 @@ function ConnectFirst({ status, onFinish }: { status: HubStatus | null; onFinish
     }
   };
 
+  // Zero-click setup: once the hub is up and agents are detected, wire them all automatically the
+  // first time through. We only auto-try once — a failed/partial wire drops to the manual button
+  // below so the user stays in control and can retry.
+  useEffect(() => {
+    if (!autoConnect || autoTried || busy || done) return;
+    if (!ready || !hasAgents) return;
+    setAutoTried(true);
+    void connect();
+    // `connect` is stable enough for this one-shot trigger; deps track the readiness gates only.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoConnect, autoTried, busy, done, ready, hasAgents]);
+
   return (
     <div className="text-center">
       <div className="flex justify-center">
@@ -103,9 +130,11 @@ function ConnectFirst({ status, onFinish }: { status: HubStatus | null; onFinish
           <Terminal className="size-5" />
         </span>
       </div>
-      <h2 className="mt-5 text-[22px] font-semibold tracking-tight text-pure-white">Connect your agents</h2>
+      <h2 className="mt-5 text-[22px] font-semibold tracking-tight text-pure-white">Connecting your agents</h2>
       <p className="mx-auto mt-1.5 max-w-sm text-[13px] text-fog">
-        Adding the MCP server is the whole setup — each agent mints its identity the first time it launches.
+        {autoConnect
+          ? "We're wiring every agent on this Mac to your hub for you — each mints its identity the first time it launches."
+          : "Adding the MCP server is the whole setup — each agent mints its identity the first time it launches."}
       </p>
 
       {!ready && (
@@ -142,7 +171,15 @@ function ConnectFirst({ status, onFinish }: { status: HubStatus | null; onFinish
                 <p className="mt-0.5 truncate text-[12px] text-steel">{installed!.map((h) => h.name).join(", ")}</p>
               </div>
               <Button variant="primary" size="sm" onClick={connect} disabled={busy || !ready}>
-                {busy ? <Loader2 className="size-3.5 animate-spin" /> : <Sparkles className="size-3.5" />} Connect all
+                {busy ? (
+                  <>
+                    <Loader2 className="size-3.5 animate-spin" /> Connecting…
+                  </>
+                ) : (
+                  <>
+                    <Sparkles className="size-3.5" /> Connect all
+                  </>
+                )}
               </Button>
             </div>
             {result && result.results.some((r) => r.status !== "wired") && (
