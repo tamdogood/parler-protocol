@@ -1028,9 +1028,9 @@ fn run_remove(opts: &Options) -> Result<()> {
 /// `~/.parler/config.json`) instead of orphaning it and creating a second — see [`run`].
 fn env_for(id: &str, opts: &Options, hub_url: &str, secret: Option<&str>, adopt_bare: bool) -> Vec<(String, String)> {
     let home = if adopt_bare { parler_root() } else { parler_root().join("agents").join(id) };
-    // Default the display name to `<host>-<user>` (e.g. `claude-code-tam`) instead of the bare host
-    // id — otherwise every Claude Code on the shared hub registers as "claude-code" and name-DMs are
-    // ambiguous (issue #103). An explicit `--name` is honored verbatim.
+    // Default the display name to a fun `adjective-animal-<tag>` handle (seeded on `<host>-<user>`)
+    // instead of the bare host id — otherwise every Claude Code on the shared hub registers as
+    // "claude-code" and name-DMs are ambiguous (issue #103). An explicit `--name` is honored verbatim.
     let name = opts.name.clone().unwrap_or_else(|| default_agent_name(id));
     let mut v = vec![
         ("PARLER_HOME".to_string(), home.to_string_lossy().into_owned()),
@@ -1052,14 +1052,18 @@ fn env_home(env: &[(String, String)]) -> PathBuf {
         .unwrap_or_else(parler_root)
 }
 
-/// The default `PARLER_NAME` for a wired host: `<host>-<user>` (e.g. `claude-code-tam`), so the
-/// shared hub doesn't fill up with identical "claude-code" cards. Falls back to the bare host id
-/// when there's no usable `$USER`. Sanitized to lowercase `[a-z0-9-]` so it's a clean handle.
+/// The default `PARLER_NAME` for a wired host: a fun `adjective-animal-<tag>` handle (e.g.
+/// `mellow-otter-a3f2`) so the shared directory reads like a room of characters, not a spreadsheet
+/// of `claude-code` clones. Seeded on `<host>-<user>` so it's stable — re-running `parler connect`
+/// for the same host + user keeps the same name (idempotent wiring), and two hosts on one machine
+/// (or two users) land on different handles (issue #103). Falls back to seeding on the bare host id
+/// when there's no usable `$USER`.
 fn default_agent_name(host_id: &str) -> String {
-    match std::env::var("USER").ok().map(|u| sanitize_name_part(&u)).filter(|u| !u.is_empty()) {
+    let seed = match std::env::var("USER").ok().map(|u| sanitize_name_part(&u)).filter(|u| !u.is_empty()) {
         Some(user) => format!("{host_id}-{user}"),
         None => host_id.to_string(),
-    }
+    };
+    crate::names::fun_name(&seed)
 }
 
 /// Lowercase and keep only `[a-z0-9-]`, collapsing anything else to `-`, so a raw `$USER` (which can
@@ -1183,8 +1187,12 @@ fn emit_human(opts: &Options, hub_url: &str, secret: Option<&str>, minted_secret
 fn emit_json(opts: &Options, hub_url: &str, secret: Option<&str>, binpath: &str, reports: &[Report], snippets: &[(String, String)]) {
     let results: Vec<Value> = reports
         .iter()
+        // `card_name` is the `PARLER_NAME` this host was wired with — the exact name its directory
+        // card carries once it dials in. The desktop dial-in indicator matches on this, not on the
+        // bare host `id`, so it survives the fun-handle default (`env_for` uses the same fallback).
         .map(|r| json!({ "id": r.id, "name": r.name, "status": r.status, "detail": r.detail, "config": r.config,
-                          "hub": r.hub, "kept": r.kept, "restart": restart_hint(&r.id) }))
+                          "hub": r.hub, "kept": r.kept, "restart": restart_hint(&r.id),
+                          "card_name": opts.name.clone().unwrap_or_else(|| default_agent_name(&r.id)) }))
         .collect();
     let snips: Vec<Value> = snippets.iter().map(|(l, t)| json!({ "label": l, "text": t })).collect();
     let run_hub = match &opts.hub {
@@ -1600,16 +1608,15 @@ mod tests {
     }
 
     #[test]
-    fn default_agent_name_disambiguates_by_user() {
-        // #103: the default name carries the user so the shared hub isn't all "claude-code".
-        // (USER is set in practically every environment CI runs in.)
-        if let Ok(u) = std::env::var("USER") {
-            let expected = format!("claude-code-{}", sanitize_name_part(&u));
-            if !sanitize_name_part(&u).is_empty() {
-                assert_eq!(default_agent_name("claude-code"), expected);
-                assert_ne!(default_agent_name("claude-code"), "claude-code");
-            }
-        }
+    fn default_agent_name_disambiguates_by_host() {
+        // #103: the default name is a fun handle seeded on `<host>-<user>`, so two hosts on the same
+        // machine don't both register as the bare host id and DMs stay unambiguous. Deterministic, so
+        // a re-run of `parler connect` keeps the same name.
+        let codex = default_agent_name("codex");
+        let claude = default_agent_name("claude-code");
+        assert_eq!(default_agent_name("codex"), codex, "deterministic per host+user");
+        assert_ne!(codex, "codex", "not the bare host id");
+        assert_ne!(codex, claude, "two hosts get distinct handles");
     }
 
     #[test]
@@ -1752,8 +1759,8 @@ mod tests {
         let without = env_for("codex", &opts, "wss://h", None, false);
         assert!(!without.iter().any(|(k, _)| k == "PARLER_JOIN_SECRET"));
         assert!(
-            without.iter().any(|(k, v)| k == "PARLER_NAME" && (v == "codex" || v.starts_with("codex-"))),
-            "default name is codex or codex-<user>"
+            without.iter().any(|(k, v)| k == "PARLER_NAME" && *v == default_agent_name("codex")),
+            "default name is the fun handle seeded on this host"
         );
     }
 

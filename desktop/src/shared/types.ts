@@ -92,6 +92,10 @@ export interface ConnectResult {
   /** "wired" | "removed" | "not-configured" | "error". */
   status: string;
   detail: string;
+  /** The `PARLER_NAME` this host was wired with — the exact name its directory card carries once it
+   * dials in. The dial-in indicator matches on this (not the bare host `id`), so it survives the fun
+   * `adjective-animal-<tag>` default name. */
+  card_name?: string;
 }
 
 /** Result of wiring every detected agent in one action. */

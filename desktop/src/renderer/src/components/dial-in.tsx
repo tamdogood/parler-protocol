@@ -12,7 +12,7 @@ import { parler } from "@/lib/ipc";
  * Local hub only: a freshly wired agent registers private-by-default, which the app can read on its
  * own hub (auto-minted directory token) but not on the shared public hub.
  */
-export function DialInList({ base, hosts }: { base: string; hosts: { id: string; name: string }[] }) {
+export function DialInList({ base, hosts }: { base: string; hosts: { id: string; name: string; card: string }[] }) {
   const seen = useDialIn(base, hosts);
   if (hosts.length === 0) return null;
   return (
@@ -20,7 +20,7 @@ export function DialInList({ base, hosts }: { base: string; hosts: { id: string;
       <p className="mb-2 text-[11px] uppercase tracking-wide text-steel">Restart each agent — they light up here as they connect</p>
       <div className="flex flex-col gap-1.5">
         {hosts.map((h) => {
-          const online = seen.has(h.id.toLowerCase());
+          const online = seen.has(h.card.toLowerCase());
           return (
             <div key={h.id} className="flex items-center gap-2 text-[12.5px]">
               {online ? (
@@ -43,10 +43,11 @@ export function DialInList({ base, hosts }: { base: string; hosts: { id: string;
 /**
  * Poll the local directory and accumulate the set of agent names seen online. Latching (a seen agent
  * stays seen) so a brief idle→offline blip after connecting doesn't flip a confirmed agent back — this
- * is a one-time "it connected" signal, not a live presence indicator. Names are matched against the
- * `PARLER_NAME` each host is wired with, which `parler connect` defaults to the host id.
+ * is a one-time "it connected" signal, not a live presence indicator. Names are matched against each
+ * host's `card` — the `PARLER_NAME` it was wired with (a fun `adjective-animal-<tag>` handle by
+ * default), which is exactly what its directory card carries once it dials in.
  */
-function useDialIn(base: string, hosts: { id: string; name: string }[]): Set<string> {
+function useDialIn(base: string, hosts: { id: string; name: string; card: string }[]): Set<string> {
   const [seen, setSeen] = useState<Set<string>>(new Set());
   const key = hosts.map((h) => h.id).join(",");
   useEffect(() => {

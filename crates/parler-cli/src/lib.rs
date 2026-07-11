@@ -7,6 +7,7 @@
 pub mod bring;
 pub mod connect;
 pub mod mcp;
+pub(crate) mod names;
 
 use anyhow::{bail, Result};
 use clap::{Args, Parser, Subcommand};
@@ -312,7 +313,7 @@ struct InitArgs {
     /// Hub address/URL (host:port, ws://, or parler://).
     #[arg(long, default_value = "parler://127.0.0.1:7070")]
     hub: String,
-    /// Display name (defaults to $USER).
+    /// Display name (defaults to a fun `adjective-animal-<tag>` handle).
     #[arg(long)]
     name: Option<String>,
     /// The role this agent plays (planner, reviewer, …).
@@ -1015,10 +1016,12 @@ fn cmd_init(a: InitArgs) -> Result<()> {
     if Config::exists() && !a.force {
         bail!("already initialized — pass --force to overwrite the existing identity");
     }
-    let name = a
-        .name
-        .unwrap_or_else(|| std::env::var("USER").unwrap_or_else(|_| "agent".into()));
-    let cfg = Config::create(a.hub, name, a.role)?;
+    // No `--name`? Mint the identity first, then give it a fun `adjective-animal-<tag>` handle
+    // seeded on its unique id — the same default `parler mcp` bootstraps, so both entry points agree.
+    let mut cfg = Config::create(a.hub, a.name.clone().unwrap_or_else(|| "agent".into()), a.role)?;
+    if a.name.is_none() {
+        cfg.name = crate::names::fun_name(&cfg.identity.id);
+    }
     cfg.save()?;
     println!("✓ identity created");
     println!("  id:   {}", cfg.identity.id);

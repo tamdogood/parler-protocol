@@ -1,39 +1,33 @@
-# Add popular agents to `parler connect`
+# Fun agent names + richer session-open output
 
-Goal: make `parler connect` (and the desktop app picker, a thin driver over the same registry)
-wire the most popular MCP agents — starting with the one that bit users (OpenCode) plus the
-highest-traffic editors. One registry drives both surfaces, so this is a CLI-only change.
-
-## Verified config formats
-- **OpenCode** — `~/.config/opencode/opencode.json`, top-level `mcp`, entry `{type:"local",
-  command:[bin,"mcp"], enabled:true, environment:{…}}`.
-- **VS Code** (Copilot) — `~/Library/Application Support/Code/User/mcp.json` (macOS) /
-  `~/.config/Code/User/mcp.json` (Linux), top-level `servers`, entry `{type:"stdio", command, args, env}`.
-- **Cline** — `…/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json`,
-  top-level `mcpServers`, standard entry (`command`, `args`, `env`).
-- Skipped this pass: Zed (ambiguous flat-vs-nested `command` shape), Continue (moved to YAML).
+## Goal
+1. Give agents fun, random-looking default names (e.g. `mellow-otter-a3f2`) instead of
+   `codex-tam` / `claude-code-tam` / `$USER-suffix`.
+2. When a session/room is opened, surface the agent's own name (and keep the watch code)
+   in the `parler_open_session` output so the host can relay it.
 
 ## Plan
-- [ ] Generalize `Wiring::Json(path)` → `Json { path, key, shape }` + `JsonShape { Standard, OpenCode, VsCode }`.
-- [ ] Teach the JSON writer/reader/remover/snippet about `key` + `shape` (env field is `environment`
-      for OpenCode, `env` otherwise; command is an array for OpenCode).
-- [ ] Add OpenCode, VS Code, Cline to `registry()` + `canonical_id` aliases + `restart_hint` arms.
-- [ ] Unit tests: write→read-back→remove for OpenCode + VS Code shapes; keep the existing 4 green.
-- [ ] Docs: update the connect/agent tables in `README.md`, `AGENTS.md`, `docs/agent-mesh.md`.
-- [ ] `make ci` green.
+- [x] Add `crates/parler-cli/src/names.rs` — deterministic `fun_name(seed)` → `adjective-animal-<hex>`.
+- [x] Wire `fun_name` into `connect.rs::default_agent_name` (seed = `<host>-<user>`).
+- [x] Wire `fun_name` into `mcp.rs::load_or_bootstrap_config` + `lib.rs::cmd_init` (seed = minted nkey id).
+- [x] Add the agent name line to `open_session` output.
+- [x] Update affected unit tests + removed dead `name_suffix`.
+- [x] Docs: README env table + rustdoc.
+- [x] `make ci` green + desktop typecheck green.
+
+## Follow-on (surfaced while implementing)
+Fun names broke a latent assumption in the desktop **dial-in indicator**: it matched the bare host
+id (`codex`) against directory card names, but cards carry the wired `PARLER_NAME` (already
+`codex-<user>` since #103, now a fun handle). Fixed by surfacing `card_name` in `connect --json`
+(the exact wired name, recomputed deterministically) and matching the indicator on it.
 
 ## Review
-- Generalized `Wiring::Json(path)` → `Json { path, key, shape }` + `JsonShape { Standard, OpenCode,
-  VsCode }`; `env_field()` handles OpenCode's `environment` vs everyone's `env`. The 4 existing JSON
-  hosts moved to `Standard` with **no behavior change** (all prior tests still green).
-- Added OpenCode, VS Code, Cline to `registry()` + `canonical_id` aliases + `restart_hint` arms.
-  Registry is the single source of truth, so the desktop app's per-agent picker gets all three for
-  free via `parler connect --list --json` — **zero TypeScript changes**.
-- New unit tests round-trip the OpenCode + VS Code shapes (write → read-back via `configured_env` →
-  remove), asserting no cross-shape key leakage. `cargo test connect::` = 28 passed.
-- **Live-verified**: `parler connect --list` shows all three; a real wire into a sandbox HOME writes a
-  correct `opencode.json` (`mcp` key, `command` array, `environment`, `type:"local"`, `enabled:true`,
-  per-agent `PARLER_HOME`) — the exact config OpenCode needs to expose `parler_*` tools.
-- Docs synced (no drift): README prose (×2) + per-host table (+3 rows), AGENTS.md, docs/agent-mesh.md.
-- Skipped Zed (ambiguous flat-vs-nested `command` shape) + Continue (YAML migration) — flagged as
-  easy follow-ups once verified on a real install. `make ci` fully green.
+- New: `crates/parler-cli/src/names.rs` (fun-name generator + tests).
+- `connect.rs`: `default_agent_name` → fun handle; `emit_json` adds `card_name`; tests updated.
+- `mcp.rs`: bootstrap uses fun name; `open_session` surfaces `you are '<name>'`; budget 900→960;
+  removed dead `name_suffix` + test; #103 test rewritten around `fun_name`.
+- `lib.rs`: `parler init` default → fun name.
+- Desktop: `card_name` threaded through `ConnectResult` → `DialInList` matches on it.
+- README + rustdoc naming descriptions refreshed.
+- Verified: `parler init` → `jolly-falcon-34b1`; `connect` per-host distinct fun names;
+  `open_session` renders the name line (885 B, ≤960); `card_name` == wired `PARLER_NAME`.

@@ -264,7 +264,7 @@ pub(crate) fn start_hub_hint(hub_url: &str) -> String {
 /// persist it to `PARLER_HOME`, so the agent's id stays stable across restarts. Override any of the
 /// defaults with env vars in the MCP server config:
 ///   - `PARLER_HUB`  — hub to dial (default: the public hub; use `ws://host:port` for a private one)
-///   - `PARLER_NAME` — display name (default: `$USER`, else `agent`)
+///   - `PARLER_NAME` — display name (default: a fun `adjective-animal-<tag>` handle)
 ///   - `PARLER_ROLE` — role advertised on the card (planner, reviewer, …)
 ///
 /// The precedence is **explicit env var > saved config > default**, matching how
@@ -272,24 +272,6 @@ pub(crate) fn start_hub_hint(hub_url: &str) -> String {
 /// single source of truth: both `parler mcp` and the CLI's [`crate::connect`]-time agent resolve
 /// their hub/name/role through here, so a re-run of `parler connect` that rewrites the env block
 /// genuinely moves/renames the agent on next launch instead of being silently ignored.
-/// A short, stable, lowercase handle suffix derived from an agent id (its nkey public key). Used to
-/// disambiguate otherwise-identical default names (#103): the id is unique, so the last few of its
-/// characters make a cheap unique-ish tag like the `7k2f` in `claude-code-tam-7k2f`.
-fn name_suffix(id: &str) -> String {
-    let tail: String = id
-        .chars()
-        .filter(|c| c.is_ascii_alphanumeric())
-        .collect::<Vec<_>>()
-        .into_iter()
-        .rev()
-        .take(4)
-        .collect::<Vec<_>>()
-        .into_iter()
-        .rev()
-        .collect();
-    tail.to_ascii_lowercase()
-}
-
 pub(crate) fn load_or_bootstrap_config() -> Result<Config> {
     if Config::exists() {
         // A saved identity keeps its stable id + seed, but its hub/name/role follow the live env so
@@ -302,18 +284,17 @@ pub(crate) fn load_or_bootstrap_config() -> Result<Config> {
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| DEFAULT_PUBLIC_HUB.to_string());
     let explicit_name = std::env::var("PARLER_NAME").ok().filter(|s| !s.is_empty());
-    let base = explicit_name
-        .clone()
-        .or_else(|| std::env::var("USER").ok())
-        .unwrap_or_else(|| "agent".into());
+    // A placeholder base for `Config::create`; overwritten below with a fun handle when the name
+    // wasn't set explicitly.
+    let base = explicit_name.clone().unwrap_or_else(|| "agent".into());
     let role = std::env::var("PARLER_ROLE").ok().filter(|s| !s.is_empty());
-    let mut cfg = Config::create(hub, base.clone(), role)?;
-    // Unique-by-default (issue #103): when the name wasn't set explicitly (bare `parler mcp`, where
-    // it would otherwise default to `$USER`), append a short suffix derived from the freshly-minted
-    // agent id so two fresh identities on the same hub don't both register as the same "$USER".
-    // An explicit PARLER_NAME (e.g. what `parler connect` wires) is honored verbatim.
+    let mut cfg = Config::create(hub, base, role)?;
+    // Fun-and-unique-by-default (issue #103): when the name wasn't set explicitly (bare `parler mcp`),
+    // give the agent a playful `adjective-animal-<tag>` handle seeded on its freshly-minted, unique
+    // agent id — so it reads like a character instead of `$USER`, and two fresh identities on the same
+    // hub don't collide. An explicit PARLER_NAME (e.g. what `parler connect` wires) is honored verbatim.
     if explicit_name.is_none() {
-        cfg.name = format!("{base}-{}", name_suffix(&cfg.identity.id));
+        cfg.name = crate::names::fun_name(&cfg.identity.id);
     }
     cfg.save()?;
     // First-run visibility: announce the freshly minted identity so a user (or `parler doctor`) can
@@ -1562,6 +1543,7 @@ async fn open_session(
     };
     Ok(format!(
         "session open — room '{room}', now your active session.\n\
+         you are '{me}' here — that's the name teammates see in this session.\n\
          KEY: {code}@{hub}\n\
          Give a teammate the KEY (they call parler_join_session) or this ready-to-run one-liner:\n    \
          {oneliner}\n\
@@ -1571,6 +1553,7 @@ async fn open_session(
          {watch_line}\
          Keep late joiners cheap: parler_remember key=\"session-digest\" room=\"{room}\" text=\"SESSION DIGEST: …\" (re-save to update).\n\
          link: {url}",
+        me = state.agent.name,
         code = inv.code,
         hub = state.agent.hub_url,
         url = inv.url,
@@ -2433,8 +2416,9 @@ mod tests {
     /// one-liner adds a PARLER_HUB/PARLER_JOIN_SECRET env, so leave headroom. Keeps the prose from
     /// bloating back up. Auto-minting the read-only WATCH code up front (so the host never pastes the
     /// join KEY into the viewer — that 401s) adds the 32-char token + a one-line label, ~200 B → ~815;
-    /// ceiling → 900 to restore headroom.
-    const OPEN_RESULT_BUDGET: usize = 900;
+    /// ceiling → 900. Surfacing the agent's own name ("you are '<name>' here …") so the host can relay
+    /// who's in the room adds ~70 B → ~885; ceiling → 960 to restore headroom.
+    const OPEN_RESULT_BUDGET: usize = 960;
 
     /// A body of exactly `len` ASCII chars (deterministic sizing for budget assertions).
     fn body_of(len: usize) -> String {
@@ -2914,15 +2898,6 @@ mod tests {
     }
 
     #[test]
-    fn name_suffix_is_a_stable_lowercase_tag() {
-        // Deterministic, lowercase, alphanumeric, and short.
-        let s = name_suffix("UABCDXYZ1234");
-        assert_eq!(s, name_suffix("UABCDXYZ1234"), "deterministic");
-        assert_eq!(s, "1234");
-        assert!(s.chars().all(|c| c.is_ascii_alphanumeric() && !c.is_ascii_uppercase()));
-    }
-
-    #[test]
     fn same_hub_ignores_scheme_and_trailing_slash() {
         assert!(same_hub("wss://parler-hub.fly.dev", "https://parler-hub.fly.dev"));
         assert!(same_hub("wss://parler-hub.fly.dev/", "wss://parler-hub.fly.dev"));
@@ -2949,13 +2924,13 @@ mod tests {
 
     #[test]
     fn two_fresh_identities_get_distinct_default_names() {
-        // #103 AC1: with no explicit PARLER_NAME, two freshly-minted identities must not collide on
-        // the same bare "$USER" — the id-derived suffix makes them distinct.
-        let a = Config::create("ws://h", "tam", None).unwrap();
-        let b = Config::create("ws://h", "tam", None).unwrap();
+        // #103 AC1: with no explicit PARLER_NAME, two freshly-minted identities must not collide —
+        // the fun handle seeded on each unique agent id makes them distinct.
+        let a = Config::create("ws://h", "agent", None).unwrap();
+        let b = Config::create("ws://h", "agent", None).unwrap();
         assert_ne!(a.identity.id, b.identity.id, "two mints have distinct ids");
-        let name_a = format!("tam-{}", name_suffix(&a.identity.id));
-        let name_b = format!("tam-{}", name_suffix(&b.identity.id));
+        let name_a = crate::names::fun_name(&a.identity.id);
+        let name_b = crate::names::fun_name(&b.identity.id);
         assert_ne!(name_a, name_b, "distinct ids ⇒ distinct default names: {name_a} vs {name_b}");
     }
 
@@ -3017,6 +2992,11 @@ mod tests {
         // Opening a session mints the read-only web/desktop viewer code up front (against a current hub),
         // so the host never reaches for the join KEY in the viewer (which 401s).
         assert!(opened.contains("WATCH code"), "watch-viewer code minted up front");
+        // The opener's own name is surfaced so the host can relay who's in the room.
+        assert!(
+            opened.contains(&format!("you are '{}'", alice.agent.name)),
+            "opener's name is surfaced:\n{opened}"
+        );
         assert!(alice.active_session.is_some());
         // P1.4: the result is trimmed. The one-liner + a variable-length key/link dominate; assert a
         // ceiling so the prose can't bloat back up.

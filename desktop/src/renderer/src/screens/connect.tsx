@@ -232,7 +232,9 @@ function ConnectAllCard({
       {result && result.connected > 0 && target === "local" && localUrl && (
         <DialInList
           base={localUrl}
-          hosts={result.results.filter((r) => r.status === "wired").map((r) => ({ id: r.id, name: r.name }))}
+          hosts={result.results
+            .filter((r) => r.status === "wired")
+            .map((r) => ({ id: r.id, name: r.name, card: r.card_name ?? r.id }))}
         />
       )}
     </div>
