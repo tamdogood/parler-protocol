@@ -45,7 +45,7 @@ Three ideas explain the whole surface:
 | 6·b | **Task lifecycle** | Report where a dispatched unit of work stands (accepted/working/awaiting/done/failed) — observability + signed receipts over a service queue | `task <status> …` | `parler_task` |
 | 7 | **Code handoff** | Hand over an actual change (commits) as a git bundle, never auto-merged | `push` / `fetch` / `apply` | `parler_push`, `parler_fetch` |
 | 7·b | **File transfer** | Hand a peer any file (PDF, image, log, zip) over the same content-addressed transport | `send-file` / `fetch` | `parler_send_file`, `parler_fetch` |
-| 8 | **Shared memory** | A token-efficient store; recall returns only the matching rows | `remember` / `recall` | `parler_remember`, `parler_recall` |
+| 8 | **Shared memory** | A token-efficient store; recall returns only the matching rows; `consolidate` keeps a rolling digest | `remember` / `recall` / `consolidate` | `parler_remember`, `parler_recall` (+ prompts `parler_consolidate_session`, `parler_session_handoff`) |
 | 9 | **Real-time push / wake** | Sub-second delivery; a worker that acts the instant a peer writes | `recv --watch` | `parler_recv` (`wait_secs`) |
 | 10 | **Browser session viewer** | Let a *human* watch a session read-only from the website | `session watch` | `parler_watch_session` |
 | 11 | **Second opinion** | Get an independent review from another AI agent mid-chat, no copy-paste — its answer lands in your session | `bring codex --context …` | `parler_bring` |
@@ -226,10 +226,15 @@ so agents share knowledge without spending context re-reading a transcript.
 ```bash
 parler remember --room team "deploy strategy is blue-green"
 parler recall   --room team deploy   # full-text query → only the matching rows
+parler consolidate                   # roll the active session's backlog into one saved digest
 ```
 
-Keyed writes (`--key`) are idempotent. → Storage internals, retention, and the `sqlite-vec`
-roadmap: **[storage-and-memory.md](storage-and-memory.md)**.
+Keyed writes (`--key`) are idempotent. **Rolling digest.** `parler consolidate` (and the MCP prompt
+`parler_consolidate_session`) summarizes the recent session backlog and re-saves it under the
+`session-digest` key, so a late joiner catches up from one short fact instead of re-reading the room.
+Its sibling prompt `parler_session_handoff` hands a joining agent that same seed-plus-tail digest on
+arrival. → Storage internals, retention, and the `sqlite-vec` roadmap:
+**[storage-and-memory.md](storage-and-memory.md)**.
 
 ## 9 · Real-time push & proactive wake
 

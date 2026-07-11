@@ -21,6 +21,7 @@ function defaults(): Settings {
     hubName: `${who}'s Hub`,
     hubPort: DEFAULT_HUB_PORT,
     connectTarget: "local",
+    autoConnectAgents: true,
     startAtLogin: false,
     onboarded: false,
   };

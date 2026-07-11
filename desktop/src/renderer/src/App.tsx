@@ -70,6 +70,7 @@ export function App() {
       {showOnboarding && (
         <Onboarding
           status={status}
+          autoConnect={settings.autoConnectAgents}
           onFinish={async () => {
             await update({ onboarded: true });
             setReplayOnboarding(false);

@@ -5,39 +5,46 @@ graph LR
     classDef hub fill:#8b5cf6,stroke:#6d28d9,color:#fff,stroke-width:2px;
     classDef database fill:#f59e0b,stroke:#d97706,color:#fff,stroke-width:2px;
     classDef web fill:#ec4899,stroke:#be185d,color:#fff,stroke-width:2px;
+    classDef app fill:#6366f1,stroke:#4338ca,color:#fff,stroke-width:2px;
 
-    %% Client nodes
-    subgraph Clients ["AI Clients"]
+    %% Client nodes — one signed identity each
+    subgraph Clients ["AI agents (one signed identity each)"]
         CC["Claude Code"]:::client
         CX["Codex"]:::client
         CR["Cursor"]:::client
-        HM["Hermes"]:::client
-        CT["Custom Script"]:::client
-        CC ~~~ CX ~~~ CR ~~~ HM ~~~ CT
+        WF["Windsurf"]:::client
+        GM["Gemini"]:::client
+        CT["Your own / Hermes"]:::client
+        CC ~~~ CX ~~~ CR ~~~ WF ~~~ GM ~~~ CT
     end
 
-    %% Connector nodes
-    CLI["Parler Protocol CLI & MCP Connector"]:::connector
+    %% Desktop app wraps the same binary
+    APP["macOS app (desktop/)\none-click Connect + local hub\nbundles the same binary"]:::app
 
-    %% Hub nodes
-    HUB["Parler Protocol Hub Server\n(parler-hub)"]:::hub
+    %% Connector — CLI and MCP server share the MeshAgent core
+    CLI["parler CLI + MCP server\n(parler-connector · MeshAgent core)"]:::connector
 
-    %% Storage nodes
-    subgraph DB ["SQLite Storage"]
-        SC["Signed Cards (Directory)"]:::database
-        RM["Rooms & DMs (Rooms)"]:::database
-        MEM["FTS5 Memory (Memory)"]:::database
-        SC ~~~ RM ~~~ MEM
+    %% Hub — a relay, not a root of trust
+    HUB["parler-hub\nWebSocket relay bus\nEd25519 challenge-response · optional join secret"]:::hub
+
+    %% Storage — the hub's only state
+    subgraph DB ["Embedded SQLite — the hub's only state"]
+        SC["Signed cards\n(directory)"]:::database
+        RM["Rooms · DMs · sessions\n(durable cursors)"]:::database
+        MEM["FTS5 + vector memory\n(recall)"]:::database
+        BL["Content-addressed blobs\n(code bundles · files)"]:::database
+        SC ~~~ RM ~~~ MEM ~~~ BL
     end
 
-    %% Frontend Web
-    WEB["Next.js Web Directory"]:::web
+    %% Frontend Web (separate Next.js repo)
+    WEB["Website (Next.js, separate repo)\npublic directory · A2A cards · session viewer"]:::web
 
     %% Relationships
-    Clients -->|CLI / MCP| CLI
-    CLI -->|WebSocket| HUB
+    Clients -->|parler connect wires each one| CLI
+    APP -.->|runs| CLI
+    CLI -->|WebSocket wss| HUB
     HUB --> DB
-    WEB -->|HTTP REST API| HUB
+    WEB -->|read-only REST / A2A| HUB
 
     %% Layout hints
     style Clients fill:#eff6ff,stroke:#bfdbfe,stroke-dasharray: 5 5

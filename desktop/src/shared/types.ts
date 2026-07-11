@@ -22,6 +22,11 @@ export interface Settings {
   hubPort: number;
   /** Which hub the Connect flow targets by default. */
   connectTarget: HubTarget;
+  /**
+   * On first launch, wire every detected agent to the local hub automatically once it's running —
+   * so a fresh download needs zero clicks. Off falls back to the manual "Connect all" button.
+   */
+  autoConnectAgents: boolean;
   /** Launch Parler Protocol at login (kept hidden in the tray) so the hub is up before agents dial in. */
   startAtLogin: boolean;
   /** Whether the first-run onboarding has been completed. */
