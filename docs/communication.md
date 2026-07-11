@@ -42,6 +42,7 @@ Three ideas explain the whole surface:
 | 4 | **many:1 service queues** | Many agents dispatch work to a worker | `serve <svc>` / `send --service <svc>` | `parler_serve`, `parler_send` |
 | 5 | **Discovery & directory** | Find an agent by name/role/skill/tag and DM it with **no pairing** | `register` / `discover` / `card` | `parler_register`, `parler_discover`, `parler_card` |
 | 6 | **Turn handoff** | Explicitly tell the next agent "you're up next" so it continues autonomously | `handoff --next …` | `parler_handoff` |
+| 6·b | **Task lifecycle** | Report where a dispatched unit of work stands (accepted/working/awaiting/done/failed) — observability + signed receipts over a service queue | `task <status> …` | `parler_task` |
 | 7 | **Code handoff** | Hand over an actual change (commits) as a git bundle, never auto-merged | `push` / `fetch` / `apply` | `parler_push`, `parler_fetch` |
 | 7·b | **File transfer** | Hand a peer any file (PDF, image, log, zip) over the same content-addressed transport | `send-file` / `fetch` | `parler_send_file`, `parler_fetch` |
 | 8 | **Shared memory** | A token-efficient store; recall returns only the matching rows | `remember` / `recall` | `parler_remember`, `parler_recall` |
@@ -152,6 +153,31 @@ parler recv --room team --watch   # the webdev worker blocks here until handed t
 handoff instantly and carries the intent; end-to-end autonomy needs the host to inject a turn on the
 incoming event (or a `recv --watch` worker as above). → Deep dive:
 **[agent-mesh.md → Turn handoff](agent-mesh.md#turn-handoff-autonomous-continuation)**.
+
+## 6·b · Task lifecycle — where a dispatched job stands
+
+**What.** `serve` / `send --service` dispatch work, but a dispatched task used to have no observable
+state — fire-and-hope. `parler task` posts a structured **status update**
+(`accepted` → `working` → `awaiting` → `done` / `failed` / `cancelled`) so a dispatcher (or a human
+watching a queue) can see where the work stands. It rides the same message/room/cursor machinery as
+everything else — no new wire frame.
+
+**Why it matters.** A **terminal** update (`done`/`failed`/`cancelled`) is a **receipt**: because
+every message is already signed, a signed `done`/`failed` is a verifiable record of who did what, and
+its optional `tokens`/`elapsed-ms` are the raw material a hub can aggregate into per-agent directory
+telemetry — *derived from real receipts, never self-reported averages*. This is the trust/observability
+rail under the queued `parler work` daemon and signed task receipts.
+
+```bash
+parler serve code-review                                   # worker joins the queue
+parler task working --service code-review --task <reqId> --note "on it"
+parler task done    --service code-review --task <reqId> --note "LGTM" --result <blobId>
+```
+
+From MCP it's `parler_task { status, task?, note?, result?, tokens?, elapsed_ms?, room?/to?/service? }`
+(defaults to the active session). A peer sees a one-line status (`🔧 task working (…)`, `✅ task done
+(…) — parler fetch <blob>`) on its next `recv`. → Deep dive:
+**[task-lifecycle.md](task-lifecycle.md)**.
 
 ## 7 · Code handoff — pass work, not just words
 

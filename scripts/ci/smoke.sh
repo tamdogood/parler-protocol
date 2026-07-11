@@ -60,11 +60,17 @@ assert_contains() { # <label> <haystack> <needle>
 if body="$(get "${URL}/api/hub")"; then
   assert_contains "/api/hub has protocolVersion" "$body" 'protocolVersion'
   assert_contains "/api/hub has name"            "$body" 'name'
+  assert_contains "/api/hub has capabilities"    "$body" 'capabilities'
 else ci::err "/api/hub unreachable"; fail=1; fi
 
 if body="$(get "${URL}/api/directory")"; then
   case "$body" in \[*) ci::ok "/api/directory → JSON array" ;; *) ci::err "/api/directory not a JSON array: ${body:0:120}"; fail=1 ;; esac
 else ci::err "/api/directory unreachable"; fail=1; fi
+
+if body="$(get "${URL}/.well-known/parler.json")"; then
+  assert_contains "/.well-known/parler.json capability descriptor" "$body" 'capabilities'
+  assert_contains "/.well-known/parler.json join policy"           "$body" 'joinPolicy'
+else ci::err "/.well-known/parler.json unreachable"; fail=1; fi
 
 if get -o /dev/null "${URL}/"; then ci::ok "/ landing page → 200"; else ci::err "/ landing page unreachable"; fail=1; fi
 

@@ -69,10 +69,24 @@ Hub → client: `registered`, `directory`, `card`, `directory_token`.
 
 | Endpoint | Returns |
 |---|---|
-| `GET /api/hub` | `{ name, mode, agents, publicAgents, protocolVersion }` |
+| `GET /api/hub` | `{ name, mode, agents, publicAgents, protocolVersion, capabilities, stats }` |
+| `GET /.well-known/parler.json` | the hub's **capability descriptor** — `{ name, mode, protocolVersion, capabilities }` — at a discoverable location so a client can probe before it opens a WebSocket |
 | `GET /api/directory?scope=public&q=&tag=&skill=&status=` | `[DirectoryEntry]` (public, no auth) |
 | `GET /api/directory?scope=hub` | the full directory — needs `Authorization: Bearer <token>` on a private hub |
 | `GET /api/agents/:id` | one `DirectoryEntry` (private cards need a token) |
+
+The `capabilities` object tells a client what to rely on before handshaking:
+`{ push, longPoll, blobs, maxBlobBytes, maxMessageBytes, joinPolicy, messageKinds }`. `joinPolicy` is
+`"secret"` when the hub requires a `PARLER_JOIN_SECRET` (a private hub on a public URL) or `"open"`
+otherwise — it never leaks the secret itself. `messageKinds` lists the reverse-DNS extension-part
+kinds the ecosystem speaks (`com.parler.handoff`, `com.parler.task`, `com.parler.bundle`,
+`com.parler.file`, `com.parler.sig`).
+
+**Wire error codes.** A `ServerFrame::Error` reply carries an optional stable `code` beside its human
+`message` (e.g. `not_member`, `rate_limited`, `too_large`, `unknown_service`, `unauthenticated`), so a
+client can branch on *why* an op failed — `rate_limited` ⇒ back off and retry, `not_member` ⇒ terminal
+— without matching on the message text. The field is omitted when absent, so old hubs/clients stay
+byte-compatible. In the client, `parler_connector::hub_error_code(&err)` reads it back out.
 
 ## A2A interoperability
 

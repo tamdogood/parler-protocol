@@ -1,3 +1,64 @@
+# Plan — ACP borrows: implement "Worth borrowing" (2026-07-10, branch moroni) — ✅ DONE
+
+Audited https://agentcommunicationprotocol.dev (now merged into A2A). Implemented all five borrows,
+each **additive + backward-compatible** with the deployed hub. `CI_SKIP_WEB=1 make ci` **green** (all
+gates: selftest · rust incl. clippy -D warnings + cargo doc -D warnings · audit).
+
+**Results:**
+- **Error codes** — `ServerFrame::Error` gained optional `code`; `parler_protocol::error_code` catalog
+  (16 stable classifiers) + shared `CodedError` (Display == message, so no string-behavior change); hub
+  codes ~20 sites via `coded()`/`error_frame()`; connector surfaces them (`hub_error_code`). Tests:
+  protocol codec round-trip (coded + uncoded) + `coded_error_displays…` + e2e `not_member` over the wire.
+- **Task lifecycle** — `com.parler.task` `TaskRef`/`TaskStatus` (extension part, zero hub change);
+  `parler task <status>` CLI + `parler_task` MCP tool (budget raised 13,200→14,200 for the 27th tool,
+  documented); one-line render (`✅/🔧/⏳/❌ task …`); terminal receipts carry `tokens`/`elapsedMs`.
+  Tests: codec + MCP e2e (peer sees the rendered working/done lines).
+- **Capability descriptor** — `/api/hub.capabilities` + `/.well-known/parler.json` (push/longPoll/blobs/
+  size caps/joinPolicy/messageKinds). Tests: smoke.rs (2 live-HTTP) + smoke.sh contract probes.
+- **Portable session key** — `session open` prints `<code>@<hub>`; `session join <code>@<hub>` dials that
+  hub (`connect_with_hub`); `split_portable_key` unit-tested.
+- **Docs** — new `docs/task-lifecycle.md` + `docs/patterns.md`; root `llms.txt`; updated communication.md,
+  discovery.md, agent-mesh.md, AGENTS.md, README.md; backlog follow-ons (hub-derived telemetry,
+  federation questions, `[HUMAN] web:` serve llms.txt).
+
+Originally-planned checklist (all complete):
+- [x] **P1 · Error codes on the wire** — `ServerFrame::Error` gains optional `code` (serde default,
+  skip-if-none) + a shared `error_code` catalog in `parler-protocol`; hub sets codes at the known
+  frame sites; connector surfaces them via a typed `HubError` (Display == message, so string behavior
+  is unchanged) a caller can downcast for the code. Tests: codec round-trip + coded-frame downcast.
+- [x] **P1 · Task lifecycle** (`com.parler.task`) — the centerpiece. New `TaskRef`/`TaskStatus` in
+  `parler-protocol` mirroring `HandoffRef` (extension part → zero hub change); terminal receipts carry
+  optional `tokens`/`elapsedMs` (feeds telemetry). `parler task <status>` CLI + `parler_task` MCP tool
+  (lean desc, watch the budget); render a one-line `✅/🔧/⏳/❌ task …`. Docs: `docs/task-lifecycle.md`
+  + communication.md row + AGENTS.md index. Tests: codec + CLI/MCP emit + render.
+- [x] **P2 · Hub capability descriptor** — extend `/api/hub` with a `capabilities` block + add
+  `/.well-known/parler.json` (mirrors the existing `/.well-known/agent-card.json`) so a client can
+  probe push/wait/blobs/joinPolicy/features before handshaking. Smoke + doc.
+- [x] **P2 · Portable session descriptor** — `session open` also prints a portable
+  `join <key>@<hub>` line; `session join` parses `key@hub` and dials that hub for the join (sugar over
+  `PARLER_HUB=… parler session join`). Design note in agent-mesh.md + backlog item for the deeper
+  cross-hub questions (auth, history availability). Tests: parse + hub override.
+- [x] **P2 · Doc/positioning** — `docs/patterns.md` (chaining/routing/parallel recipes over Parler
+  verbs), repo-root `llms.txt` (machine-readable doc index), and the telemetry design note folded into
+  `docs/task-lifecycle.md` + a backlog item ("hub-derived, not self-reported"). `[HUMAN] web:` serve
+  llms.txt from parlerprotocol.com.
+
+Verify: `scripts/verify.sh --rust-only` between phases; `CI_SKIP_WEB=1 make ci` (runs `cargo doc -D
+warnings`) before done. Never `cargo fmt`. Not committing/PRing unless asked.
+
+## Follow-up — MCP tool audit + description diet (2026-07-10)
+
+Audited the 27-tool `tools/list` surface (a permanent per-session context cost). Data-driven (per-tool
+byte breakdown): no tool is dead weight, but descriptions had crept back up (5,190 B). Dieted all 27
+descriptions — kept the load-bearing steering, cut verbosity — **no capability removed**:
+- specs 13,908 → **12,727 B** (−1,181), descriptions 5,190 → **4,297 B** (−893).
+- Net **below** the pre-`parler_task` baseline (12,945 B): the new tool now *reduces* the surface cost.
+- Budgets cut to lock it in: `TOOL_SPECS_BUDGET` 13,200 → **13,000**, `TOOL_DESC_BUDGET` 5,000 → **4,600**
+  (both *below* the originals despite +1 tool). `CI_SKIP_WEB=1 make ci` green.
+- Tool merge/retire (breaking) deferred to a deliberate call — candidates logged in `backlog.md`.
+
+---
+
 # E2E functional audit — durable-cursor fix (2026-07-09, branch nairobi)
 
 ## Audit verdict (live run, real binaries: hub + 4 CLI agents + MCP stdio)

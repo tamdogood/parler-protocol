@@ -28,12 +28,22 @@ use std::time::Duration;
 /// recovery command. The error style is documented in `CONTRIBUTING.md`; see issue #111.
 pub(crate) fn unexpected_reply(action: &str, frame: &ServerFrame) -> anyhow::Error {
     match frame {
-        ServerFrame::Error { message } => anyhow::anyhow!("couldn't {action}: {message}"),
+        ServerFrame::Error { message, .. } => anyhow::anyhow!("couldn't {action}: {message}"),
         _ => anyhow::anyhow!(
             "couldn't {action}: the hub sent an unexpected reply — the hub and client may be \
              running different versions. Run `parler doctor`."
         ),
     }
+}
+
+/// The stable [`parler_protocol::error_code`] classifier of a hub error, if it carried one.
+///
+/// Any error surfaced by [`MeshAgent`] that originated as a hub [`ServerFrame::Error`] with a `code`
+/// arrives as a downcastable [`parler_protocol::CodedError`]; this reads the classifier back out so a
+/// caller can branch on *why* an op failed (e.g. `Some("rate_limited")` ⇒ back off and retry) without
+/// matching on the human message. Returns `None` for an uncoded error (an old hub, or a local error).
+pub fn hub_error_code(err: &anyhow::Error) -> Option<&str> {
+    err.downcast_ref::<parler_protocol::CodedError>()?.code.as_deref()
 }
 
 /// The seam between [`MeshAgent`] and a concrete transport: send one request frame, get one reply.
@@ -86,7 +96,7 @@ mod error_style_tests {
         // prefix it with the action that failed. Never leak the raw frame Debug.
         let e = unexpected_reply(
             "send the message",
-            &ServerFrame::Error { message: "room 'x' does not exist".into() },
+            &ServerFrame::error("room 'x' does not exist"),
         );
         let s = e.to_string();
         assert!(s.contains("send the message"), "missing operation context: {s}");
