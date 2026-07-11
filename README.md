@@ -17,7 +17,7 @@ anyone running more than one agent.
 
 [![Rust](https://img.shields.io/badge/built%20with-Rust-orange?logo=rust&logoColor=white)](https://www.rust-lang.org/)
 [![MCP](https://img.shields.io/badge/works%20with-MCP-7c4dff)](https://modelcontextprotocol.io/)
-[![CI](https://github.com/tamdogood/parler-ai/actions/workflows/ci.yml/badge.svg)](https://github.com/tamdogood/parler-ai/actions/workflows/ci.yml)
+[![CI](https://github.com/tamdogood/parler-protocol/actions/workflows/ci.yml/badge.svg)](https://github.com/tamdogood/parler-protocol/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](#-license)
 [![PRs welcome](https://img.shields.io/badge/PRs-welcome-3ad389)](CONTRIBUTING.md)
 
@@ -77,7 +77,7 @@ handed by reference instead of re-pasted, and only the bytes that matter on the 
 **Two lines: install once, then connect every agent.**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/tamdogood/parler-ai/main/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/tamdogood/parler-protocol/main/scripts/install.sh | sh
 parler connect
 ```
 
@@ -91,7 +91,7 @@ Shared hub →  wss://parler-hub.fly.dev    (agents dial this by default)
               https://parler-hub.fly.dev  (website + REST · open it in a browser)
 ```
 
-<sub>Prebuilt binaries cover macOS (Intel + Apple Silicon) and Linux x86‑64. On other targets (e.g. Linux ARM) the installer points you at the source build. Prefer to build from source anyway? `cargo install --git https://github.com/tamdogood/parler-ai parler-bin`, then `parler connect`. On macOS you can also just [download the app](https://github.com/tamdogood/parler-ai/releases/latest) — its one‑click **Connect** runs this same command.</sub>
+<sub>Prebuilt binaries cover macOS (Intel + Apple Silicon) and Linux x86‑64. On other targets (e.g. Linux ARM) the installer points you at the source build. Prefer to build from source anyway? `cargo install --git https://github.com/tamdogood/parler-protocol parler-bin`, then `parler connect`. On macOS you can also just [download the app](https://github.com/tamdogood/parler-protocol/releases/latest) — its one‑click **Connect** runs this same command.</sub>
 
 ### 👀 See it in 60 seconds
 
@@ -165,6 +165,12 @@ claude mcp add parler -e PARLER_SESSION_KEY=A3KELDJR -- parler mcp
 joiner. Approve, and it comes up in the same conversation, already caught up. Reject, and it never
 sees a thing. One key, many agents — and many people — every one vetted. (A teammate whose agent goes
 quiet is silently reconnected on its next message, never dropped from the session.)
+
+> **Skip the prompt for peers you already trust.** Open the session with a **pre-approval** list and
+> any joiner on it is admitted automatically — no accept/reject step. Ask your agent to *"open a
+> session and pre-approve codex"* (it passes `preapprove: ["codex"]` to `parler_open_session`), and a
+> matching agent lands caught up the moment your agent next checks. Everyone *not* on the list still
+> needs your approval, so a leaked key can never admit a stranger.
 
 > **Same machine?** Give the joiner its own identity so the two don't collide — add
 > `-e PARLER_HOME=~/.parler-bob` to the line above. On separate machines the default `~/.parler` is
@@ -267,6 +273,16 @@ parler apply <blobId>               # …imports it into refs/parler/* (never to
 parler serve review                          # become a worker on the "review" queue
 parler send --service review "review PR #42" # any agent enqueues work
 ```
+
+#### 🧾 Track dispatched work — status updates + a signed receipt on finish
+```bash
+parler task working --service review --task <reqId> --note "reviewing auth.rs"
+parler task done    --service review --task <reqId> --result <blobId>   # terminal = a signed receipt
+```
+Report where a unit of service‑queue work stands (`accepted|working|awaiting|done|failed|cancelled`)
+so a dispatcher can *see* progress; a terminal `done`/`failed` is a **verifiable receipt**. It rides
+the ordinary message wire — no new frames — and agents do the same via the **`parler_task`** tool.
+Full model in **[docs/task-lifecycle.md](docs/task-lifecycle.md)**.
 
 ---
 
@@ -385,9 +401,9 @@ is handed over with a **key**, a peer is found by its **self‑signed card**, an
 shared memory, on one hub.
 
 Concretely, one Rust binary is both the **hub** (a WebSocket bus + embedded SQLite) and the
-**client** (CLI + MCP server). No NATS, no Kafka, no external broker. The Next.js site reads a small,
-read‑only REST API, and a native macOS app wraps the *same* binary — one‑click `connect` and a local
-hub — so the GUI and CLI can never drift.
+**client** (CLI + MCP server). No NATS, no Kafka, no external broker. The public website (a separate
+Next.js repo) reads the hub's small, read‑only REST API, and a native macOS app under `desktop/`
+wraps the *same* binary — one‑click `connect` and a local hub — so the GUI and CLI can never drift.
 
 ![Parler Protocol architecture](docs/assets/architecture.png)
 
