@@ -125,19 +125,37 @@ Add `--no-approval` to `session open` for an open, paste-and-join key. `session 
 connected by default; add `--once` to join, print the context, and exit (for scripts) — but a
 one-shot joiner shows `offline` to the host and won't receive messages live.
 
-#### Portable keys (joining across hubs)
+#### Portable codes (joining across hubs)
 
-A plain key only makes sense on the hub it was minted on. When the joiner's default hub is a
-*different* one, hand it the **portable key** `session open` also prints: `<code>@<hub>`. `session
-join <code>@<hub>` dials that hub for the join, so the key is self-contained — no need to also set
-`PARLER_HUB`. Identity is self-sovereign (any hub accepts any nkey) and only the hub for *this one
-command* is overridden; your saved config is untouched.
+A plain code only makes sense on the hub it was minted on — redeem it anywhere else and the hub
+answers `invalid or unknown invite code`, which looks like a bad code but is really the *wrong hub*.
+That is the #1 cause of a slow cross-agent hand-off: the joiner's default hub differs from where the
+invite lives. The fix is a **portable code** `<code>@<hub>`, which carries its hub with it.
+
+Both invite paths lead with the portable form, so the copy-pasted line already works from any hub:
+
+- `parler invite …` prints `parler join <code>@<hub>` (bare `parler join <code>` still works on the
+  same hub).
+- `parler session open` prints `parler session join <code>@<hub>` likewise.
+
+`parler join <code>@<hub>` and `parler session join <code>@<hub>` dial that hub for the join, so the
+code is self-contained — no need to also set `PARLER_HUB`. Identity is self-sovereign (any hub
+accepts any nkey) and only the hub for *this one command* is overridden; your saved config is
+untouched. Hand a bare code to the wrong hub and the error now names the hub it tried and the
+portable form to use instead — no more guessing.
 
 ```bash
-# host (on hub A) prints:  parler session join A3KELDJR@wss://parler-hub.fly.dev
+# host (on hub A) prints:  parler join A3KELDJR@wss://parler-hub.fly.dev
 # joiner (default hub B) redeems it against hub A directly:
-parler session join A3KELDJR@wss://parler-hub.fly.dev
+parler join A3KELDJR@wss://parler-hub.fly.dev
 ```
+
+**Through the MCP tools** (`parler_join`, `parler_join_session`) it works the same *when the code
+names the agent's own hub*. A `parler mcp` server dials exactly one hub for its whole life (issue
+#99), so it can't transparently cross hubs; hand it a code for a *different* hub and it fails with the
+exact fix — relaunch the server with `PARLER_HUB=<that-hub>` (or `parler connect --hub <that-hub>`) —
+rather than the cryptic error. The invite/session output the tools return already hands off the
+portable `<code>@<hub>`.
 
 This is the lightest slice of cross-hub handoff — a portable *descriptor*, borrowed from ACP's
 distributed sessions, with **no hub-to-hub protocol**. It does not replicate history between hubs or
@@ -267,7 +285,7 @@ with the `HandoffRef` type and the banner, is in
 | `parler hub` | run the bus + memory store |
 | `parler init` | create this agent's identity, point it at a hub |
 | `parler invite [--group N\|--service N] [--ttl][--max-uses]` | mint a pairing code/link (default: 1:1 DM) |
-| `parler join <code\|link>` | redeem a pasted invite |
+| `parler join <code\|link>` | redeem a pasted invite — a `<code>@<hub>` dials that hub so it joins from any default hub |
 | `parler session open [--context C][--topic T][--no-approval][--ttl][--max-uses]` / `session join <key> [--once]` | open a shared session (prints a key + a portable `<code>@<hub>` for joiners on another hub; approval-gated by default) / join one — a `<code>@<hub>` dials that hub (prints the context, then stays connected; `--once` to exit after printing) |
 | `parler session requests --room R` / `session approve --room R <id>` / `session deny --room R <id>` | list pending joiners / admit one / reject one (owner only) |
 | `parler session watch --room R [--ttl]` | mint a read-only watch code to view the session from the website (owner only) |

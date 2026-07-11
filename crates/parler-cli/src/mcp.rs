@@ -609,11 +609,14 @@ async fn call_tool(agent: &mut MeshAgent, name: &str, args: &Value) -> Result<St
                 .invite(kind, s("name"), args.get("ttl_secs").and_then(Value::as_u64), u32opt("max_uses"))
                 .await?;
             Ok(format!(
-                "invite ready — {} room '{}'.\ncode: {}\nlink: {}\nThe other agent calls parler_join with the code.",
-                inv.kind.as_str(),
-                inv.room,
-                inv.code,
-                inv.url,
+                "invite ready — {kind} room '{room}'.\ncode: {code}\n\
+                 The other agent calls parler_join with the portable code (carries this hub, so it \
+                 works even if that agent's default hub differs):  {code}@{hub}\nlink: {url}",
+                kind = inv.kind.as_str(),
+                room = inv.room,
+                code = inv.code,
+                hub = agent.hub_url,
+                url = inv.url,
             ))
         }
         "parler_serve" => {
@@ -988,9 +991,13 @@ async fn call_session_tool(state: &mut McpState, name: &str, args: &Value) -> Re
             // like parler_join_session — a Channel room (what open_session mints) adopts session
             // semantics (active session + digest + backlog), and a pending approval reads as
             // success-in-progress, not an error. Plain DM/service invites keep the lightweight join.
-            let code = s("code").ok_or_else(|| anyhow!("missing 'code'"))?;
+            let key = s("code").ok_or_else(|| anyhow!("missing 'code'"))?;
+            // Accept a portable `<code>@<hub>`: redeem it when it names this hub, else say which hub
+            // to relaunch on (a single-hub MCP agent can't cross hubs — #99) instead of a cryptic error.
+            let hub = state.agent.hub_url.clone();
+            let code = portable_code_for_hub(&key, &hub)?;
             let wait_secs = args.get("wait_secs").and_then(Value::as_u64).filter(|w| *w > 0);
-            match state.agent.redeem(&code).await? {
+            match state.agent.redeem(&code).await.map_err(|e| explain_unknown_code_mcp(e, &hub))? {
                 JoinOutcome::Pending { room } => match wait_for_approval(state, &code, wait_secs).await? {
                     Some(room) => enter_session(state, room, Backlog::Recent).await,
                     None => Ok(pending_output(&room)),
@@ -1365,15 +1372,17 @@ async fn open_session(
     };
     Ok(format!(
         "session open — room '{room}', now your active session.\n\
-         KEY: {code}\n\
+         KEY: {code}@{hub}\n\
          Give a teammate the KEY (they call parler_join_session) or this ready-to-run one-liner:\n    \
          {oneliner}\n\
-         Either lands them in this same conversation, caught up — no copy-paste.\n\
+         Either lands them in this same conversation, caught up — no copy-paste. The `@{hub}` on the \
+         KEY carries this hub, so a teammate whose default hub differs still lands here.\n\
          {gate}\n\
          Keep late joiners cheap: parler_remember key=\"session-digest\" room=\"{room}\" text=\"SESSION DIGEST: …\" (re-save to update).\n\
          parler_watch_session gives the user a read-only web viewer code.\n\
          link: {url}",
         code = inv.code,
+        hub = state.agent.hub_url,
         url = inv.url,
     ))
 }
@@ -1523,6 +1532,50 @@ fn digest_backlog(msgs: &[StoredMessage], mode: Backlog) -> String {
     out.join("\n")
 }
 
+/// Loose hub-URL equality: ignore the scheme (`ws`/`wss`/`http`/`https`) and any trailing slash, so
+/// `wss://h`, `https://h`, and `h/` all compare equal. Enough to tell "same hub" from "different
+/// hub" for a portable code — we're not routing on it, just deciding whether we can redeem locally.
+fn same_hub(a: &str, b: &str) -> bool {
+    fn norm(u: &str) -> String {
+        u.split_once("://").map(|(_, rest)| rest).unwrap_or(u).trim_end_matches('/').to_ascii_lowercase()
+    }
+    norm(a) == norm(b)
+}
+
+/// Resolve a possibly-portable code (`<code>@<hub>`) for the single-hub MCP agent. The MCP server
+/// dials exactly one hub for its whole life (#99), so — unlike the CLI's one-shot commands — it
+/// can't transparently redeem on another hub without stranding every later `parler_send`/`_recv`.
+/// So: a code carrying *this* hub (or no hub) yields the bare code to redeem; a code naming a
+/// *different* hub fails with the exact fix (which hub to relaunch on) instead of the hub's cryptic
+/// "invalid or unknown invite code".
+fn portable_code_for_hub(key: &str, agent_hub: &str) -> Result<String> {
+    let (code, hub) = crate::split_portable_key(key);
+    if let Some(hub) = hub {
+        if !same_hub(&hub, agent_hub) {
+            bail!(
+                "this invite is on hub {hub}, but your Parler MCP server is connected to {agent_hub}. \
+                 Relaunch it with PARLER_HUB={hub} (e.g. `parler connect --hub {hub}`), then try again."
+            );
+        }
+    }
+    Ok(code)
+}
+
+/// A bare code the hub doesn't hold surfaces as "invalid or unknown invite code" — and for a
+/// single-hub MCP agent the usual cause is that the code belongs to a *different* hub. Point the
+/// agent at the fix (ask for the portable `<code>@<hub>`, or relaunch on that hub) rather than
+/// leaving the raw dead-end. Other errors pass through untouched.
+fn explain_unknown_code_mcp(err: anyhow::Error, agent_hub: &str) -> anyhow::Error {
+    if err.to_string().contains("invalid or unknown invite code") {
+        return anyhow!(
+            "invalid or unknown invite code on hub {agent_hub}. If it was minted on a different hub, \
+             ask for the portable form `<code>@<hub>`, or relaunch your Parler MCP server with \
+             PARLER_HUB set to that hub."
+        );
+    }
+    err
+}
+
 /// Join a shared session by key. For an approval-gated session the redeem only *requests* entry — the
 /// host must admit us first. With `wait_secs` this **one call** spans the approval wait (re-redeeming
 /// on an interval until the host decides or the budget runs out, keeping the socket alive with
@@ -1537,9 +1590,13 @@ async fn join_session(
     backlog: Backlog,
     wait_secs: Option<u64>,
 ) -> Result<String> {
-    match state.agent.redeem(key).await? {
+    // A portable key `<code>@<hub>` carries the hub that minted it. Redeem it here only if it names
+    // this agent's hub; otherwise fail with the exact fix rather than a cryptic "unknown code".
+    let hub = state.agent.hub_url.clone();
+    let code = portable_code_for_hub(key, &hub)?;
+    match state.agent.redeem(&code).await.map_err(|e| explain_unknown_code_mcp(e, &hub))? {
         JoinOutcome::Joined { room, .. } => enter_session(state, room, backlog).await,
-        JoinOutcome::Pending { room } => match wait_for_approval(state, key, wait_secs).await? {
+        JoinOutcome::Pending { room } => match wait_for_approval(state, &code, wait_secs).await? {
             Some(room) => enter_session(state, room, backlog).await,
             None => Ok(pending_output(&room)),
         },
@@ -2615,6 +2672,31 @@ mod tests {
         assert_eq!(s, name_suffix("UABCDXYZ1234"), "deterministic");
         assert_eq!(s, "1234");
         assert!(s.chars().all(|c| c.is_ascii_alphanumeric() && !c.is_ascii_uppercase()));
+    }
+
+    #[test]
+    fn same_hub_ignores_scheme_and_trailing_slash() {
+        assert!(same_hub("wss://parler-hub.fly.dev", "https://parler-hub.fly.dev"));
+        assert!(same_hub("wss://parler-hub.fly.dev/", "wss://parler-hub.fly.dev"));
+        assert!(same_hub("ws://127.0.0.1:7070", "http://127.0.0.1:7070"));
+        assert!(!same_hub("wss://parler-hub.fly.dev", "ws://127.0.0.1:7070"));
+    }
+
+    #[test]
+    fn portable_code_redeems_on_this_hub_and_signposts_a_different_one() {
+        // No embedded hub → bare code, redeemed against the agent's own hub.
+        assert_eq!(portable_code_for_hub("ZX6Y2QPX", "wss://parler-hub.fly.dev").unwrap(), "ZX6Y2QPX");
+        // Embedded hub == this hub (scheme aside) → strip it and redeem the bare code locally.
+        assert_eq!(
+            portable_code_for_hub("ZX6Y2QPX@https://parler-hub.fly.dev", "wss://parler-hub.fly.dev").unwrap(),
+            "ZX6Y2QPX"
+        );
+        // Embedded hub != this hub → refuse with the exact fix instead of a cryptic "unknown code".
+        let err = portable_code_for_hub("ZX6Y2QPX@ws://127.0.0.1:7071", "wss://parler-hub.fly.dev")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("ws://127.0.0.1:7071"), "names the invite's hub: {err}");
+        assert!(err.contains("PARLER_HUB=ws://127.0.0.1:7071"), "shows the relaunch fix: {err}");
     }
 
     #[test]

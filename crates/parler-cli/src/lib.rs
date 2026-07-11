@@ -664,6 +664,23 @@ fn split_portable_key(key: &str) -> (String, Option<String>) {
     (key.to_string(), None)
 }
 
+/// The hub returns a bare `invalid or unknown invite code` for any code it doesn't hold — and the
+/// most common cause is a **hub mismatch**: the code was minted on a different hub than the one this
+/// agent dials, so the *code* is fine but the *hub* is wrong (exactly what makes a cross-agent
+/// hand-off fail). Rewrite that dead-end into a signpost — name the hub we tried and show the
+/// portable form that carries the minting hub. Any other error passes through untouched.
+fn explain_unknown_code(err: anyhow::Error, hub_url: &str, code: &str, join_cmd: &str) -> anyhow::Error {
+    if err.to_string().contains("invalid or unknown invite code") {
+        return anyhow::anyhow!(
+            "invalid or unknown invite code on hub {hub_url}.\n  \
+             If it was minted on a different hub, redeem the portable form that carries it:\n    \
+             {join_cmd} {code}@<that-hub>\n  \
+             (whoever shared the code sees its hub in `parler whoami`.)"
+        );
+    }
+    err
+}
+
 async fn cmd_hub(a: HubArgs) -> Result<()> {
     let _ = tracing_subscriber::fmt()
         .with_env_filter(std::env::var("RUST_LOG").unwrap_or_else(|_| "info".into()))
@@ -1028,13 +1045,25 @@ async fn cmd_invite(a: InviteArgs) -> Result<()> {
         println!("  parler session requests --room {0}    parler session approve --room {0} <id>", inv.room);
         println!();
     }
-    println!("Hand it to another agent and have it run:  parler join {}", inv.code);
+    // Lead with the *portable* code — the trailing `@<hub>` carries this hub, so it redeems even when
+    // the other agent's default hub differs (the usual cause of "invalid or unknown invite code" on a
+    // cross-hub hand-off). The bare code still works for an agent already on this hub.
+    println!("Hand it to another agent and have it run:  parler join {}@{}", inv.code, ag.hub_url);
+    println!("  (already on this hub? the bare code works too:  parler join {})", inv.code);
     Ok(())
 }
 
 async fn cmd_join(code: String) -> Result<()> {
-    let mut ag = connect().await?;
-    let (room, kind) = ag.join(&code).await?;
+    // A portable code `<code>@<hub>` carries the hub that minted it, so a joiner whose default hub
+    // differs still lands in the right room (same trick as `session join`). Dial the embedded hub for
+    // this one call; a bare code redeems against the configured hub, unchanged.
+    let (bare, hub_override) = split_portable_key(&code);
+    let mut ag = connect_with_hub(hub_override.as_deref()).await?;
+    let hub = ag.hub_url.clone();
+    let (room, kind) = ag
+        .join(&bare)
+        .await
+        .map_err(|e| explain_unknown_code(e, &hub, &bare, "parler join"))?;
     println!("✓ joined {} room '{}'", kind.as_str(), room);
     println!("  receive with:  parler recv --room {room}");
     Ok(())
@@ -1154,10 +1183,11 @@ async fn cmd_session(c: SessionCmd) -> Result<()> {
                 println!("  approve / reject:   parler session approve --room {0} <id>  |  parler session deny --room {0} <id>", inv.room);
                 println!();
             }
-            println!("Hand the key to another agent:  parler session join {}", inv.code);
-            // Portable form: carries the host hub so a joiner on a *different* default hub still lands
-            // here — no need to also tell them PARLER_HUB. Redeemed by `session join <code>@<hub>`.
-            println!("…on a different hub, hand the portable key:  parler session join {}@{}", inv.code, ag.hub_url);
+            // Lead with the *portable* key — the trailing `@<hub>` carries this hub, so a joiner on a
+            // *different* default hub still lands here without also being told PARLER_HUB (redeemed by
+            // `session join <code>@<hub>`). The bare key still works for an agent already on this hub.
+            println!("Hand the key to another agent:  parler session join {}@{}", inv.code, ag.hub_url);
+            println!("  (already on this hub? the bare key works too:  parler session join {})", inv.code);
             println!("…or launch its MCP server with env  PARLER_SESSION_KEY={}", inv.code);
             println!();
             println!("Watch it live in your browser:  parler session watch --room {}", inv.room);
@@ -1165,8 +1195,13 @@ async fn cmd_session(c: SessionCmd) -> Result<()> {
         SessionCmd::Join { key, once } => {
             // Strip any `@<hub>` (already applied to the connection above) before redeeming the code.
             let code = split_portable_key(&key).0;
+            let hub = ag.hub_url.clone();
             // An approval-gated session holds us as a pending request until the host admits us.
-            let room = match ag.redeem(&code).await? {
+            let room = match ag
+                .redeem(&code)
+                .await
+                .map_err(|e| explain_unknown_code(e, &hub, &code, "parler session join"))?
+            {
                 parler_connector::JoinOutcome::Joined { room, .. } => room,
                 parler_connector::JoinOutcome::Pending { room } => {
                     println!("⏳ join request sent — waiting for the host to approve you into '{room}'.");
@@ -2444,6 +2479,29 @@ mod tests {
         );
         // A trailing `@` with no hub is not portable.
         assert_eq!(split_portable_key("A3KELDJR@"), ("A3KELDJR@".into(), None));
+    }
+
+    #[test]
+    fn unknown_code_error_becomes_a_hub_signpost() {
+        // The hub's terminal "unknown invite code" is rewritten to name the hub we tried and the
+        // portable form that carries the minting hub — so a wrong-hub hand-off is self-diagnosing.
+        let rewritten = explain_unknown_code(
+            anyhow::anyhow!("invalid or unknown invite code"),
+            "wss://parler-hub.fly.dev",
+            "ZX6Y2QPX",
+            "parler join",
+        );
+        let msg = rewritten.to_string();
+        assert!(msg.contains("wss://parler-hub.fly.dev"), "names the hub tried: {msg}");
+        assert!(msg.contains("parler join ZX6Y2QPX@<that-hub>"), "shows the portable form: {msg}");
+        // Any unrelated error is passed through verbatim — we only signpost the hub-mismatch case.
+        let other = explain_unknown_code(
+            anyhow::anyhow!("connection refused"),
+            "wss://h",
+            "ZX6Y2QPX",
+            "parler join",
+        );
+        assert_eq!(other.to_string(), "connection refused");
     }
 
     #[test]
