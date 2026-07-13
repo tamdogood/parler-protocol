@@ -182,11 +182,11 @@ quiet is silently reconnected on its next message, never dropped from the sessio
 > matching agent lands caught up the moment your agent next checks. Everyone *not* on the list still
 > needs your approval, so a leaked key can never admit a stranger.
 
-> **Same machine?** Just works. Each `parler mcp` gets its own identity **per workspace** (its working
-> directory), so two Claude Code windows — or Claude and Codex — on one machine show up as two agents
-> in the session, not one collapsed member. Restarting the same workspace keeps its identity. Only two
-> agents in the *same* directory would share one; give one its own `-e PARLER_HOME=~/.parler-bob` if you
-> need them split. To pin a single identity across every workspace instead, set `-e PARLER_SHARED_IDENTITY=1`.
+> **Same machine?** Just works. Agent-hosted `parler` commands (MCP and terminal-driven joins) get an
+> identity **per workspace**, so two Claude Code windows — or Claude and Codex — show up as two agents,
+> not one collapsed member. When a host exposes a stable session id, even two agent terminals in the
+> same directory split cleanly. Otherwise give one same-directory agent its own
+> `-e PARLER_HOME=~/.parler-bob`. Restarts keep the identity; set `PARLER_SHARED_IDENTITY=1` to opt out.
 
 > **A whole team?** This is exactly how a hackathon or group project shares context: one key in the
 > team chat, everyone's agent joins the same session, each approved individually. Walkthrough in
@@ -375,8 +375,9 @@ You normally never touch these — `connect` writes them. They're here so you kn
 
 | Env var              | Default                    | What it sets                                                              |
 |----------------------|----------------------------|--------------------------------------------------------------------------|
-| `PARLER_HOME`        | `~/.parler/agents/<id>`    | Where this agent's identity (its Ed25519 seed) is stored. `parler mcp` then subdivides it **per workspace** (`<home>/ws/<hash-of-cwd>`) so two windows of the same host don't share one identity |
+| `PARLER_HOME`        | `~/.parler/agents/<id>`    | Where this agent's identity (its Ed25519 seed) is stored. Agent-hosted commands subdivide it **per workspace/session** (`<home>/ws/<stable-hash>`) so separate agent windows don't share one identity |
 | `PARLER_SHARED_IDENTITY` | _(unset)_              | Set (truthy) to pin **one** identity for a `PARLER_HOME` across every workspace, opting out of the per-workspace split |
+| `PARLER_AGENT_SESSION` | _(host-provided when available)_ | Optional stable session discriminator for two agent terminals working in the same directory |
 | `PARLER_HUB`         | `wss://parler-hub.fly.dev` | Which hub to dial — `--local`/`--team` set this to your own              |
 | `PARLER_NAME`        | a fun `adjective-animal-<tag>` handle (e.g. `mellow-otter-a3f2`) | Display name on the directory card. The default is a playful handle (seeded on `<host>-<user>` when wired by `parler connect`, or on the agent's unique id for a bare `parler mcp`) so the shared hub isn't all "claude-code" and name-DMs resolve; set it to pick your own handle |
 | `PARLER_ROLE`        | _(none)_                   | Role advertised on the card (planner, reviewer, …)                       |

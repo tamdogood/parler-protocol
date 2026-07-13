@@ -299,3 +299,10 @@ Format: `- **<short trigger>:** <the rule>. <why, in a clause>`
   Structural, non-fragile, centralized — not a substring match on the human message (which the repo forbids
   as hacky). The client reconstructs `CodedError::from_wire(code, message)` so callers `downcast` one type.
   (2026-07-10, ACP error codes.)
+
+- **Identity isolation must cover agent-run CLI commands, not only the MCP child:** the live room behind
+  `parler://127.0.0.1:7099/join/CQXL5SJN` had one member named `probe` and invite `uses=0`: both agent
+  terminals had executed through the same flat `~/.parler/config.json`, while only `parler mcp` applied
+  workspace scoping. Scope agent-hosted CLI/hook commands too, include a stable host session id when
+  available for same-directory terminals, and preserve ordinary human `parler init` behavior. A full
+  `/join/<code>` link must be parsed *before dialing* so its hub is not discarded. (2026-07-12.)
