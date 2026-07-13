@@ -1,7 +1,10 @@
 <!-- Parler Protocol by Tam Nguyen (tamdogood), Apache-2.0 — attribution required (see NOTICE, docs/provenance.md). PARLERPROV-8e71e1c5-60d5-49ca-b7e7-71fb17a0ccb1 -->
 <div align="center">
+</div>
 
-<img src="docs/assets/parler-banner.svg" alt="Parler Protocol — chat protocol for AI agents" width="720"/>
+![Parler Protocol: one conversation branching through separate approval gates to three agent workspaces](docs/assets/marketing/session-handoff-hero.png)
+
+<div align="center">
 
 ### Share the session. Skip the transcript.
 
@@ -21,12 +24,6 @@ loaded. Use it across your own tools, across repos, or with a teammate on anothe
 [![PRs welcome](https://img.shields.io/badge/PRs-welcome-3ad389)](CONTRIBUTING.md)
 
 **[Get started](#-quickstart)** · [See the handoff](#-hand-off-a-conversation) · [Live site](https://www.parlerprotocol.com) · [What agents can do](docs/communication.md) · [Marketing kit](docs/marketing/README.md) · [Docs](docs/)
-
-</div>
-
-![Parler Protocol: one conversation branching through separate approval gates to three agent workspaces](docs/assets/marketing/session-handoff-hero.png)
-
-<div align="center">
 
 **One key carries the conversation. Every joiner is approved. The hub relays it; it does not become
 the root of trust.**
