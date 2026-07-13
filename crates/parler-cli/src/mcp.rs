@@ -45,30 +45,32 @@ impl McpState {
 
 /// Opt out of per-workspace identity scoping: set this (truthy) to pin **one** identity for a
 /// `PARLER_HOME` across every workspace, for a user who deliberately wants a single agent regardless
-/// of where `parler mcp` is launched. Absent it, each workspace gets its own identity (the default,
-/// so a live session shows every agent, not a single collapsed member).
+/// of where an agent-facing `parler` command is launched. Absent it, each workspace gets its own
+/// identity (the default, so a live session shows every agent, not a single collapsed member).
 const SHARED_IDENTITY_ENV: &str = "PARLER_SHARED_IDENTITY";
+const AGENT_SESSION_ENV: &str = "PARLER_AGENT_SESSION";
 
 /// The un-scoped home whose `mcp.log` breadcrumb we keep writing to even after scoping `PARLER_HOME`
 /// down into a per-workspace subdir — so `parler doctor` (run outside the workspace) still finds the
 /// log where it has always lived. Set once by [`scope_identity_to_workspace`].
 static LOG_ROOT: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
 
-/// Namespace this `parler mcp` process's identity by its **workspace** (the working directory), so two
-/// agents launched on one machine get *distinct* hub identities instead of collapsing onto one saved
-/// `config.json` — the bug where a 3-agent session shows a single member, because every process read
-/// and re-registered the same id (idempotent add) and signed every message as the same author.
+/// Namespace an agent process's identity by its **workspace** (the working directory) and, when the
+/// host exposes one, its stable agent-session id. Two agents launched on one machine then get
+/// distinct hub identities instead of collapsing onto one saved `config.json` — the bug where a
+/// 3-agent session shows a single member because every process re-registered the same id.
 ///
 /// The seam is a single `PARLER_HOME` redirect done *before* any identity resolution, so the identity,
 /// the active-session pointer, and everything else keyed off `home_dir()` follow consistently — no
-/// scattered path plumbing. Restart-stable: the same workspace re-derives the same home, so the agent
-/// keeps its id across restarts (only a genuinely different workspace mints a new one).
+/// scattered path plumbing. Restart-stable: the same workspace/session pair re-derives the same home,
+/// so the agent keeps its id across restarts. MCP hosts that don't expose a session id retain the
+/// existing per-workspace behavior.
 ///
 /// It can only ever *add* isolation, never regress an existing flat setup: it no-ops (keeping the one
 /// flat identity) when [`SHARED_IDENTITY_ENV`] is set or the working directory can't be determined.
 /// `parler connect`'s per-host `PARLER_HOME` still applies — this just subdivides it per workspace, so
 /// two windows of the same wired host no longer share one identity.
-fn scope_identity_to_workspace() {
+pub(crate) fn scope_identity_to_workspace() {
     if env_flag(SHARED_IDENTITY_ENV) {
         return;
     }
@@ -76,18 +78,50 @@ fn scope_identity_to_workspace() {
         return; // No usable CWD → leave the flat home (no worse than before).
     };
     let base = parler_connector::home_dir();
+    // A legacy flat identity may carry the user's chosen local/team hub. Inherit only that routing
+    // preference into a brand-new scoped identity; never copy the seed (the whole point is a new id)
+    // or its stale display name (the fresh id gets its own unique default handle).
+    let env_hub = std::env::var("PARLER_HUB").ok().filter(|value| !value.is_empty());
+    let base_hub = if env_hub.is_none() {
+        Config::load().ok().map(|cfg| cfg.hub_url)
+    } else {
+        None
+    };
     // Pin the breadcrumb log to the un-scoped home so `parler doctor` keeps finding it in one place,
     // instead of it fragmenting into every per-workspace subdir.
     let _ = LOG_ROOT.set(base.join("mcp.log"));
     std::env::set_var("PARLER_HOME", workspace_home(&base, &key));
+    if let Some(hub) = bootstrap_hub(Config::exists(), env_hub.as_deref(), base_hub.as_deref()) {
+        std::env::set_var("PARLER_HUB", hub);
+    }
 }
 
-/// The stable key identifying the current workspace: its canonicalized working directory. `None` when
-/// there's no usable CWD, so the caller falls back to the flat (un-scoped) home.
+fn bootstrap_hub(scoped_exists: bool, env_hub: Option<&str>, base_hub: Option<&str>) -> Option<String> {
+    if scoped_exists || env_hub.is_some() {
+        None
+    } else {
+        base_hub.map(str::to_string)
+    }
+}
+
+/// The stable key identifying this agent instance: canonical workspace plus an optional host session
+/// id. Codex exposes a thread id to shell commands; other hosts can set `PARLER_AGENT_SESSION`
+/// explicitly. Values are hashed into the home name and never persisted or sent.
 fn workspace_key() -> Option<String> {
     let cwd = std::env::current_dir().ok()?;
     let canon = std::fs::canonicalize(&cwd).unwrap_or(cwd);
-    Some(canon.to_string_lossy().into_owned())
+    let workspace = canon.to_string_lossy();
+    let session = [AGENT_SESSION_ENV, "CODEX_THREAD_ID", "CLAUDE_CODE_SESSION_ID"]
+        .iter()
+        .find_map(|key| std::env::var(key).ok().filter(|value| !value.is_empty()));
+    Some(identity_scope_key(&workspace, session.as_deref()))
+}
+
+fn identity_scope_key(workspace: &str, session: Option<&str>) -> String {
+    match session {
+        Some(session) => format!("{workspace}\0{session}"),
+        None => workspace.to_string(),
+    }
 }
 
 /// The per-workspace identity home: `<base>/ws/<hash(key)>`. A stable 64-bit FNV-1a hash keeps the
@@ -111,10 +145,6 @@ fn fnv1a_hex(s: &str) -> String {
 
 /// Connect to the hub, then serve the MCP JSON-RPC loop on stdin/stdout until EOF.
 pub async fn serve_stdio() -> Result<()> {
-    // Give each workspace its own identity *before* any identity resolution, so two agents launched on
-    // one machine (two Claude Code windows, or Claude + Codex sharing a wired PARLER_HOME) don't
-    // collapse onto one saved identity — one hub member, one message author. See the fn doc.
-    scope_identity_to_workspace();
     let cfg = match load_or_bootstrap_config() {
         Ok(c) => c,
         Err(e) => {
@@ -2456,6 +2486,22 @@ mod tests {
         assert_eq!(a1.file_name().unwrap().to_str().unwrap(), fnv1a_hex("/work/proj-a"));
         assert_eq!(fnv1a_hex("/work/proj-a").len(), 16, "16 hex chars");
         assert_ne!(fnv1a_hex("/work/proj-a"), fnv1a_hex("/work/proj-b"));
+
+        // Two agent terminals in the same directory still split when their host provides a stable
+        // session id; repeated commands in one terminal re-derive the same key.
+        let terminal_a = identity_scope_key("/work/proj-a", Some("thread-a"));
+        let terminal_a_again = identity_scope_key("/work/proj-a", Some("thread-a"));
+        let terminal_b = identity_scope_key("/work/proj-a", Some("thread-b"));
+        assert_eq!(terminal_a, terminal_a_again);
+        assert_ne!(workspace_home(base, &terminal_a), workspace_home(base, &terminal_b));
+    }
+
+    #[test]
+    fn fresh_scope_inherits_only_an_unoverridden_base_hub() {
+        assert_eq!(bootstrap_hub(false, None, Some("ws://local")), Some("ws://local".into()));
+        assert_eq!(bootstrap_hub(false, Some("wss://env"), Some("ws://local")), None);
+        assert_eq!(bootstrap_hub(true, None, Some("ws://local")), None);
+        assert_eq!(bootstrap_hub(false, None, None), None);
     }
 
     #[tokio::test]
@@ -2914,12 +2960,23 @@ mod tests {
             portable_code_for_hub("ZX6Y2QPX@https://parler-hub.fly.dev", "wss://parler-hub.fly.dev").unwrap(),
             "ZX6Y2QPX"
         );
+        assert_eq!(
+            portable_code_for_hub(
+                "parler://127.0.0.1:7071/join/ZX6Y2QPX",
+                "ws://127.0.0.1:7071"
+            )
+            .unwrap(),
+            "ZX6Y2QPX"
+        );
         // Embedded hub != this hub → refuse with the exact fix instead of a cryptic "unknown code".
-        let err = portable_code_for_hub("ZX6Y2QPX@ws://127.0.0.1:7071", "wss://parler-hub.fly.dev")
+        let err = portable_code_for_hub(
+            "parler://127.0.0.1:7071/join/ZX6Y2QPX",
+            "wss://parler-hub.fly.dev",
+        )
             .unwrap_err()
             .to_string();
-        assert!(err.contains("ws://127.0.0.1:7071"), "names the invite's hub: {err}");
-        assert!(err.contains("PARLER_HUB=ws://127.0.0.1:7071"), "shows the relaunch fix: {err}");
+        assert!(err.contains("parler://127.0.0.1:7071"), "names the invite's hub: {err}");
+        assert!(err.contains("PARLER_HUB=parler://127.0.0.1:7071"), "shows the relaunch fix: {err}");
     }
 
     #[test]
@@ -4073,4 +4130,3 @@ mod tests {
         assert!(agent.is_ok(), "must connect once the late hub comes up, not die on the first refusal");
     }
 }
-

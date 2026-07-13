@@ -561,6 +561,13 @@ struct TokenArgs {
 /// Entry point for the `parler` binary.
 pub async fn run() -> Result<()> {
     let cli = Cli::parse();
+    // Agent-host commands and the MCP server must use workspace-scoped identities. Without this,
+    // `parler mcp` was scoped while a Codex/Claude terminal-driven `parler join` read the old flat
+    // ~/.parler/config.json; every terminal then appeared as that one saved agent. An ordinary human
+    // CLI remains flat for backward compatibility with `parler init`.
+    if command_uses_workspace_identity(&cli.cmd, agent_shell_detected()) {
+        mcp::scope_identity_to_workspace();
+    }
     match cli.cmd {
         Cmd::Hub(a) => cmd_hub(a).await,
         Cmd::Connect(a) => cmd_connect(a).await,
@@ -595,14 +602,35 @@ pub async fn run() -> Result<()> {
     }
 }
 
+fn command_uses_workspace_identity(cmd: &Cmd, agent_shell: bool) -> bool {
+    matches!(cmd, Cmd::Mcp | Cmd::Hook { .. })
+        || (agent_shell && !matches!(cmd, Cmd::Hub(_) | Cmd::Connect(_) | Cmd::Init(_) | Cmd::Doctor))
+}
+
+/// Whether this command was launched inside an AI-agent terminal rather than an ordinary human
+/// shell. These are host-provided context markers, not identity material; their values are never
+/// persisted or sent. The decision stays separate from command routing so tests don't mutate env.
+fn agent_shell_detected() -> bool {
+    [
+        "CODEX_THREAD_ID",
+        "CODEX_WORKING_DIR",
+        "CONDUCTOR_WORKSPACE_PATH",
+        "CLAUDE_CODE_SESSION_ID",
+        "CLAUDE_PROJECT_DIR",
+    ]
+    .iter()
+    .any(|key| std::env::var(key).is_ok_and(|value| !value.is_empty()))
+}
+
 async fn connect() -> Result<MeshAgent> {
     connect_with_hub(None).await
 }
 
-/// Connect, optionally overriding the configured hub for *this* command only (identity and config
-/// are untouched on disk). Used by a **portable session join** (`<key>@<hub>`): a joiner whose default
-/// hub differs from where the session lives dials the session's hub for that one call, so the key is
-/// self-contained — the lightest form of cross-hub handoff, with no hub-to-hub federation.
+/// Connect, optionally overriding the configured hub for *this* command only. An existing identity
+/// and config stay untouched; a first-run identity is initialized to the carried hub so its follow-up
+/// room commands work. Used by a **portable session join** (`<key>@<hub>`): a joiner whose default hub
+/// differs from where the session lives dials the session's hub directly — the lightest form of
+/// cross-hub handoff, with no hub-to-hub federation.
 async fn connect_with_hub(hub_override: Option<&str>) -> Result<MeshAgent> {
     // One env/config precedence rule for the whole CLI: hub/name/role resolve through the same
     // `explicit env > saved config > default` helper the MCP server uses, so `parler` and
@@ -621,10 +649,12 @@ async fn connect_with_hub(hub_override: Option<&str>) -> Result<MeshAgent> {
             } else if !Config::exists() {
                 // Zero-setup, same as `parler mcp`: mint an identity on first use (already env-aware)
                 // instead of telling the user to go run `parler init` first.
-                let mut cfg = mcp::load_or_bootstrap_config()?;
+                // For a portable first join, make the carried hub the bootstrap default up front so
+                // both the saved config and the initialization message name the hub actually dialed.
                 if let Some(h) = hub_override {
-                    cfg.hub_url = h.to_string();
+                    std::env::set_var("PARLER_HUB", h);
                 }
+                let cfg = mcp::load_or_bootstrap_config()?;
                 eprintln!(
                     "✱ first run — created your identity at {} (hub: {})",
                     parler_connector::home_dir().display(),
@@ -653,13 +683,24 @@ async fn connect_with_hub(hub_override: Option<&str>) -> Result<MeshAgent> {
     })
 }
 
-/// Split a **portable session key** `<code>@<hub>` into its code and optional host hub. A bare code
-/// or a full join link (which carries a `:`/`/` in its scheme/path) is returned unchanged — only a
-/// short code followed by `@<hub>` is treated as portable, so a normal key/link never mis-parses.
+/// Split a portable session descriptor into its code and optional host hub. Accept both the compact
+/// `<code>@<hub>` form and the invite URL the hub prints (`<scheme>://<hub>/join/<code>`). A full
+/// link must carry its hub here, before connection, rather than relying on the server to strip the
+/// final path segment after the client has already dialed the wrong hub.
 fn split_portable_key(key: &str) -> (String, Option<String>) {
+    let key = key.trim();
     if let Some((code, hub)) = key.split_once('@') {
         if !code.is_empty() && !hub.is_empty() && !code.contains([':', '/']) {
             return (code.to_string(), Some(hub.to_string()));
+        }
+    }
+    if let Some((hub, tail)) = key.split_once("/join/") {
+        let scheme = hub.split_once("://").map(|(scheme, _)| scheme);
+        if matches!(scheme, Some("parler" | "ws" | "wss" | "http" | "https")) {
+            let code = tail.split(['/', '?', '#']).next().unwrap_or_default();
+            if !code.is_empty() {
+                return (code.to_string(), Some(hub.to_string()));
+            }
         }
     }
     (key.to_string(), None)
@@ -1738,7 +1779,11 @@ async fn cmd_presence(status: String, activity: Option<String>) -> Result<()> {
 }
 
 fn cmd_whoami() -> Result<()> {
-    let cfg = Config::load()?;
+    let cfg = match Config::load() {
+        Ok(cfg) => cfg,
+        Err(_) if agent_shell_detected() && !Config::exists() => mcp::load_or_bootstrap_config()?,
+        Err(err) => return Err(err),
+    };
     println!("id:   {}", cfg.identity.id);
     println!(
         "name: {}{}",
@@ -2499,13 +2544,28 @@ mod tests {
         );
         // A bare code is unchanged (no hub override).
         assert_eq!(split_portable_key("A3KELDJR"), ("A3KELDJR".into(), None));
-        // A full join link (scheme/path on the left of any `@`) must NOT be mis-split into a hub.
+        // The user-facing join link is portable too: extract both the code and the hub before
+        // connecting, including links with a trailing slash/query fragment.
         assert_eq!(
             split_portable_key("https://parler-hub.fly.dev/join/A3KELDJR"),
-            ("https://parler-hub.fly.dev/join/A3KELDJR".into(), None)
+            ("A3KELDJR".into(), Some("https://parler-hub.fly.dev".into()))
+        );
+        assert_eq!(
+            split_portable_key("parler://127.0.0.1:7099/join/CQXL5SJN/?source=desktop#share"),
+            ("CQXL5SJN".into(), Some("parler://127.0.0.1:7099".into()))
         );
         // A trailing `@` with no hub is not portable.
         assert_eq!(split_portable_key("A3KELDJR@"), ("A3KELDJR@".into(), None));
+    }
+
+    #[test]
+    fn agent_shell_commands_scope_identity_without_changing_human_cli() {
+        assert!(command_uses_workspace_identity(&Cmd::Mcp, false));
+        assert!(command_uses_workspace_identity(&Cmd::Hook { kind: "stop".into() }, false));
+        assert!(command_uses_workspace_identity(&Cmd::Rooms, true));
+        assert!(command_uses_workspace_identity(&Cmd::Whoami, true));
+        assert!(!command_uses_workspace_identity(&Cmd::Rooms, false));
+        assert!(!command_uses_workspace_identity(&Cmd::Doctor, true));
     }
 
     #[test]

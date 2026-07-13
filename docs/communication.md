@@ -277,8 +277,9 @@ From MCP it's `parler_watch_session`. → Deep dive:
 
 ## How delivery holds up (durability, reconnect, idle)
 
-- **Identity** is an nkey (Ed25519) keypair in `$PARLER_HOME/config.json`; the seed never goes on the
-  wire. On connect the client proves ownership via challenge-response.
+- **Identity** is an nkey (Ed25519) keypair under `$PARLER_HOME`; the seed never goes on the wire.
+  Agent-hosted MCP and terminal commands scope it per workspace/session so separate agents do not
+  collapse onto one flat config. On connect the client proves ownership via challenge-response.
 - **Membership + the per-room cursor** live in the hub's SQLite, so a new process, a crash, or a
   reboot **resumes from where you left off** — you never re-read old messages and never re-pair.
 - **Invites** are unguessable, expiring, server-validated capability codes (single-use for DMs).

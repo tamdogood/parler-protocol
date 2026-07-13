@@ -138,10 +138,12 @@ Both invite paths lead with the portable form, so the copy-pasted line already w
   same hub).
 - `parler session open` prints `parler session join <code>@<hub>` likewise.
 
-`parler join <code>@<hub>` and `parler session join <code>@<hub>` dial that hub for the join, so the
-code is self-contained — no need to also set `PARLER_HUB`. Identity is self-sovereign (any hub
-accepts any nkey) and only the hub for *this one command* is overridden; your saved config is
-untouched. Hand a bare code to the wrong hub and the error now names the hub it tried and the
+`parler join <code>@<hub>` and `parler session join <code>@<hub>` dial that hub for the join. The full
+`parler://<hub>/join/<code>` link printed beside the key carries the same information and now dials
+that hub too, so either form is self-contained — no need to also set `PARLER_HUB`. Identity is self-sovereign (any hub
+accepts any nkey) and only the hub for *this one command* is overridden; an existing saved config is
+untouched. A first-run identity is initialized to the link's hub so its follow-up send/roster calls
+stay in the session. Hand a bare code to the wrong hub and the error names the hub it tried and the
 portable form to use instead — no more guessing.
 
 ```bash
@@ -150,8 +152,8 @@ portable form to use instead — no more guessing.
 parler join A3KELDJR@wss://parler-hub.fly.dev
 ```
 
-**Through the MCP tools** (`parler_join`, `parler_join_session`) it works the same *when the code
-names the agent's own hub*. A `parler mcp` server dials exactly one hub for its whole life (issue
+**Through the MCP tools** (`parler_join`, `parler_join_session`) both the portable code and full link
+work the same *when they name the agent's own hub*. A `parler mcp` server dials exactly one hub for its whole life (issue
 #99), so it can't transparently cross hubs; hand it a code for a *different* hub and it fails with the
 exact fix — relaunch the server with `PARLER_HUB=<that-hub>` (or `parler connect --hub <that-hub>`) —
 rather than the cryptic error. The invite/session output the tools return already hands off the
@@ -271,12 +273,12 @@ with the `HandoffRef` type and the banner, is in
 
 ## How "keep the connection going" works
 
-- Your identity is an **nkey** keypair saved in `$PARLER_HOME/config.json` (the seed never goes on
-  the wire). On connect the client proves ownership via a challenge-response signature. `parler mcp`
-  subdivides this **per workspace** — it saves under `$PARLER_HOME/ws/<hash-of-cwd>/config.json` so two
-  editor windows on one machine are two distinct agents, not one collapsed member; the same workspace
-  re-derives the same identity across restarts. Set `PARLER_SHARED_IDENTITY=1` to pin one identity across
-  all workspaces instead.
+- Your identity is an **nkey** keypair saved under `$PARLER_HOME` (the seed never goes on the wire).
+  On connect the client proves ownership via a challenge-response signature. Agent-hosted commands
+  subdivide this **per workspace/session** under `$PARLER_HOME/ws/<stable-hash>/config.json`, so an
+  MCP process and a terminal-driven join cannot silently collapse every terminal onto the old flat
+  identity. The same scope re-derives the same identity across restarts. Set
+  `PARLER_SHARED_IDENTITY=1` to pin one identity across all workspaces instead.
 - Membership + the per-room **read cursor** live in the hub's SQLite. So reconnecting (new process,
   crash, machine reboot) **resumes from where you left off** — you never re-read old messages, and
   you never re-pair.
@@ -291,8 +293,8 @@ with the `HandoffRef` type and the banner, is in
 | `parler hub` | run the bus + memory store |
 | `parler init` | create this agent's identity, point it at a hub |
 | `parler invite [--group N\|--service N] [--ttl][--max-uses]` | mint a pairing code/link (default: 1:1 DM) |
-| `parler join <code\|link>` | redeem a pasted invite — a `<code>@<hub>` dials that hub so it joins from any default hub |
-| `parler session open [--context C][--topic T][--no-approval][--ttl][--max-uses]` / `session join <key> [--once]` | open a shared session (prints a key + a portable `<code>@<hub>` for joiners on another hub; approval-gated by default) / join one — a `<code>@<hub>` dials that hub (prints the context, then stays connected; `--once` to exit after printing) |
+| `parler join <code\|link>` | redeem a pasted invite — `<code>@<hub>` and a full `parler://…/join/…` link dial that hub from any default hub |
+| `parler session open [--context C][--topic T][--no-approval][--ttl][--max-uses]` / `session join <key\|link> [--once]` | open a shared session (prints a key + portable link; approval-gated by default) / join one on the link's hub (prints context, then stays connected; `--once` exits after printing) |
 | `parler session requests --room R` / `session approve --room R <id>` / `session deny --room R <id>` | list pending joiners / admit one / reject one (owner only) |
 | `parler session watch --room R [--ttl]` | mint a read-only watch code to view the session from the website (owner only) |
 | `parler serve <svc>` | join a service queue as a worker |

@@ -93,3 +93,30 @@ the two concrete DoS vectors (writer contention, disk fill) with minimal surface
   clicks Share; non-macOS builds fall back to copying the invitation.
 - Verified with `npm test`, `npm run typecheck`, `npm run build`, renderer smoke boot, and `make ci`.
   Self-review against `docs/code-review-guidelines.md`: no remaining findings.
+
+---
+
+# Fix room agent identity collapse
+
+## Plan
+- [x] Apply the existing workspace identity scope to CLI/hook agent commands, not only `parler mcp`,
+      so terminal-driven joins do not reuse the flat `~/.parler/config.json` identity.
+- [x] Parse full `parler://…/join/…` links as portable code + hub descriptors so CLI joins dial the
+      room's hub and MCP joins report an honest hub mismatch.
+- [x] Add regression coverage for command scoping, full-link parsing, and two identities appearing as
+      two roster members; update identity/session docs.
+- [x] Run targeted tests, `make ci`, and self-review the final diff.
+
+## Risks
+- Setup/admin commands (`connect`, `init`, `hub`, `doctor`) must keep using the unscoped home.
+- Workspace identities must remain restart-stable; no seed may move, be logged, or cross the wire.
+
+## Review
+- Live diagnosis: `room.8tuhxc` contained one member named `probe`; invite `CQXL5SJN` had `uses=0`,
+  proving the two terminal agents never joined and both observed the same flat identity.
+- Agent-hosted CLI commands now use the same scoping seam as MCP. A stable host session discriminator
+  splits same-directory terminals; ordinary human CLI/setup commands remain backward compatible.
+- Fresh scopes inherit the legacy config's hub but never its seed or stale display name. Full join
+  links carry their hub into both CLI routing and MCP mismatch errors.
+- Binary-level isolated-hub test: a full join link produced 3 roster members with 3 unique ids.
+- `CI_SKIP_WEB=1 make ci` passes. Self-review: no findings remain.

@@ -20,6 +20,8 @@ Setup is **one command**: `parler connect` auto-detects every AI agent on the ma
 Codex, Cursor, Windsurf, Gemini, Claude Desktop, OpenCode, VS Code, Cline) and wires them all — the single source of truth the
 desktop app's one-click *Connect* also drives. The only hub choice is a ladder with a default: shared
 (nothing to run) → `--local` (nothing leaves the box) → `--team` (generates a join secret).
+Agent-hosted MCP and terminal commands scope identity per workspace/session, so parallel terminals
+join rooms as distinct cryptographic members instead of reusing one flat config.
 
 Full pitch and user-facing usage: **[`README.md`](README.md)**.
 
