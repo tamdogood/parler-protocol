@@ -440,6 +440,27 @@ impl Store {
         Ok(n > 0)
     }
 
+    /// Permanently delete a room and every row scoped specifically to it. Owner-only: a member may
+    /// leave locally, but erasing shared history is reserved for the room creator/host. Blob bytes are
+    /// left for the blob GC; dropping `blob_rooms` removes this room as a download authorization.
+    pub fn delete_room(&self, room: &str, owner: &str) -> Result<()> {
+        let conn = self.w();
+        if !room_owned_by(&conn, room, owner)? {
+            bail!("only the room owner can delete '{room}'");
+        }
+        let tx = conn.unchecked_transaction()?;
+        tx.execute("DELETE FROM join_requests WHERE room = ?1", params![room])?;
+        tx.execute("DELETE FROM invites WHERE room = ?1", params![room])?;
+        tx.execute("DELETE FROM directory_tokens WHERE scope = ?1", params![format!("watch:{room}")])?;
+        tx.execute("DELETE FROM blob_rooms WHERE room = ?1", params![room])?;
+        tx.execute("DELETE FROM facts WHERE room = ?1", params![room])?;
+        tx.execute("DELETE FROM messages WHERE room = ?1", params![room])?;
+        tx.execute("DELETE FROM members WHERE room = ?1", params![room])?;
+        tx.execute("DELETE FROM rooms WHERE name = ?1", params![room])?;
+        tx.commit()?;
+        Ok(())
+    }
+
     /// The agent ids of every member of `room` — the recipient set for live push fan-out. Indexed by
     /// the `members` primary key (`room`, `agent`), so this is a cheap range scan even for big rooms.
     pub fn room_member_ids(&self, room: &str) -> Result<Vec<String>> {
@@ -2220,6 +2241,42 @@ mod tests {
         // Eve cannot re-request her way in past a denial.
         assert!(s.redeem_invite("KEY", "U_EVE", 4).is_err());
         assert!(s.pending_join_requests("room.s", "U_ALICE").unwrap().is_empty());
+    }
+
+    #[test]
+    fn delete_room_is_owner_only_and_purges_room_scoped_data() {
+        let s = Store::open(None).unwrap();
+        s.ensure_room("room.s", RoomKind::Channel, None, 1).unwrap();
+        s.add_member("room.s", "U_ALICE", 1).unwrap();
+        s.add_member("room.s", "U_BOB", 1).unwrap();
+        s.set_room_owner("room.s", "U_ALICE").unwrap();
+        s.create_invite("KEY", "room.s", RoomKind::Channel, None, 50, 9_999_999_999_999, "U_ALICE", true, 1).unwrap();
+        s.redeem_invite("KEY", "U_EVE", 2).unwrap();
+        s.mint_watch_token("WATCH", "room.s", "U_ALICE", 9_999_999_999_999, 1).unwrap();
+        s.remember(
+            "U_ALICE",
+            &Fact { key: None, text: "room-scoped secret".into(), room: Some("room.s".into()) },
+            1,
+            None,
+            None,
+        ).unwrap();
+        s.put_blob_meta("abc123", "room.s", "U_ALICE", Some("text/plain"), 7, 1).unwrap();
+        s.append_message("room.s", &eref("U_ALICE", "alice"), &[Part::text("hello")], None, None, None, 1).unwrap();
+
+        assert!(s.delete_room("room.s", "U_BOB").is_err(), "a non-owner member cannot delete");
+        assert!(s.room_kind("room.s").unwrap().is_some());
+
+        s.delete_room("room.s", "U_ALICE").unwrap();
+        assert_eq!(s.room_kind("room.s").unwrap(), None);
+        assert!(s.rooms_of("U_ALICE").unwrap().is_empty());
+        assert!(!s.is_member("room.s", "U_BOB").unwrap());
+        assert!(s.pending_join_requests("room.s", "U_ALICE").is_err());
+        assert!(s.redeem_invite("KEY", "U_BOB", 3).is_err());
+        assert_eq!(s.validate_watch_token("WATCH", 3).unwrap(), None);
+        assert!(s.recall("U_ALICE", "secret", Some("room.s"), None, None).unwrap().is_empty());
+        assert!(!s.blob_in_room("abc123", "room.s").unwrap());
+        assert!(!s.blob_readable_by("abc123", "U_ALICE").unwrap());
+        assert!(s.room_messages("room.s", 0, 100).unwrap().is_empty());
     }
 
     #[test]

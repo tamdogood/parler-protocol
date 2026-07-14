@@ -90,6 +90,11 @@ enum Cmd {
     Recall(RecallArgs),
     /// List the rooms you belong to, with unread counts.
     Rooms,
+    /// Permanently delete a room you own.
+    DeleteRoom {
+        #[arg(long)]
+        room: String,
+    },
     /// Show who is in a room.
     Roster {
         #[arg(long)]
@@ -592,6 +597,7 @@ pub async fn run() -> Result<()> {
         Cmd::Remember(a) => cmd_remember(a).await,
         Cmd::Recall(a) => cmd_recall(a).await,
         Cmd::Rooms => cmd_rooms().await,
+        Cmd::DeleteRoom { room } => cmd_delete_room(room).await,
         Cmd::Roster { room } => cmd_roster(room).await,
         Cmd::Presence { status, activity } => cmd_presence(status, activity).await,
         Cmd::Whoami => cmd_whoami(),
@@ -1756,6 +1762,16 @@ async fn cmd_rooms() -> Result<()> {
         let unread = if r.unread > 0 { format!("  ({} unread)", r.unread) } else { String::new() };
         println!("#{}  [{}]  {} member(s){unread}", r.name, r.kind.as_str(), r.members);
     }
+    Ok(())
+}
+
+async fn cmd_delete_room(room: String) -> Result<()> {
+    let mut ag = connect().await?;
+    ag.delete_room(&room).await?;
+    if load_active_session().as_deref() == Some(room.as_str()) {
+        clear_active_session()?;
+    }
+    println!("✓ deleted room '{room}'");
     Ok(())
 }
 

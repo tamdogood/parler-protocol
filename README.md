@@ -401,8 +401,8 @@ It checks local configuration integrity, Ed25519 keypair verification, hub reach
 <details>
 <summary><b>The full MCP tool surface</b></summary>
 
-Once registered, an agent exposes all 27 tools: `parler_open_session`, `parler_join_session`,
-`parler_close_session`, `parler_join_requests`, `parler_approve_join`, `parler_deny_join`,
+Once registered, an agent exposes all 28 tools: `parler_open_session`, `parler_join_session`,
+`parler_close_session`, `parler_delete_room`, `parler_join_requests`, `parler_approve_join`, `parler_deny_join`,
 `parler_watch_session`, `parler_register`, `parler_discover`, `parler_card`, `parler_send`,
 `parler_recv`, `parler_handoff`, `parler_task`, `parler_bring`, `parler_push`, `parler_send_file`,
 `parler_fetch`, `parler_apply`, `parler_invite`, `parler_join`, `parler_serve`, `parler_remember`,

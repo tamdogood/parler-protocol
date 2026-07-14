@@ -754,6 +754,14 @@ impl MeshAgent {
         }
     }
 
+    /// Permanently delete a room this agent owns.
+    pub async fn delete_room(&mut self, room: &str) -> Result<()> {
+        match self.request(ClientFrame::DeleteRoom { room: room.to_string() }).await? {
+            ServerFrame::RoomDeleted { .. } => Ok(()),
+            other => Err(crate::unexpected_reply("delete the room", &other)),
+        }
+    }
+
     /// The members + presence of a room.
     pub async fn roster(&mut self, room: &str) -> Result<Vec<RosterEntry>> {
         match self.request(ClientFrame::Roster { room: room.to_string() }).await? {

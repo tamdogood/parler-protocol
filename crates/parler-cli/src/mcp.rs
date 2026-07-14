@@ -525,7 +525,7 @@ async fn handle(state: &mut McpState, method: &str, params: Value) -> Result<Val
                 "parler_open_session" | "parler_join_session" | "parler_close_session"
                 | "parler_join" | "parler_send" | "parler_recv" | "parler_handoff"
                 | "parler_task" | "parler_join_requests" | "parler_approve_join" | "parler_deny_join"
-                | "parler_watch_session" | "parler_bring" | "parler_fetch" => {
+                | "parler_watch_session" | "parler_delete_room" | "parler_bring" | "parler_fetch" => {
                     call_session_tool(state, &name, &args).await
                 }
                 _ => call_tool(&mut state.agent, &name, &args).await,
@@ -1164,6 +1164,18 @@ async fn call_session_tool(state: &mut McpState, name: &str, args: &Value) -> Re
             }
         }
         "parler_close_session" => close_session(state).await,
+        "parler_delete_room" => {
+            let room = s("room")
+                .or_else(|| state.active_session.clone())
+                .ok_or_else(|| anyhow!("missing 'room' and no active session"))?;
+            state.agent.delete_room(&room).await?;
+            if state.active_session.as_deref() == Some(room.as_str()) {
+                state.active_session = None;
+                state.preapprovals.remove(&room);
+                let _ = crate::clear_active_session();
+            }
+            Ok(format!("deleted room '{room}'"))
+        }
         "parler_join_requests" => {
             let room = s("room")
                 .or_else(|| state.active_session.clone())
@@ -2106,6 +2118,12 @@ fn tool_specs() -> Vec<Value> {
             &[],
         ),
         tool(
+            "parler_delete_room",
+            "Permanently delete a room you own. Defaults to the active session.",
+            json!({ "room": { "type": "string" } }),
+            &[],
+        ),
+        tool(
             "parler_join_requests",
             "List agents waiting for your approval to join a session you opened (defaults to active session). Each line carries the joiner's id for parler_approve_join / parler_deny_join.",
             json!({ "room": { "type": "string", "description": "the session room (defaults to your active session)" } }),
@@ -2425,7 +2443,9 @@ mod tests {
     /// params added so an agent asked to "fetch the file" needn't be handed a 64-char blob id) grew it
     /// ~300 B to ~13,237 — load-bearing schema, not description bloat (descriptions stayed under their
     /// own ceiling); ceiling → 13,500 to restore headroom.
-    const TOOL_SPECS_BUDGET: usize = 13_500;
+    /// `parler_delete_room` adds one lean owner-only lifecycle tool; serialized specs measured
+    /// 13,538 B, so the ceiling moves by the minimum useful step.
+    const TOOL_SPECS_BUDGET: usize = 13_550;
     /// Just the human-readable descriptions (the part the diet targets; schema scaffolding is
     /// load-bearing). Pre-diet 5,261 B → post-diet (P0.2) 4,304 B; P1.2 adds ~230 B of cheap-path
     /// steering (name-based `to`/`card`, compact discover/roster, `detail`) that earns its bytes.
@@ -3355,6 +3375,21 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn delete_room_tool_defaults_to_active_session_and_clears_it() {
+        let hub = start_hub().await;
+        let mut alice = state(&hub, "alice").await;
+
+        open_session(&mut alice, Some("seed"), Some("cleanup".into()), None, None, false).await.unwrap();
+        let room = alice.active_session.clone().unwrap();
+        let out = call_session_tool(&mut alice, "parler_delete_room", &json!({})).await.unwrap();
+        assert!(out.contains("deleted room"));
+        assert!(alice.active_session.is_none());
+
+        let rooms = call_tool(&mut alice.agent, "parler_rooms", &json!({})).await.unwrap();
+        assert!(!rooms.contains(&room), "deleted room must disappear from parler_rooms: {rooms}");
+    }
+
+    #[tokio::test]
     async fn approval_session_gates_joiner_until_host_approves() {
         let hub = start_hub().await;
         let mut alice = state(&hub, "alice").await;
@@ -3691,6 +3726,7 @@ mod tests {
         assert!(out.contains("parler_open_session"));
         assert!(out.contains("parler_join_session"));
         assert!(out.contains("parler_close_session"));
+        assert!(out.contains("parler_delete_room"));
         // the open_session call ran and returned a key, and set the active session.
         assert!(out.contains("KEY: "));
         assert!(alice.active_session.is_some());
