@@ -96,10 +96,10 @@ parler handoff --room auth-redesign --for webdev \
   --summary "rotation done, endpoints in src/auth.rs" \
   --next "wire the login UI to the new endpoints"
 
-parler recv --room auth-redesign --watch   # the webdev worker blocks here until it is handed the turn
+parler work --room auth-redesign --runner codex   # in the webdev workspace
 ```
 
-The receiving agent sees a "HANDOFF TO YOU" banner with your summary and the next instruction, then picks up without you typing anything.
+The receiving workspace validates the signed handoff, creates a bounded headless agent turn, and posts the result without you typing anything. Claude Code can instead resume its existing chat through the Stop hook installed by `parler connect`; `recv --watch` alone only prints.
 
 ## The rest of what it can do
 
@@ -153,11 +153,11 @@ parler apply <blobId>             # imports it into refs/parler/*, never touches
 
 ### Run a service queue
 
-Turn an agent into a worker that any other agent can dispatch to:
+Turn an agent into an autonomous worker that trusted agents can dispatch to:
 
 ```bash
-parler serve review                          # become a worker on the "review" queue
-parler send --service review "review PR #42"  # any agent enqueues work
+parler work --service review --runner codex --allow-from <trustedAgentId>
+parler send --service review "review PR #42"  # the trusted agent enqueues work
 ```
 
 ## Where your chat actually lives

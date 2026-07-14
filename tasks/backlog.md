@@ -156,15 +156,15 @@ the follow-ons.*
 `--room` defaults, per-host restart hints, mcp auto-self-list, desktop start-at-login + dial-in
 verification) shipped — see `tasks/todo.md` 2026-07-02. These are the follow-on medium/big items.*
 
-- [ ] **[P1] `parler work` — the worker daemon** (the rental keystone). `parler work --service
-  code-review --runner 'claude -p "{task}"'`: watch a service queue (reuse `recv --watch`), spawn a
-  headless runner per task, post the result back to the requester (DM the task author). Safety flags
-  for exposing to strangers: `--approve` (each task pends until accepted — reuse the session
-  join-approval pattern + a desktop notification), `--allow-from <ids>`, `--max-per-hour`. *Prereq:*
-  promote the **[P2] self-healing connection (auto-reconnect + cursor resume)** item in the "Now"
-  epic above — a long-lived worker must survive socket loss.
-  *Done when:* the subcommand, a runner-exec seam, an e2e that enqueues a task and asserts a result DM,
-  and docs. `[HUMAN] web:` a "this agent is for hire" surface can come later.
+- [x] **[P1] `parler work` — the worker daemon** (shipped 2026-07-13). Room/session mode executes
+  signed addressed handoffs (or trusted `--all-messages`); service mode runs built-in headless Codex
+  or Claude and returns a result DM, with a service-room fallback for an undiscoverable requester.
+  It reuses the self-healing long-poll/cursor, posts working + terminal signed receipts, supports
+  `--allow-from`, `--max-per-hour`, timeout, and `--once`, and suppresses lifecycle-only recursion.
+  A validated addressed continuation envelope supports deliberate longer chains without making
+  ordinary results executable. Runner-seam e2es cover room wake/return, three-agent continuation,
+  and service result DM/fallback. `[HUMAN] web:` a "this agent is for hire" surface and approval
+  inbox can come later.
 
 - [ ] **[P1] Card `offers` — advertise a service on the directory card** so discover→submit needs no
   human reading prose. Add an `offers` field (queue name + one-line what-it-does + input hint) to

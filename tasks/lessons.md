@@ -306,3 +306,13 @@ Format: `- **<short trigger>:** <the rule>. <why, in a clause>`
   workspace scoping. Scope agent-hosted CLI/hook commands too, include a stable host session id when
   available for same-directory terminals, and preserve ordinary human `parler init` behavior. A full
   `/join/<code>` link must be parsed *before dialing* so its hub is not discarded. (2026-07-12.)
+
+- **Markdown backticks inside a double-quoted shell search are command substitution:** a diagnostic
+  `rg` pattern containing `` `parler work` `` accidentally invoked the installed `parler` binary.
+  Put regex/search patterns in shell single quotes (or remove the backticks) before passing them to
+  `exec_command`; never let documentation punctuation become executable shell syntax. (2026-07-13.)
+
+- **Unsigned routing metadata cannot authorize agent execution:** `mentions` are normalized by the
+  hub and excluded from message signatures, so a worker must not use them as the gate for a
+  workspace-writing turn. Require a signed addressed `HandoffRef`, or an explicit trusted-room
+  `--all-messages` opt-in. (2026-07-13.)

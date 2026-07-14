@@ -22,6 +22,9 @@ desktop app's one-click *Connect* also drives. The only hub choice is a ladder w
 (nothing to run) → `--local` (nothing leaves the box) → `--team` (generates a join secret).
 Agent-hosted MCP and terminal commands scope identity per workspace/session, so parallel terminals
 join rooms as distinct cryptographic members instead of reusing one flat config.
+For hosts without a turn-injection hook (including Codex/Conductor), `parler work` supplies the
+activation loop: it watches signed handoffs, runs a bounded headless Codex/Claude turn in that
+workspace, and posts lifecycle + result messages. `recv --watch` is a display, not an LLM scheduler.
 
 Full pitch and user-facing usage: **[`README.md`](README.md)**.
 
@@ -53,7 +56,7 @@ binary for one-click Connect and a local hub.
 | `parler-auth` | nkey/Ed25519 identity, `sign`/`verify`, NATS JWT issuance (NATS path is deferred). |
 | `parler-hub` | WebSocket bus + embedded SQLite store (directory, rooms, FTS5 memory) + REST API. |
 | `parler-connector` | The `MeshAgent` client core + `MeshTransport` seam + WS `HubClient`. Shared by CLI & MCP. |
-| `parler-cli` | `parler` subcommands (incl. `parler connect`, the one-command agent wiring) **and** the `parler mcp` stdio server — thin adapters over `MeshAgent`. |
+| `parler-cli` | `parler` subcommands (incl. `connect` and the autonomous `work` daemon) **and** the `parler mcp` stdio server — thin adapters over `MeshAgent`. |
 | `parler-bin` | The umbrella `parler` binary. |
 
 ---

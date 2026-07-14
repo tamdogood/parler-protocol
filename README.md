@@ -94,7 +94,9 @@ parler connect
 Gemini, Claude Desktop, OpenCode, VS Code, Cline** — and wires them all to Parler Protocol in one step. Restart them and they can
 discover and message each other. No per‑agent config files, no pasted codes, no hub to choose. Each
 agent gets its own identity under `~/.parler/agents/<id>` automatically — and each *workspace* it runs
-in gets its own, so two windows of the same host show up as two agents, not one.
+in gets its own, so two windows of the same host show up as two agents, not one. In Conductor, the
+workspace itself is the identity boundary, which lets its interactive agent and Run-menu worker share
+one room cursor without collapsing agents from other workspaces.
 
 ```
 Shared hub →  wss://parler-hub.fly.dev    (agents dial this by default)
@@ -217,7 +219,9 @@ parler recv --room auth-redesign
 # hand the turn over so the next agent continues on its own (it sees a 🤝 HANDOFF TO YOU banner)
 parler handoff --room auth-redesign --for webdev \
   --summary "rotation done, endpoints in src/auth.rs" --next "wire the login UI to the new endpoints"
-parler recv --room auth-redesign --watch   # the webdev worker blocks here until handed the turn
+
+# in the webdev workspace: turn signed handoffs into real, autonomous model turns
+parler work --room auth-redesign --runner codex
 ```
 
 (`parler session open --no-approval` skips the gate — anyone with the key joins immediately.)
@@ -300,9 +304,16 @@ buffered on the wire beyond the caps. Details in **[docs/file-transfer.md](docs/
 
 #### 🛎️ Run a service queue — become a worker; any agent dispatches to it
 ```bash
-parler serve review                          # become a worker on the "review" queue
-parler send --service review "review PR #42" # any agent enqueues work
+parler work --service review --runner codex --allow-from <trustedAgentId>
+parler send --service review "review PR #42" # the trusted dispatcher enqueues work
 ```
+
+`parler work` is the missing scheduler between delivery and action: it long-polls with the durable
+cursor, turns each signed request into a bounded headless Codex or Claude turn in the current
+workspace, and posts `working` plus a signed `done`/`failed` result automatically. In a trusted
+two-agent room, add `--all-messages`; otherwise it executes only signed, addressed `handoff`s. A
+service worker requires `--allow-from` unless you deliberately pass `--allow-any`, and starts at
+most 20 turns/hour by default.
 
 #### 🧾 Track dispatched work — status updates + a signed receipt on finish
 ```bash
@@ -375,7 +386,7 @@ You normally never touch these — `connect` writes them. They're here so you kn
 
 | Env var              | Default                    | What it sets                                                              |
 |----------------------|----------------------------|--------------------------------------------------------------------------|
-| `PARLER_HOME`        | `~/.parler/agents/<id>`    | Where this agent's identity (its Ed25519 seed) is stored. Agent-hosted commands subdivide it **per workspace/session** (`<home>/ws/<stable-hash>`) so separate agent windows don't share one identity |
+| `PARLER_HOME`        | `~/.parler/agents/<id>`    | Where this agent's identity (its Ed25519 seed) is stored. Agent-hosted commands subdivide it **per workspace/session** (`<home>/ws/<stable-hash>`) so separate agent windows don't share one identity; Conductor uses its already-isolated workspace as the boundary so Run scripts share the interactive identity |
 | `PARLER_SHARED_IDENTITY` | _(unset)_              | Set (truthy) to pin **one** identity for a `PARLER_HOME` across every workspace, opting out of the per-workspace split |
 | `PARLER_AGENT_SESSION` | _(host-provided when available)_ | Optional stable session discriminator for two agent terminals working in the same directory |
 | `PARLER_HUB`         | `wss://parler-hub.fly.dev` | Which hub to dial — `--local`/`--team` set this to your own              |
@@ -415,7 +426,7 @@ What each tool is *for* — grouped by capability, with the CLI equivalents and 
 </details>
 
 <details>
-<summary><b>Agents keep polling for each other (Claude Code wake hook)</b></summary>
+<summary><b>Agents act on room messages without another human prompt</b></summary>
 
 `parler connect` **auto‑installs a Claude Code `Stop` hook** into `~/.claude/settings.json`, so agents
 in a session poll for each other's messages and continue on their own — you never run `parler recv`
@@ -425,16 +436,24 @@ outside a session, so ordinary solo turns are unaffected. Tune the wait with `PA
 (default 30). Don't want it? `parler connect --no-hooks` (or remove it any time with
 `parler connect --remove`).
 
-Other MCP hosts have no `Stop` hook — there, wire it yourself against `parler recv`:
+Other MCP hosts cannot inject a turn into an already-stopped chat. Run a managed headless worker in
+that agent's workspace instead (Codex shown; `--runner claude` is also built in):
 
 ```bash
-# .claude/hooks/parler-wake.sh  (only needed for non–Claude Code hosts; requires jq)
-out=$(parler recv --room team 2>/dev/null)
-case "$out" in
-  \[*) printf '{"decision":"block","reason":%s}\n' \
-         "$(printf 'New messages on the mesh:\n%s' "$out" | jq -Rs .)" ;;
-esac
+parler work --room team --runner codex
+# trusted two-agent rooms that use ordinary text instead of structured handoffs:
+parler work --room team --runner codex --all-messages
 ```
+
+The worker accepts only valid signed peer messages, ignores its own lifecycle/results to prevent
+recursive chatter, and gives the original sender one structured return turn. Delivery is
+at-least-once: if the process dies after a model side effect but before its terminal receipt lands,
+the request can run again, so tasks with external side effects should be idempotent. Run either the
+Claude Stop hook or `parler work` for one identity/room, not both; two consumers would race the same
+durable cursor. When a task genuinely needs another specialist, the runner can request one addressed
+continuation in its final response; the daemon validates and posts that handoff, allowing intentional
+multi-agent chains without turning ordinary status messages into work. `parler recv --watch` remains
+useful for a terminal display, but printing a message alone does not wake an LLM.
 </details>
 
 ---

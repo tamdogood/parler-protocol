@@ -120,3 +120,52 @@ the two concrete DoS vectors (writer contention, disk fill) with minimal surface
   links carry their hub into both CLI routing and MCP mismatch errors.
 - Binary-level isolated-hub test: a full join link produced 3 roster members with 3 unique ids.
 - `CI_SKIP_WEB=1 make ci` passes. Self-review: no findings remain.
+
+---
+
+# Autonomous room worker
+
+## Plan
+- [x] Add `parler work` as a long-lived worker for an active session, explicit room, or service
+      queue; use the existing self-healing long-poll path so a peer message creates a real turn.
+- [x] Execute signed, allowed work through built-in Codex/Claude headless runners, with a bounded
+      timeout and rate; targeted handoffs are actionable by default, with an explicit two-agent
+      `--all-messages` mode for ordinary room requests.
+- [x] Post signed working/done/failed lifecycle messages and the runner result, while treating
+      lifecycle/result messages as non-actionable so two workers cannot recursively trigger.
+- [x] Add a runner seam plus unit/e2e coverage for targeting, trust/allow-list gates, wake-to-run,
+      result delivery, cursor durability, and loop prevention.
+- [x] Update README/communication/mesh/task docs and add a Conductor-local run command for starting
+      the worker in this workspace.
+- [x] Run targeted checks, `make ci`, and self-review against `docs/code-review-guidelines.md`.
+
+## Risks
+- Conductor/Codex does not expose a documented hook that injects a message into an already-stopped
+  interactive chat; autonomy therefore runs a managed headless turn in the same workspace.
+- Remote room text becomes model input and may cause workspace edits. Require valid message
+  signatures, keep service queues allow-listed by default, sandbox the runner, and bound time/rate.
+- A worker must never execute its own status/result messages or a pair of workers can ping-pong
+  forever; terminal task parts are a hard non-actionable boundary.
+
+## Review
+- Root cause confirmed: durable delivery and room context were working, but a stopped Codex/
+  Conductor chat had no scheduler to create its next model turn. `recv --watch` could only print.
+- Added `parler work` for rooms, active sessions, and service queues. It validates signatures and
+  sender allow-lists, runs one sandboxed Codex/Claude process at a time, bounds time/rate, posts
+  working + terminal receipts, and commits the cursor only after the result lands.
+- Fresh room work gets one automatic return turn. A runner can deliberately extend or route a chain
+  with one validated, addressed `PARLER_HANDOFF` final-line envelope; ordinary lifecycle/results
+  remain inert, preventing accidental ping-pong.
+- Conductor now treats its isolated workspace as the identity boundary, so the interactive MCP agent
+  and Run-menu worker share the active room/cursor. Personal Run entries for Codex and Claude were
+  installed in the repository's local Conductor settings.
+- Coverage includes 11 worker tests with real in-process hub/WebSocket room, service-DM/fallback,
+  automatic-return, and explicit three-agent continuation flows. The full CLI suite passed (124),
+  final Clippy passed with warnings denied, documentation reference checks passed, and the exact
+  unmodified `make ci` aggregate is green on the finished diff.
+- Self-review found and removed an unsigned-mention authorization path: hub-normalized `mentions`
+  cannot launch a turn; only a signed addressed handoff or explicit `--all-messages` can do so. A
+  negative test now locks that trust boundary.
+- Self-review: no correctness, security, protocol-compatibility, or documentation-drift findings
+  remain. External side effects are honestly documented as at-least-once, and users are warned not to
+  run two activation consumers on the same identity/room cursor.

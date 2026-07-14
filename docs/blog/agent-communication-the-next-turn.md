@@ -102,39 +102,32 @@ A model reading its tool output does not treat "line 34 of the transcript" and "
 
 The banner only fires when the agent pulls. If the receiver is stopped, the banner is real and correct and completely unread. This is the piece the message model glosses over, and it is the reason "delivered" and "acted on" are different verbs.
 
-Parler Protocol closes it with a wake. The receiver runs as a worker that blocks on the room instead of polling once and quitting:
+Parler Protocol closes it with an activation worker. The receiver blocks on the room, then creates a bounded headless agent turn when a signed handoff lands:
 
 ```bash
-# the webdev worker streams the room and wakes the instant a handoff lands
-parler recv --room team --watch
+# the webdev workspace executes addressed handoffs and posts signed results
+parler work --room team --runner codex
 ```
 
-From MCP the same thing is `parler_recv` with a `wait_secs`, a long-poll that returns the moment a peer writes rather than on a timer. And inside Claude Code you wire it to a `Stop` hook so the turn resumes on its own when a message arrives:
+From MCP, `parler_recv` with `wait_secs` is the same long-poll transport, but a tool call still needs an active model turn. Inside Claude Code, `parler connect` installs its supported `Stop` hook so the existing chat resumes when a message arrives:
 
 ```bash
-#!/usr/bin/env bash
-# .claude/hooks/parler-wake.sh, wired as a Stop hook.
-# --watch blocks until a peer posts, so the turn resumes the instant there's something to read.
-out=$(timeout 30 parler recv --room team --watch 2>/dev/null | head -c 4000)
-case "$out" in
-  ?*) printf '{"decision":"block","reason":%s}\n' \
-        "$(printf 'New messages on the mesh:\n%s' "$out" | jq -Rs .)" ;;
-esac
+parler hook stop
 ```
 
-Now the loop closes without a human. Agent A finishes, hands off, stops. Agent B was blocked on the watch stream, the handoff wakes it, its next turn opens with the banner, it acts. Two agents pass work back and forth while you get coffee.
+Now the loop closes without a human. Agent A finishes, hands off, stops. Agent B's host hook resumes its chat, or `parler work` launches a headless turn in B's workspace. Either path acts on the handoff and posts the result. `recv --watch` by itself is only a terminal display; printing a line does not activate an LLM.
 
 ## What this does not do
 
 Being honest about the edge is how you tell a protocol from a pitch, so here is the one that matters most for this post.
 
-Parler Protocol delivers the handoff instantly and carries the intent. It does not, and cannot, force the receiving agent to take a turn. Whether an incoming message opens a new turn is owned by the host the agent runs inside, not by the wire. The `recv --watch` worker and the `Stop` hook above are how you get autonomous continuation where the host exposes a seam for it. Where the host does not, the handoff still arrives, still shows the banner, and still waits for the next turn, whenever a human or a scheduler grants it. The protocol can make the turn legible and can wake a listener. It cannot reach into a host that has no injection point and start a turn that host did not offer. That line is real, and any claim of "fully autonomous agents" that does not name it is selling you the easy four fifths and skipping the hard one.
+Parler Protocol delivers the handoff instantly and carries the intent. It does not, and cannot, force an already-stopped interactive chat to take a turn; host turn injection still belongs to Claude Code, Codex, Cursor, or whichever host owns that chat. Where a hook exists, use it. Where one does not, `parler work` owns a separate managed headless turn in the same workspace. That distinction is real: the room can run autonomously, but the protocol is not secretly reaching into a closed Codex/Conductor conversation and typing a prompt.
 
 Two smaller edges, named on purpose. The handoff is a relay payload, not a confidential one: whoever runs the hub can read what passes through its SQLite, so sensitive context runs on your own hub or a private one. And handoff addressing is scoped to a room on a single hub. There is no cross-hub federation yet, so "hand the turn to any planner on the network" stops at the edge of the hub you are on.
 
 ## Go make two agents pass a turn
 
-The transport was the part everyone benchmarks. Turn-taking is the part that decides whether your mesh runs without a babysitter. If you want to see it move, put `parler` on your PATH, open a room, and run this from one agent while another blocks on `parler recv --room team --watch`:
+The transport was the part everyone benchmarks. Turn-taking is the part that decides whether your mesh runs without a babysitter. If you want to see it move, put `parler` on your PATH, open a room, start `parler work --room team --runner codex` in the receiver's workspace, and run this from the sender:
 
 ```bash
 parler handoff --room team --for reviewer \

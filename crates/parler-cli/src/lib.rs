@@ -7,6 +7,7 @@
 pub mod bring;
 pub mod connect;
 pub mod mcp;
+pub mod worker;
 pub(crate) mod names;
 
 use anyhow::{bail, Result};
@@ -74,6 +75,8 @@ enum Cmd {
     Handoff(HandoffArgs),
     /// Post a task status update (accepted/working/awaiting/done/failed/cancelled) to a room/peer/queue.
     Task(TaskArgs),
+    /// Run as an autonomous worker: wake on room handoffs/tasks, execute them, and post the result.
+    Work(WorkArgs),
     /// Hand off code: bundle a git ref and push it to a room/peer/service.
     Push(PushArgs),
     /// Transfer a file to a room/peer/service (content-addressed; the peer runs `parler fetch`).
@@ -416,6 +419,40 @@ struct TaskArgs {
 }
 
 #[derive(Args)]
+struct WorkArgs {
+    /// Watch this channel/session room (default: the active session).
+    #[arg(long, conflicts_with = "service")]
+    room: Option<String>,
+    /// Join and watch this service queue; results are sent back to each requester's DM.
+    #[arg(long, conflicts_with = "room")]
+    service: Option<String>,
+    /// Headless agent used for each turn.
+    #[arg(long, default_value = "codex", value_parser = ["codex", "claude"])]
+    runner: String,
+    /// Treat every signed peer text message as work. Intended for a trusted two-agent room; without
+    /// this flag only signed, addressed handoffs execute.
+    #[arg(long)]
+    all_messages: bool,
+    /// Only execute messages signed by this agent id (repeatable). Room mode otherwise trusts any
+    /// approved member; service mode requires this or --allow-any.
+    #[arg(long = "allow-from", value_name = "AGENT_ID")]
+    allow_from: Vec<String>,
+    /// Let any signed service requester run the worker. Unsafe on a public/untrusted hub; prefer
+    /// --allow-from whenever possible.
+    #[arg(long, conflicts_with = "allow_from")]
+    allow_any: bool,
+    /// Maximum model turns started per rolling hour. 0 disables the cap.
+    #[arg(long, default_value_t = 20)]
+    max_per_hour: u32,
+    /// Wall-clock limit for each model turn, in seconds.
+    #[arg(long, default_value_t = 900, value_parser = clap::value_parser!(u64).range(1..=7200))]
+    timeout_secs: u64,
+    /// Exit after one actionable message (useful for schedulers and tests).
+    #[arg(long)]
+    once: bool,
+}
+
+#[derive(Args)]
 struct PushArgs {
     /// Push to a channel room (one-to-many).
     #[arg(long)]
@@ -584,6 +621,7 @@ pub async fn run() -> Result<()> {
         Cmd::Send(a) => cmd_send(a).await,
         Cmd::Handoff(a) => cmd_handoff(a).await,
         Cmd::Task(a) => cmd_task(a).await,
+        Cmd::Work(a) => cmd_work(a).await,
         Cmd::Push(a) => cmd_push(a).await,
         Cmd::SendFile(a) => cmd_send_file(a).await,
         Cmd::Fetch(a) => cmd_fetch(a).await,
@@ -603,7 +641,7 @@ pub async fn run() -> Result<()> {
 }
 
 fn command_uses_workspace_identity(cmd: &Cmd, agent_shell: bool) -> bool {
-    matches!(cmd, Cmd::Mcp | Cmd::Hook { .. })
+    matches!(cmd, Cmd::Mcp | Cmd::Work(_) | Cmd::Hook { .. })
         || (agent_shell && !matches!(cmd, Cmd::Hub(_) | Cmd::Connect(_) | Cmd::Init(_) | Cmd::Doctor))
 }
 
@@ -1550,6 +1588,43 @@ async fn cmd_task(a: TaskArgs) -> Result<()> {
     let (_id, seq, room) = ag.send(target, vec![task.to_part()], None, None).await?;
     let id = task.task.map(|i| format!(" ({i})")).unwrap_or_default();
     println!("{} task {}{id} posted to '{room}' (seq {seq})", status.marker(), status.label());
+    Ok(())
+}
+
+async fn cmd_work(a: WorkArgs) -> Result<()> {
+    if a.service.is_some() && a.allow_from.is_empty() && !a.allow_any {
+        bail!(
+            "service workers execute remote model input: pass --allow-from <agent-id> (repeatable), \
+             or explicitly opt into every signed requester with --allow-any"
+        );
+    }
+    if a.all_messages && a.service.is_some() {
+        bail!("--all-messages is only for a room/session; every service request is already a task");
+    }
+    let mut ag = connect().await?;
+    let (room, source) = match (a.room, a.service) {
+        (Some(room), None) => (room, worker::WorkSource::Room),
+        (None, Some(service)) => {
+            let room = ag.serve(&service).await?;
+            (room, worker::WorkSource::Service)
+        }
+        (None, None) => (
+            load_active_session()
+                .ok_or_else(|| anyhow::anyhow!("specify --room/--service, or open/join a session first"))?,
+            worker::WorkSource::Room,
+        ),
+        (Some(_), Some(_)) => bail!("specify only one of --room or --service"),
+    };
+    let runner = worker::ProcessRunner::parse(&a.runner)?;
+    let options = worker::WorkOptions {
+        source,
+        all_messages: a.all_messages,
+        allow_from: a.allow_from.into_iter().collect(),
+        max_per_hour: a.max_per_hour,
+        timeout: Duration::from_secs(a.timeout_secs),
+        once: a.once,
+    };
+    worker::run(&mut ag, &room, &options, &runner).await?;
     Ok(())
 }
 

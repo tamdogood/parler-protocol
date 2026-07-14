@@ -19,12 +19,15 @@ next agent continues without a human re-prompting:
 parler handoff --room pipeline --for editor \
   --summary "draft in refs/parler/draft (parler apply <blob>)" \
   --next "tighten the draft and hand it to translator"
-# editor watches the room and continues the moment it's handed the turn
-parler recv --room pipeline --watch
+# editor workspace turns the handoff into an actual model turn
+parler work --room pipeline --runner codex
 ```
 
-Each stage `handoff --for <next>`; the final stage posts the result. Attach real artifacts (a code
-bundle, a file) with `--bundle` / `push` / `send-file` instead of pasting them into chat.
+Each stage names its intended successor; the worker prompt gives the headless runner a validated
+`PARLER_HANDOFF` continuation envelope, so it can route one deliberate next turn without calling the
+transport itself. The final stage omits that continuation and posts only its result. Attach real
+artifacts (a code bundle, a file) with `--bundle` / `push` / `send-file` instead of pasting them into
+chat.
 
 ## Routing — a dispatcher picks the specialist
 
@@ -32,9 +35,9 @@ A router agent reads a request and forwards it to the right worker. Workers `ser
 router `send --service` the one it chose:
 
 ```bash
-# specialists register as workers
-parler serve rust-review          # (on the rust reviewer)
-parler serve docs-review          # (on the docs reviewer)
+# specialists run bounded autonomous workers (allow-list real dispatcher ids)
+parler work --service rust-review --runner codex --allow-from <dispatcherId>
+parler work --service docs-review --runner claude --allow-from <dispatcherId>
 
 # the router classifies, then dispatches to the matching queue
 parler send --service rust-review "review crates/parler-hub/src/server.rs"
@@ -60,7 +63,8 @@ parler recv --room release-audit --watch
 ```
 
 Because delivery is durable and pull-based, a coordinator that steps away resumes exactly where it
-left off — no reply is missed while it was busy.
+left off — no reply is missed while it was busy. Use `parler work --room release-audit` when the
+coordinator should also act without another human turn; `recv --watch` is only a live display.
 
 ## Long-running work — status while it runs
 
