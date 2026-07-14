@@ -138,6 +138,27 @@ async fn one_to_one_dm_pairing_round_trips() {
 }
 
 #[tokio::test]
+async fn room_owner_can_delete_room_and_members_lose_access() {
+    let hub = start_hub().await;
+    let mut alice = agent(&hub, "alice", None).await;
+    let mut bob = agent(&hub, "bob", None).await;
+
+    let inv = alice.invite(RoomKind::Channel, Some("cleanup".into()), None, None).await.unwrap();
+    bob.join(&inv.code).await.unwrap();
+    alice.send_text(Target::Room { room: inv.room.clone() }, "before delete").await.unwrap();
+
+    assert!(bob.delete_room(&inv.room).await.is_err(), "a non-owner member cannot delete the room");
+    alice.delete_room(&inv.room).await.unwrap();
+
+    let alice_rooms = alice.rooms().await.unwrap();
+    assert!(alice_rooms.iter().all(|r| r.name != inv.room));
+    let bob_rooms = bob.rooms().await.unwrap();
+    assert!(bob_rooms.iter().all(|r| r.name != inv.room));
+    assert!(bob.pull(&inv.room, None, None).await.is_err(), "deleted room is no longer readable");
+    assert!(bob.send_text(Target::Room { room: inv.room.clone() }, "after delete").await.is_err());
+}
+
+#[tokio::test]
 async fn one_to_many_channel_fans_out() {
     let hub = start_hub().await;
     let mut alice = agent(&hub, "alice", None).await;

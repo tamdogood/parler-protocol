@@ -2303,6 +2303,12 @@ fn handle_authed(state: &HubState, me: &Authed, frame: ClientFrame) -> anyhow::R
 
         ClientFrame::Rooms => Ok(ServerFrame::Rooms { rooms: store.rooms_of(&me.id)? }),
 
+        ClientFrame::DeleteRoom { room } => {
+            store.delete_room(&room, &me.id)?;
+            state.notify_room(&room);
+            Ok(ServerFrame::RoomDeleted { room })
+        }
+
         ClientFrame::Roster { room } => {
             if !store.is_member(&room, &me.id)? {
                 return Err(coded(error_code::NOT_MEMBER, format!("not a member of '{room}'")));

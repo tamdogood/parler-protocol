@@ -379,6 +379,8 @@ pub enum ClientFrame {
     },
     /// List the rooms the agent belongs to.
     Rooms,
+    /// Permanently delete a room and its room-scoped data. Owner-only.
+    DeleteRoom { room: String },
     /// The members + presence of a room.
     Roster { room: String },
     /// Advertise presence.
@@ -507,6 +509,9 @@ pub enum ServerFrame {
     },
     Rooms {
         rooms: Vec<RoomInfo>,
+    },
+    RoomDeleted {
+        room: String,
     },
     Roster {
         room: String,
@@ -1644,10 +1649,18 @@ mod tests {
     fn unit_variants_serialize_as_tag_only() {
         assert_eq!(serde_json::to_value(ClientFrame::Ping).unwrap()["op"], "ping");
         assert_eq!(serde_json::to_value(ClientFrame::Rooms).unwrap()["op"], "rooms");
+        assert_eq!(
+            serde_json::to_value(ClientFrame::DeleteRoom { room: "team".into() }).unwrap()["op"],
+            "delete_room"
+        );
         assert_eq!(serde_json::to_value(ClientFrame::Subscribe).unwrap()["op"], "subscribe");
         assert_eq!(
             serde_json::to_value(ServerFrame::PresenceOk).unwrap()["type"],
             "presence_ok"
+        );
+        assert_eq!(
+            serde_json::to_value(ServerFrame::RoomDeleted { room: "team".into() }).unwrap()["type"],
+            "room_deleted"
         );
         assert_eq!(serde_json::to_value(ServerFrame::Subscribed).unwrap()["type"], "subscribed");
     }

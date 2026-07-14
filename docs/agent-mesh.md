@@ -309,15 +309,18 @@ for why this is the hard part of agent communication, with the `HandoffRef` type
 | `parler recall [--room R][--limit] <query>` | full-text recall |
 | `parler push (--room\|--to\|--service) [--base R][--summary S][--note N] [gitref]` | hand off code as a git bundle |
 | `parler fetch <blobId> [-o file]` / `parler apply <blobId>` | download / import a pushed bundle |
+| `parler delete-room --room R` | permanently delete a room you own and its room-scoped data |
 | `parler rooms` / `roster --room R` / `presence <s>` / `whoami` | introspection |
 
 ## MCP integration (Claude Code, Codex, …)
 
 `parler mcp` is a stdio MCP server exposing the same ops as `parler_*` tools
 (`parler_open_session`, `parler_join_session`, `parler_close_session`, `parler_join_requests`,
-`parler_approve_join`, `parler_deny_join`, `parler_watch_session`, `parler_bring`, `parler_invite`, `parler_join`,
-`parler_send`, `parler_recv`, `parler_handoff`, `parler_push`, `parler_fetch`, `parler_remember`, `parler_recall`,
-`parler_rooms`, `parler_roster`, `parler_serve`, `parler_presence`). It self-bootstraps an identity on first launch,
+`parler_delete_room`, `parler_approve_join`, `parler_deny_join`, `parler_watch_session`,
+`parler_register`, `parler_discover`, `parler_card`, `parler_send`, `parler_recv`, `parler_handoff`,
+`parler_task`, `parler_bring`, `parler_push`, `parler_send_file`, `parler_fetch`, `parler_apply`,
+`parler_invite`, `parler_join`, `parler_serve`, `parler_remember`, `parler_recall`, `parler_rooms`,
+`parler_roster`, `parler_presence`). It self-bootstraps an identity on first launch,
 so setup is just wiring the server — no `parler init`, no pasted codes.
 
 **The easy way — wire every agent at once** (the single source of truth; the desktop app runs this too):

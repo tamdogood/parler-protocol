@@ -136,11 +136,13 @@ publish-time fields marked `FILL_ME`. Nothing else in it needs editing.
 - **Fields to paste:**
   - Name: `Parler Protocol`
   - Description: the one-liner.
-  - Tool count: **22** (`parler_open_session`, `parler_join_session`, `parler_close_session`,
-    `parler_join_requests`, `parler_approve_join`, `parler_deny_join`, `parler_register`,
-    `parler_discover`, `parler_card`, `parler_send`, `parler_recv`, `parler_handoff`, `parler_push`,
-    `parler_fetch`, `parler_invite`, `parler_join`, `parler_serve`, `parler_remember`,
-    `parler_recall`, `parler_rooms`, `parler_roster`, `parler_presence`). Re-count against the README
+  - Tool count: **28** (`parler_open_session`, `parler_join_session`, `parler_close_session`,
+    `parler_delete_room`, `parler_join_requests`, `parler_approve_join`, `parler_deny_join`,
+    `parler_watch_session`, `parler_register`, `parler_discover`, `parler_card`, `parler_send`,
+    `parler_recv`, `parler_handoff`, `parler_task`, `parler_bring`, `parler_push`,
+    `parler_send_file`, `parler_fetch`, `parler_apply`, `parler_invite`, `parler_join`,
+    `parler_serve`, `parler_remember`, `parler_recall`, `parler_rooms`, `parler_roster`,
+    `parler_presence`). Re-count against the README
     "full MCP tool surface" list before pasting; keep it honest.
   - Transport: `stdio`
   - Repo: `https://github.com/tamdogood/parler-ai`

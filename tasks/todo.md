@@ -123,6 +123,31 @@ the two concrete DoS vectors (writer contention, disk fill) with minimal surface
 
 ---
 
+# Add room deletion
+
+## Plan
+- [x] Add additive protocol/connector support for owner-only room deletion.
+- [x] Implement hub/store cleanup for room membership, messages, invites, join requests, watch tokens,
+      room-scoped facts, and blob bindings.
+- [x] Expose the capability through CLI and MCP.
+- [x] Add store/e2e/MCP regression tests and update docs.
+- [x] Run targeted checks, `CI_SKIP_WEB=1 make ci`, and self-review.
+
+## Risks
+- Deletion is destructive; non-owners must not be able to erase shared history.
+- Cleanup must not leak deleted room data through watch tokens, blobs, memory, rooms, roster, or pull.
+
+## Review
+- Added additive `delete_room` / `room_deleted` frames, `MeshAgent::delete_room`, CLI
+  `parler delete-room --room R`, and MCP `parler_delete_room` (defaults to active session).
+- Store deletion is owner-only and atomically purges room-scoped messages, members, invites, pending
+  joins, watch tokens, facts, and blob bindings; blob bytes remain for existing GC.
+- Regression coverage: store cleanup/authorization, real WebSocket member access loss, MCP active
+  session clearing, protocol serialization, MCP schema/doc guards.
+- `scripts/verify.sh --rust-only` and `CI_SKIP_WEB=1 make ci` pass.
+
+---
+
 # Autonomous room worker
 
 ## Plan
