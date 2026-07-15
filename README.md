@@ -433,6 +433,9 @@ parler doctor
 
 It checks local configuration integrity, Ed25519 keypair verification, hub reachability, valid join secrets, host MCP entry presence, and detects stale environment variables.
 
+For MCP startup timeouts, a local hub that is no longer running, port mismatches, and the exact
+public-vs-local recovery commands, see the [troubleshooting guide](docs/troubleshooting.md).
+
 <details>
 <summary><b>The full MCP tool surface</b></summary>
 

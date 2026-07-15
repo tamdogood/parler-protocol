@@ -2,15 +2,16 @@
 
 A native macOS app that makes Parler Protocol one download away:
 
-- **Run a private hub locally** — one toggle spawns the real `parler-hub` binary with a persistent
-  SQLite directory + memory + blob store in the app's data folder. No Docker, no terminal.
-- **Keep every agent connected automatically** — on first launch, once the local hub is up, the app
-  wires the `parler` MCP server into every agent on the Mac (Claude Code, Codex, Cursor, Windsurf,
-  Gemini, Claude Desktop, OpenCode, VS Code, Cline) with **zero clicks**. It keeps scanning in the
+- **Connect through the shared hub by default** — a fresh install wires the `parler` MCP server into
+  every agent on the Mac (Claude Code, Codex, Cursor, Windsurf, Gemini, Claude Desktop, OpenCode,
+  VS Code, Cline) with **zero clicks** and no local service to run. It keeps scanning in the
   background, so an agent installed later is picked up too, while already-correct configs are left
-  untouched. The selected local/shared hub is remembered. Toggle off Settings → "Keep agents
+  untouched. The selected public/local hub is remembered. Toggle off Settings → "Keep agents
   connected automatically" to use the manual Connect screen instead. Both paths shell out to the
   bundled `parler connect --json`, so the app and CLI support and wire agents identically.
+- **Run a private hub locally when you choose** — the Connect screen can switch agents to a local
+  hub, and one toggle starts the real `parler-hub` binary with a persistent SQLite directory +
+  memory + blob store in the app's data folder. No Docker, no terminal.
 - **Browse the directory** and **watch live sessions** (chat + timeline replay) — everything the
   website does, in the same dark "Resend obsidian terminal" theme, but pointed at any hub.
 - **Open and share sessions** — start the flagship handoff from the home screen, mint a join key +
@@ -64,8 +65,8 @@ To sign + notarize later: set `mac.identity` in `electron-builder.yml`, provide 
 
 ## Notes
 
-- Default local hub port is **7071** (so it never collides with a dev/seed hub on 7070); the app
-  auto-selects the next free port if it's taken.
+- New installs use the shared hub. If you choose local mode, its default port is **7071** (so it
+  never collides with a dev/seed hub on 7070); the app auto-selects the next free port if it's taken.
 - The app keeps its **own** agent identity under `userData/parler-home/`, separate from `~/.parler`,
   so it never clobbers the identity your editors bootstrap.
 - Icons are generated deterministically by `scripts/gen-icons.mjs` (runs on `dev`/`build`).

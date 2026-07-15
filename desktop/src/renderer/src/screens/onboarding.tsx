@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { ArrowRight, Check, Loader2, Terminal, ShieldCheck, Sparkles, AlertTriangle } from "lucide-react";
-import type { ConnectAllResult, HubStatus, McpHost } from "@shared/types";
+import type { ConnectAllResult, HubStatus, HubTarget, McpHost } from "@shared/types";
 import { parler } from "@/lib/ipc";
 import { cn } from "@/lib/utils";
 import { useHubUrl } from "@/lib/hooks";
@@ -8,21 +8,23 @@ import { Button } from "@/components/ui/button";
 import { CodeBlock } from "@/components/copyable";
 import { DialInList } from "@/components/dial-in";
 
-/** First-run setup: a welcome, then connect the first agent to the auto-started local hub. */
+/** First-run setup: a welcome, then connect the first agent to the selected hub. */
 export function Onboarding({
   status,
   autoConnect,
+  target,
   onFinish,
 }: {
   status: HubStatus | null;
   autoConnect: boolean;
+  target: HubTarget;
   onFinish: () => void;
 }) {
   const [step, setStep] = useState(0);
 
   const start = () => {
-    // Kick off the local hub so it's ready by the time they connect.
-    if (status?.phase !== "running") void parler.hub.start();
+    // Local mode needs a hub first. Public mode needs no local process.
+    if (target === "local" && status?.phase !== "running") void parler.hub.start();
     setStep(1);
   };
 
@@ -33,7 +35,7 @@ export function Onboarding({
         {step === 0 ? (
           <Welcome onNext={start} />
         ) : (
-          <ConnectFirst status={status} autoConnect={autoConnect} onFinish={onFinish} />
+          <ConnectFirst status={status} autoConnect={autoConnect} target={target} onFinish={onFinish} />
         )}
         <div className="mt-8 flex items-center justify-center gap-1.5">
           {[0, 1].map((i) => (
@@ -63,8 +65,8 @@ function Welcome({ onNext }: { onNext: () => void }) {
       <Logo />
       <h1 className="mt-6 text-[30px] font-semibold tracking-tight text-pure-white">Welcome to Parler Protocol</h1>
       <p className="mx-auto mt-2 max-w-sm text-[14px] leading-relaxed text-fog">
-        A private hub for your AI agents, running on this Mac. Connect your agents and hand off live sessions — no
-        copy-paste, no terminal.
+        Connect your agents through the shared hub, then hand off live sessions with no copy-paste or terminal. Switch
+        to a local hub any time from Connect when you need everything to stay on this Mac.
       </p>
       <Button variant="primary" size="lg" className="mt-7" onClick={onNext}>
         Get started <ArrowRight className="size-4" />
@@ -80,10 +82,12 @@ function Welcome({ onNext }: { onNext: () => void }) {
 function ConnectFirst({
   status,
   autoConnect,
+  target,
   onFinish,
 }: {
   status: HubStatus | null;
   autoConnect: boolean;
+  target: HubTarget;
   onFinish: () => void;
 }) {
   const [installed, setInstalled] = useState<McpHost[] | null>(null);
@@ -91,29 +95,29 @@ function ConnectFirst({
   const [busy, setBusy] = useState(false);
   const [autoTried, setAutoTried] = useState(false);
   const [result, setResult] = useState<ConnectAllResult | null>(null);
-  const localUrl = useHubUrl("local", status);
+  const hubUrl = useHubUrl(target, status);
 
   useEffect(() => {
     parler.agents.detectHosts().then((hs) => setInstalled(hs.filter((h) => h.installed)));
-    parler.agents.snippet("local").then((s) => setSnippet(s.shell));
-  }, [status?.phase]);
+    parler.agents.snippet(target).then((s) => setSnippet(s.shell));
+  }, [status?.phase, target]);
 
-  const ready = status?.phase === "running";
+  const ready = target === "public" || status?.phase === "running";
   const hasAgents = (installed?.length ?? 0) > 0;
   const done = (result?.connected ?? 0) > 0;
 
   const connect = async () => {
     setBusy(true);
     try {
-      setResult(await parler.agents.connectAll("local"));
+      setResult(await parler.agents.connectAll(target));
     } finally {
       setBusy(false);
     }
   };
 
-  // Zero-click setup: once the hub is up and agents are detected, wire them all automatically the
-  // first time through. We only auto-try once — a failed/partial wire drops to the manual button
-  // below so the user stays in control and can retry.
+  // Zero-click setup: once the selected hub is ready and agents are detected, wire them all
+  // automatically the first time through. We only auto-try once — a failed/partial wire drops to
+  // the manual button below so the user stays in control and can retry.
   useEffect(() => {
     if (!autoConnect || autoTried || busy || done) return;
     if (!ready || !hasAgents) return;
@@ -133,11 +137,11 @@ function ConnectFirst({
       <h2 className="mt-5 text-[22px] font-semibold tracking-tight text-pure-white">Connecting your agents</h2>
       <p className="mx-auto mt-1.5 max-w-sm text-[13px] text-fog">
         {autoConnect
-          ? "We're wiring every agent on this Mac to your hub for you — each mints its identity the first time it launches."
+          ? `We're wiring every agent on this Mac to the ${target === "public" ? "shared" : "local"} hub — each mints its identity the first time it launches.`
           : "Adding the MCP server is the whole setup — each agent mints its identity the first time it launches."}
       </p>
 
-      {!ready && (
+      {!ready && target === "local" && (
         <p className="mx-auto mt-4 flex max-w-sm items-center justify-center gap-2 text-[12.5px] text-complained-yellow">
           <Loader2 className="size-3.5 animate-spin" /> Starting your local hub…
         </p>
@@ -154,9 +158,9 @@ function ConnectFirst({
               <Check className="size-5 shrink-0" /> Connected {result?.connected} agent{(result?.connected ?? 0) > 1 ? "s" : ""}.
             </div>
             <p className="mt-1.5 text-[12.5px] text-delivered-green/90">Restart them to load Parler Protocol — then they appear under Agents.</p>
-            {localUrl && result && (
+            {target === "local" && hubUrl && result && (
               <DialInList
-                base={localUrl}
+                base={hubUrl}
                 hosts={result.results
                   .filter((r) => r.status === "wired")
                   .map((r) => ({ id: r.id, name: r.name, card: r.card_name ?? r.id }))}

@@ -62,10 +62,10 @@ export function registerIpc(supervisor: HubSupervisor): void {
     binPath: parlerBinary(),
   });
 
-  /** Hub context for the app's *own* identity: prefer the local hub when running, else public. */
+  /** Hub context for the app's own identity follows the user's selected connection target. */
   const hubContext = (): cli.HubContext => {
     const s = supervisor.getStatus();
-    if (s.phase === "running") {
+    if (loadSettings().connectTarget === "local" && s.phase === "running") {
       return { url: localWsUrl(), joinSecret: supervisor.joinSecret() };
     }
     return { url: PUBLIC_HUB, joinSecret: null };

@@ -84,6 +84,7 @@ export function App() {
         <Onboarding
           status={status}
           autoConnect={settings.autoConnectAgents}
+          target={settings.connectTarget}
           onFinish={async () => {
             await update({ onboarded: true });
             setReplayOnboarding(false);

@@ -10,8 +10,8 @@ import { DialInList } from "@/components/dial-in";
 
 /**
  * Connect an agent — the app's primary job. One click wires *every* detected agent (the CLI's
- * `parler connect` in a button); per-host controls stay below for fine-grained changes. Local hub by
- * default; the shared hub is a quiet advanced option.
+ * `parler connect` in a button); per-host controls stay below for fine-grained changes. Fresh installs
+ * use the shared hub; local mode stays one explicit switch away.
  */
 export function ConnectScreen({
   status,
