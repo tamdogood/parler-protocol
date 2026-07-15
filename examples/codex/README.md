@@ -1,139 +1,101 @@
 # Using Parler Protocol with Codex
 
-This guide explains how to configure Codex to use Parler Protocol for multi-agent collaboration, timeline capture, and memory retrieval.
+The recommended Codex workflow keeps the normal TUI visible and shares turns continuously with
+Claude Code, OpenCode, or another Codex instance. Use the MCP-only controls later when you need a
+scripted room rather than a visible conversation.
 
----
+## Install and connect
 
-## 1. Build and Install the Latest Parler Protocol Version
+From a release:
 
-Before configuring your environment, compile and install the latest Parler Protocol binary from the root of the repository:
+```bash
+curl -fsSL https://raw.githubusercontent.com/tamdogood/parler-protocol/main/scripts/install.sh | sh
+parler connect codex
+```
+
+From this checkout:
 
 ```bash
 cargo install --path crates/parler-bin --force
+parler connect codex
 ```
 
-Ensure that your cargo bin directory (usually `~/.cargo/bin`) is added to your system's `PATH` so the `parler` command runs anywhere.
+`parler connect codex` merges a `parler` MCP entry into `~/.codex/config.toml`; it does not replace
+other servers. A bare `parler connect` wires every detected host. Use `--local` for on-device-only
+traffic or `--team` for a LAN hub with a join secret.
 
----
+## Start or join a visible conversation
 
-## 2. Start the Hub Relay
+Codex is the default visible host:
 
-If you are running Parler Protocol locally, boot the Hub WebSocket relay:
+```bash
+# Create a new conversation from the latest Codex thread in this workspace.
+parler conversation --topic auth-redesign --resume last
 
-* **Start the Hub Relay**:
-  ```bash
-  parler hub --addr 127.0.0.1:7070
-  ```
-
----
-
-## 3. Configure the MCP Server
-
-Add the Parler Protocol MCP server to your global Codex configuration file (`~/.codex/config.toml`):
-
-```toml
-[mcp_servers.parler]
-command = "parler"
-args = ["mcp"]
-env = { PARLER_HOME = "~/.parler-codex", PARLER_HUB = "parler://127.0.0.1:7070", PARLER_NAME = "codex" }
+# In another terminal, join the exact hub carried by the printed key.
+parler conversation KEY@HUB
 ```
 
----
+Parler starts Codex app-server plus its normal remote TUI, adopts the TUI's native thread, and injects
+valid signed peer messages as turns in that same visible conversation. Human-typed Codex turns and
+final responses are posted back automatically. Shared file references are materialized before a late
+joiner's catch-up turn.
 
-## 4. Configure Global Timeline Capture Hooks
+Use `--resume <thread-id>` for a specific thread or omit `--resume` for a new blank Codex thread.
+The private key admits its holder immediately by default; add `--approval` when possession should
+only request access:
 
-To automatically stream your prompts and tool executions (e.g. file edits, commands) to your active Parler Protocol room, create or update your global hooks file at `~/.codex/hooks.json`:
-
-```json
-{
-  "hooks": {
-    "SessionStart": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "parler hook session-start"
-          }
-        ]
-      }
-    ],
-    "UserPromptSubmit": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "parler hook user-prompt-submit"
-          }
-        ]
-      }
-    ],
-    "PostToolUse": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "parler hook post-tool-use"
-          }
-        ]
-      }
-    ],
-    "Stop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "parler hook session-end"
-          }
-        ]
-      }
-    ]
-  }
-}
+```bash
+parler conversation --topic sensitive-review --resume last --approval
 ```
 
----
+Codex never fabricates approval for a peer-injected turn. App-server routes those requests to the
+bridge connection, where Parler declines escalation or returns an empty grant. Human-started TUI
+turns keep Codex's normal approval flow.
 
-## 5. Working in a Collaborative Session
+## Mix providers
 
-### How to Open/Create a Session Room:
-Before other agents can join, the host must initialize a collaborative session room:
+The portable key is host-independent:
 
-1. **Start the Hub Relay** (if hosting locally):
-   ```bash
-   parler hub --addr 127.0.0.1:7070
-   ```
-2. **Open the Session Room**:
-   Run the CLI open command from the host terminal:
-   ```bash
-   parler session open --topic "debugging-session" --no-approval
-   ```
-   This prints out the collaborative **Room ID** and a multi-use **Join Key** (`KEY`).
+```bash
+# Creator in Codex
+parler conversation --topic release-review --resume last
 
-### How to Join a Session:
-You can onboard Codex into an active collaborative session in two ways:
+# Joiner in Claude Code
+parler conversation KEY@HUB --host claude
 
-* **Prompt Codex in Chat**:
-  Simply tell Codex:
-  > "Join the Parler Protocol session using key: `<YOUR_JOIN_KEY>`"
+# Another joiner in OpenCode
+parler conversation KEY@HUB --host opencode
+```
 
-* **Environment Variable Injection**:
-  Start Codex from the command line:
-  ```bash
-  PARLER_SESSION_KEY="<YOUR_JOIN_KEY>" codex .
-  ```
+All three adapters share the same signed backlog, files, terminal-scoped identity, presence, durable
+cursor, task receipts, and explicit handoff behavior. Their native integration details are documented
+in [`../../docs/visible-host-adapters.md`](../../docs/visible-host-adapters.md).
 
-Once connected, your chat prompts and Codex's file writes/commands will automatically appear on the Parler Protocol browser session viewer.
+## Compatible low-level controls
 
-### How to Watch the Live Chat:
-To monitor the active session and tool replay timeline in your browser:
+For scripts or a host without a visible adapter, use the older room/session controls:
 
-1. **Mint a Watch Code**:
-   From the host terminal, generate a read-only watch code for the active room:
-   ```bash
-   parler session watch --room <room_id>
-   ```
-2. **Access the Session Page**:
-   Open your browser to the Parler Protocol directory site `/session` page (e.g. `http://localhost:3000/session`), paste your watch code, and click **Connect**.
-3. **Switch to Timeline Replay**:
-   Toggle to the **Timeline Replay** tab. You will see the agent roster update and be able to play/pause or scrub through prompts and tool execution details in real time.
+```bash
+parler session open --topic review --context "Current decision and files"  # approval-gated default
+parler session join KEY@HUB
+parler send --room <room> "review this"
+parler recv --room <room>
+```
 
+The same operations are available through `parler_open_session`, `parler_join_session`,
+`parler_send`, and `parler_recv`. Delivery alone does not wake every visible host. Use `parler work
+--runner codex` for a bounded managed headless task or `parler supervise --runner '<command>'` for an
+explicit local runner; neither is a substitute for the visible conversation adapter.
+
+## Troubleshooting
+
+```bash
+parler connect --list
+parler doctor
+codex --version
+```
+
+If `parler conversation` reports missing app-server or remote-TUI support, update Codex. It never
+falls back silently to `codex exec`. For hub routing, resume, and identity diagnostics, see
+[`../../docs/troubleshooting.md`](../../docs/troubleshooting.md).

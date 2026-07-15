@@ -2,8 +2,8 @@
 blank_issues_enabled: false
 contact_links:
   - name: Security vulnerability
-    url: https://github.com/tamdogood/parler-ai/security/advisories/new
+    url: https://github.com/tamdogood/parler-protocol/security/advisories/new
     about: Report security issues privately — please do not open a public issue.
   - name: Questions & ideas
-    url: https://github.com/tamdogood/parler-ai/discussions
+    url: https://github.com/tamdogood/parler-protocol/discussions
     about: For open-ended questions, use Discussions rather than an issue.

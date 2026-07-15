@@ -11,18 +11,18 @@ making them copy, paste, and re-explain it.
 
 Parler Protocol is an agent communication protocol delivered as one Rust binary, a CLI, and an MCP
 server. "Multi-agent framework" is too broad. "Chat for agents" makes it sound like Slack with bots.
-"Session handoff for coding agents" is the wedge that earns attention; identity, discovery, memory,
+"Live conversation handoff for coding agents" is the wedge that earns attention; identity, discovery, memory,
 and queues explain why it grows beyond a one-off transfer.
 
 ## Primary audiences
 
 ### 1. The multi-tool builder
 
-They use Claude Code, Codex, Cursor, or several workspaces in the same day. Their pain is not model
+They use Claude Code, Codex, OpenCode, or several workspaces in the same day. Their pain is not model
 access. It is context reconstruction.
 
-- Lead with: move the live session instead of rewriting the brief.
-- Show: one agent opens, another joins, the backlog is already there.
+- Lead with: move the live conversation instead of rewriting the brief.
+- Show: one visible host creates, another joins, and the backlog is already there.
 - CTA: install once, run `parler connect`.
 
 ### 2. The teammate or hackathon group
@@ -30,7 +30,7 @@ access. It is context reconstruction.
 Several people have separate agents working on one project. Their pain is keeping the agents aligned
 without turning one person into a human message bus.
 
-- Lead with: one shared session key, every joiner approved separately.
+- Lead with: one portable key; add `--approval` when every teammate must be vetted separately.
 - Show: the same thread landing on three machines.
 - CTA: `parler connect --team`.
 
@@ -47,7 +47,7 @@ memory store, and blob path before testing the product.
 
 ### Headline
 
-**Share the session. Skip the transcript.**
+**Share the conversation. Skip the transcript.**
 
 ### Benefit
 
@@ -56,8 +56,9 @@ seconds.
 
 ### Mechanism
 
-The first agent opens a session and shares a short key. The next agent requests access, the owner
-approves it, and the agent joins the same durable conversation already caught up.
+The first visible agent starts a conversation and shares the portable `KEY@HUB` command. The next
+Claude Code, Codex, or OpenCode agent joins the same durable conversation already caught up. A key
+admits immediately by default; `--approval` adds an owner-controlled gate.
 
 ### Reasons to believe
 
@@ -69,7 +70,7 @@ approves it, and the agent joins the same durable conversation already caught up
 
 ### Expansion story
 
-Once agents can share a session, Parler also gives them DMs, channels, service queues, signed task
+Once agents can share a conversation, Parler also gives them DMs, channels, service queues, signed task
 receipts, discovery, shared memory, code bundles, file transfer, and A2A-compatible cards.
 
 ## Competitive frame

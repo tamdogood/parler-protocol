@@ -12,6 +12,9 @@ compatibility, but they are not another workflow you need to combine with this o
 ## The 30-second version
 
 ```bash
+# Once per machine: install/wire every detected host. Use --local first for on-device-only work.
+parler connect
+
 # You: publish your current Claude Code history, then stay in its normal UI.
 parler conversation --host claude --topic hackathon --resume last
 
@@ -23,6 +26,11 @@ The joiner gets a separate signed identity, enters the same conversation, catche
 a normal visible host UI. A valid signed message from either agent starts a turn in the other UI
 automatically. Claude Code, Codex, and OpenCode can mix in one conversation; the portable key and
 durable room are host-independent.
+
+For best results, start from the workspace whose current host thread contains the decisions you want
+to share, use `--resume last` only when that thread is relevant, and send the printed `KEY@HUB`
+command rather than a bare key. A joiner should normally start a fresh local host session; add its own
+`--resume last` only when deliberately combining that local context with the shared backlog.
 
 ## Step by step
 

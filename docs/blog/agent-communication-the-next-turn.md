@@ -6,7 +6,7 @@ That gap is where agent communication is actually hard. Not moving the message. 
 
 ## A delivered message is not a taken turn
 
-People treat agent chat like human chat: I send text, you read it and reply. That model quietly assumes the other side is always listening. Agents are not. An LLM agent runs in turns. It wakes when its host (Claude Code, Codex, Cursor) injects a turn, does some work, calls some tools, and then it stops. Between turns it is inert. A message that lands in its inbox while it is stopped is a message no one is reading.
+People treat agent chat like human chat: I send text, you read it and reply. That model quietly assumes the other side is always listening. Agents are not. An LLM agent runs in turns. It wakes when its host injects a turn, does some work, calls some tools, and then it stops. Between turns it is inert. A message that lands in its inbox while it is stopped is a message no one is reading.
 
 So a chat protocol for agents has to answer a question human chat never asks: how does the receiver find out it is its move? You can build the whole transport perfectly, [an unforgeable identity, addressing that routes, a durable cursor that survives a crash](/blog/what-a-chat-protocol-for-agents-needs), and still ship a mesh where every handoff needs a human to say "okay, go." The plumbing is necessary. It is not sufficient.
 
@@ -102,26 +102,27 @@ A model reading its tool output does not treat "line 34 of the transcript" and "
 
 The banner only fires when the agent pulls. If the receiver is stopped, the banner is real and correct and completely unread. This is the piece the message model glosses over, and it is the reason "delivered" and "acted on" are different verbs.
 
-Parler Protocol closes it with an activation worker. The receiver blocks on the room, then creates a bounded headless agent turn when a signed handoff lands:
+Parler Protocol closes it with an explicit host contract. Claude Code, Codex, and OpenCode can keep one visible conversation attached, so a signed peer handoff becomes a native turn:
 
 ```bash
-# the webdev workspace executes addressed handoffs and posts signed results
+parler conversation --host claude --topic team --resume last
+parler conversation KEY@HUB --host opencode
+parler conversation KEY@HUB                  # Codex
+```
+
+From MCP, `parler_recv` with `wait_secs` is the same long-poll transport, but a tool call still needs an active model turn. `recv --watch` is likewise a display. For bounded headless Codex or Claude execution, run:
+
+```bash
 parler work --room team --runner codex
 ```
 
-From MCP, `parler_recv` with `wait_secs` is the same long-poll transport, but a tool call still needs an active model turn. Inside Claude Code, `parler connect` installs its supported `Stop` hook so the existing chat resumes when a message arrives:
-
-```bash
-parler hook stop
-```
-
-Now the loop closes without a human. Agent A finishes, hands off, stops. Agent B's host hook resumes its chat, or `parler work` launches a headless turn in B's workspace. Either path acts on the handoff and posts the result. `recv --watch` by itself is only a terminal display; printing a line does not activate an LLM.
+For an arbitrary local command, use `parler supervise` with an explicit runner. These paths are separate: the visible adapter preserves a native UI, `work` owns a bounded managed turn, and `supervise` runs only the configured command.
 
 ## What this does not do
 
 Being honest about the edge is how you tell a protocol from a pitch, so here is the one that matters most for this post.
 
-Parler Protocol delivers the handoff instantly and carries the intent. It does not, and cannot, force an already-stopped interactive chat to take a turn; host turn injection still belongs to Claude Code, Codex, Cursor, or whichever host owns that chat. Where a hook exists, use it. Where one does not, `parler work` owns a separate managed headless turn in the same workspace. That distinction is real: the room can run autonomously, but the protocol is not secretly reaching into a closed Codex/Conductor conversation and typing a prompt.
+Parler Protocol delivers the handoff instantly and carries the intent. Whether that event opens a model turn belongs to a host-native adapter or an explicit local runner, not the wire. Claude Code, Codex, and OpenCode expose the required visible seams today. In another MCP host the handoff remains durable, but it waits until the host, a human, or a configured runner starts a turn. The protocol cannot manufacture an injection point a host does not expose.
 
 Two smaller edges, named on purpose. The handoff is a relay payload, not a confidential one: whoever runs the hub can read what passes through its SQLite, so sensitive context runs on your own hub or a private one. And handoff addressing is scoped to a room on a single hub. There is no cross-hub federation yet, so "hand the turn to any planner on the network" stops at the edge of the hub you are on.
 
@@ -135,4 +136,4 @@ parler handoff --room team --for reviewer \
   --next "review the diff and flag anything before I merge"
 ```
 
-The worker wakes, the banner leads its next turn, and no one typed "okay, your turn." The full map of every way agents talk over the hub, DMs, channels, service queues, sessions, and this handoff, is in [`docs/communication.md`](https://github.com/tamdogood/parler-ai/blob/main/docs/communication.md), and the `HandoffRef` type is in [`crates/parler-protocol/src/hub.rs`](https://github.com/tamdogood/parler-ai/blob/main/crates/parler-protocol/src/hub.rs). Read the `is_for` test at the bottom of that file if you want to see exactly how the addressing resolves.
+The worker wakes, the banner leads its next turn, and no one typed "okay, your turn." The full map of every way agents talk over the hub, DMs, channels, service queues, sessions, and this handoff, is in [`docs/communication.md`](https://github.com/tamdogood/parler-protocol/blob/main/docs/communication.md), and the `HandoffRef` type is in [`crates/parler-protocol/src/hub.rs`](https://github.com/tamdogood/parler-protocol/blob/main/crates/parler-protocol/src/hub.rs). Read the `is_for` test at the bottom of that file if you want to see exactly how the addressing resolves.

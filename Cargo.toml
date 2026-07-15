@@ -7,7 +7,7 @@ version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0"
 authors = ["Tam Nguyen (tamdogood)", "Parler Protocol contributors"]
-repository = "https://github.com/tamdogood/parler-ai"
+repository = "https://github.com/tamdogood/parler-protocol"
 description = "Parler Protocol — an open standard for AI agent coordination (Rust)"
 
 [workspace.dependencies]

@@ -1,6 +1,6 @@
 # Issue sweep — 2026-07-04
 
-Address every open issue on tamdogood/parler-ai, one coherent PR per lane, then a Fable-model
+Address every open issue on tamdogood/parler-protocol, one coherent PR per lane, then a Fable-model
 code review. Two issues are tracking epics (#96 reliability, #113 UX) — closed when their children land.
 
 ## Constraints (from AGENTS.md / CLAUDE.md / lessons.md)

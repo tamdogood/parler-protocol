@@ -4,10 +4,10 @@
 messages into native turns. Codex, Claude Code, and OpenCode implement the same product contract over
 different host interfaces. This document is the extension checklist for a fourth provider.
 
-## Boundary
+## Source layout and boundary
 
 The entrypoint in `crates/parler-cli/src/conversation.rs` performs host-independent setup once, then
-passes one `AdapterContext` to the selected provider module:
+passes one `AdapterContext` to the selected provider state machine:
 
 ```text
 CLI options + terminal identity + workspace + exact hub + MeshAgent
@@ -26,7 +26,7 @@ Shared code owns:
 - actionable-message filtering, prompt construction, and loop prevention;
 - signed terminal task receipts, replies, and explicit addressed handoffs.
 
-Provider modules own:
+Provider implementations own:
 
 - native session creation, resume, and visible UI attachment;
 - the host's wake or turn-injection mechanism;
@@ -34,12 +34,21 @@ Provider modules own:
 - bounded extraction of visible local transcript and final output;
 - preserving the host's normal permission channel.
 
-The modules expose one uniform `run(AdapterContext)` boundary rather than a fine-grained async trait.
-Their internal state machines are materially different: Codex multiplexes app-server RPC and
-notifications, Claude Code coordinates process hooks, and OpenCode consumes an SSE stream plus
-canonical HTTP state. Forcing those operations into identical methods would move provider branching
-into shared code and weaken the lifecycle invariants. The single dispatch match is the intended
-registration point.
+The physical layout is intentionally small and explicit:
+
+| Source | Responsibility |
+|---|---|
+| `conversation.rs` | Shared contract and Codex's app-server state machine (the first adapter, still co-located) |
+| `conversation/claude.rs` | Claude Code hooks, bounded transcript tail, and visible-process lifecycle |
+| `conversation/opencode.rs` | OpenCode loopback API, SSE reconciliation, and attached TUI lifecycle |
+
+Each implementation exposes the equivalent of one `run(AdapterContext)` boundary rather than a
+fine-grained async trait. The internal state machines are materially different: Codex multiplexes
+app-server RPC and notifications, Claude Code coordinates process hooks, and OpenCode consumes an SSE
+stream plus canonical HTTP state. Forcing those operations into identical methods would move
+provider branching into shared code and weaken lifecycle invariants. The `Host` enum plus the single
+dispatch match is the registration point. New providers belong in their own module; moving Codex is
+optional cleanup, not a prerequisite for extension.
 
 ## Required parity
 
@@ -53,12 +62,19 @@ Every visible adapter must satisfy all of these behaviors:
 | Catch-up | Use `prepare_backlog`; never duplicate signature, file, or history handling in the adapter. |
 | Durable ack | Call `commit_reads_through` only after the native host accepts the prepared context or completed peer turn. |
 | Inbound work | Execute only `is_actionable` signed messages and serialize native turns. |
-| Permissions | Leave approval and elicitation with the visible host. Never synthesize approval. |
+| Permissions | Preserve the provider's authority boundary. Never synthesize approval or human input. |
 | Local turns | Mirror the visible user's prompt and final agent answer, excluding internal bridge instructions. |
 | Results | Publish through `publish_turn` or `send_peer_result` so every provider emits the same signed `TaskRef`. |
 | Continuation | Continue automatically only for a valid addressed `PARLER_HANDOFF`; ordinary results do not wake peers again. |
 | Presence | Publish `working` and `waiting`, including the shared heartbeat. |
 | Failure | Do not acknowledge durable peer work when injection, execution, output retrieval, or publication fails. |
+
+Permission parity means preserving the provider's authority boundary, not pretending every provider
+has the same UI. Claude Code's conversation hooks never register permission handlers, so its normal
+session remains authoritative. OpenCode keeps permission requests on the attached TUI channel. Codex
+routes approvals for a bridge-started turn back to the bridge connection; that adapter declines or
+returns an empty grant rather than fabricating a human response, while human-started TUI turns retain
+their normal approval flow.
 
 ## Scaling invariants
 
@@ -82,7 +98,7 @@ neither, define an explicit bounded reconciliation strategy and document its wor
 
 ## Adding a provider
 
-1. Add one `Host` value and one dispatch arm in `conversation.rs`.
+1. Add one `Host` value, binary/display metadata, and one dispatch arm in `conversation.rs`.
 2. Add `conversation/<provider>.rs` with `pub(super) async fn run(AdapterContext) -> Result<()>`.
 3. Probe the native executable and required interface at startup. Fail with an actionable update
    message when the installed version lacks the interface.
@@ -97,6 +113,9 @@ neither, define an explicit bounded reconciliation strategy and document its wor
 9. Convert final native state into `TurnCapture` and use the shared result path.
 10. Add tests for CLI selection, configuration overlay, resume-ID validation, bounded state, event or
     page parsing, local/injected turn separation, failed-turn retry, and the shared parity receipt.
+11. Update the support matrices in `README.md`, `docs/communication.md`, `docs/troubleshooting.md`,
+    and the website docs. MCP auto-detection and visible-host parity are separate claims; change only
+    the rows the new adapter actually satisfies.
 
 A provider without a supported way to wake or inject into an existing visible session is not a
 visible adapter. Keep `parler work` or `parler supervise` as the explicit managed fallback rather

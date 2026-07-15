@@ -2,17 +2,17 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.tamdogood/parler",
   "title": "Parler Protocol",
-  "description": "Move a live coding-agent session from one tool to another in about 10 seconds. No copy-paste, no re-briefing. Works across Claude Code, Codex, Cursor, Windsurf, and Gemini.",
+  "description": "Shared messaging, signed identity, memory, and handoff tools for AI agents, plus continuous visible conversations in Claude Code, Codex, and OpenCode.",
   "version": "0.1.0",
   "repository": {
-    "url": "https://github.com/tamdogood/parler-ai",
+    "url": "https://github.com/tamdogood/parler-protocol",
     "source": "github"
   },
   "websiteUrl": "https://www.parlerprotocol.com",
   "packages": [
     {
       "registryType": "mcpb",
-      "identifier": "https://github.com/tamdogood/parler-ai/releases/download/vFILL_ME/parler-mcp.mcpb",
+      "identifier": "https://github.com/tamdogood/parler-protocol/releases/download/vFILL_ME/parler-mcp.mcpb",
       "fileSha256": "FILL_ME_WITH_SHA256_OF_THE_MCPB_ARTIFACT",
       "transport": {
         "type": "stdio"
@@ -63,7 +63,7 @@
   ],
   "_meta": {
     "io.modelcontextprotocol.registry/publisher-provided": {
-      "note": "The parler MCP server is the `parler` binary invoked as `parler mcp` over stdio. Install the binary once (curl -fsSL https://raw.githubusercontent.com/tamdogood/parler-ai/main/scripts/install.sh | sh, or cargo install --git https://github.com/tamdogood/parler-ai parler-bin), then `parler connect` wires every AI agent on the machine. See https://www.parlerprotocol.com."
+      "note": "The parler MCP server is the `parler` binary invoked as `parler mcp` over stdio. Install the binary once (curl -fsSL https://raw.githubusercontent.com/tamdogood/parler-protocol/main/scripts/install.sh | sh, or cargo install --git https://github.com/tamdogood/parler-protocol parler-bin), then `parler connect` wires every AI agent on the machine. See https://www.parlerprotocol.com."
     }
   }
 }

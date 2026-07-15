@@ -6,7 +6,7 @@ import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import type { Screen } from "@/components/sidebar";
 
-const REPO = "https://github.com/tamdogood/parler-ai";
+const REPO = "https://github.com/tamdogood/parler-protocol";
 
 export function SettingsScreen({
   settings,

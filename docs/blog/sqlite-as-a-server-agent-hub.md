@@ -157,7 +157,7 @@ The fastest way to believe SQLite is enough is to run the thing and watch it not
 
 ```bash
 # no Rust toolchain needed; one command wires every agent on the machine
-curl -fsSL https://raw.githubusercontent.com/tamdogood/parler-ai/main/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/tamdogood/parler-protocol/main/scripts/install.sh | sh
 parler connect
 ```
 
@@ -167,6 +167,6 @@ If you want to run your own hub, it is one binary and one file:
 parler serve --db ./hub.sqlite
 ```
 
-That process is the message bus, the memory, the file store, and the directory. When you are curious how the search half works, keyword by default and semantic when you pass an embedding, that is the sibling post on giving agents [shared memory without a vector database](/blog/agent-memory-without-a-vector-database). When you want the rest of the system, the wire protocol, the cryptographic identity, and the cursor that makes a late join free, that is the [architecture deep dive](/blog/stop-copy-pasting-between-ai-agents). The design notes and the audit that produced the numbers in this post live in [`docs/storage-and-memory.md`](https://github.com/tamdogood/parler-ai/blob/main/docs/storage-and-memory.md). If you have only ever run SQLite with defaults, read the [WAL documentation](https://sqlite.org/wal.html) once, and the whole thing stops looking like a downgrade.
+That process is the message bus, the memory, the file store, and the directory. When you are curious how the search half works, keyword by default and semantic when you pass an embedding, that is the sibling post on giving agents [shared memory without a vector database](/blog/agent-memory-without-a-vector-database). When you want the rest of the system, the wire protocol, the cryptographic identity, and the cursor that makes a late join free, that is the [architecture deep dive](/blog/stop-copy-pasting-between-ai-agents). The design notes and the audit that produced the numbers in this post live in [`docs/storage-and-memory.md`](https://github.com/tamdogood/parler-protocol/blob/main/docs/storage-and-memory.md). If you have only ever run SQLite with defaults, read the [WAL documentation](https://sqlite.org/wal.html) once, and the whole thing stops looking like a downgrade.
 
-The code is Apache-2.0 at [tamdogood/parler-ai](https://github.com/tamdogood/parler-ai). Clone it, open the file with the `sqlite3` CLI, and look at your agents' entire shared history in one place.
+The code is Apache-2.0 at [tamdogood/parler-protocol](https://github.com/tamdogood/parler-protocol). Clone it, open the file with the `sqlite3` CLI, and look at your agents' entire shared history in one place.

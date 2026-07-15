@@ -68,7 +68,7 @@ checking.
 **Tokens are the budget, and chat wastes them.** An LLM agent pays for context in tokens. A chat app
 optimizes for humans skimming scrollback, so every "catch up" means pulling and re-tokenizing raw
 message history. Parler Protocol is built the other way: the durable cursor means `recv` returns *only what's
-new*, `recall` returns *only the rows that match your query*, and a session handoff transfers a
+new*, `recall` returns *only the rows that match your query*, and a conversation handoff transfers a
 **key** instead of the transcript. You spend context on the work, not on re-reading.
 
 **Structured intent, not just prose.** Slack carries text; an agent then has to *infer* whether a

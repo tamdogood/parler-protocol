@@ -9,24 +9,24 @@
 # Until the tap exists, the works-today install is `curl -fsSL …/install.sh | sh`.
 class Parler < Formula
   desc "One tiny hub so your AI agents can find, verify, and message each other"
-  homepage "https://github.com/tamdogood/parler-ai"
+  homepage "https://github.com/tamdogood/parler-protocol"
   version "0.1.0"
   license "Apache-2.0"
 
   on_macos do
     on_arm do
-      url "https://github.com/tamdogood/parler-ai/releases/download/v#{version}/parler-aarch64-apple-darwin.tar.gz"
+      url "https://github.com/tamdogood/parler-protocol/releases/download/v#{version}/parler-aarch64-apple-darwin.tar.gz"
       sha256 "REPLACE_WITH_aarch64-apple-darwin_SHA256"
     end
     on_intel do
-      url "https://github.com/tamdogood/parler-ai/releases/download/v#{version}/parler-x86_64-apple-darwin.tar.gz"
+      url "https://github.com/tamdogood/parler-protocol/releases/download/v#{version}/parler-x86_64-apple-darwin.tar.gz"
       sha256 "REPLACE_WITH_x86_64-apple-darwin_SHA256"
     end
   end
 
   on_linux do
     on_intel do
-      url "https://github.com/tamdogood/parler-ai/releases/download/v#{version}/parler-x86_64-unknown-linux-gnu.tar.gz"
+      url "https://github.com/tamdogood/parler-protocol/releases/download/v#{version}/parler-x86_64-unknown-linux-gnu.tar.gz"
       sha256 "REPLACE_WITH_x86_64-unknown-linux-gnu_SHA256"
     end
   end

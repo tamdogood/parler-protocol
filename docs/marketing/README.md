@@ -5,7 +5,7 @@ the pitch for every channel.
 
 The campaign idea is simple:
 
-> **Share the session. Skip the transcript.**
+> **Share the conversation. Skip the transcript.**
 
 Parler's broad product story is an agent communication protocol. Its sharp entry point is smaller:
 move one live coding-agent conversation into another tool with a short key, then keep the thread
@@ -25,8 +25,8 @@ going.
 
 | Asset | Best use | Size |
 |-------|----------|------|
-| [Session handoff hero](../assets/marketing/session-handoff-hero.png) | Website hero, README, blog cover, launch thread | 1672 x 941 |
-| [Session handoff square](../assets/marketing/session-handoff-square.png) | X, LinkedIn, Product Hunt, community posts | 1254 x 1254 |
+| [Conversation handoff hero](../assets/marketing/session-handoff-hero.png) | Website hero, README, blog cover, launch thread | 1672 x 941 |
+| [Conversation handoff square](../assets/marketing/session-handoff-square.png) | X, LinkedIn, Product Hunt, community posts | 1254 x 1254 |
 | [Team session wide](../assets/marketing/team-session-wide.png) | Hackathon, team, collaboration, feature section | 1672 x 941 |
 | [Join approval portrait](../assets/marketing/join-approval-portrait.png) | Instagram, LinkedIn, approval and access-control posts | 1122 x 1402 |
 | [Local/private wide](../assets/marketing/local-private-wide.png) | Local mode, privacy FAQ, security section | 1672 x 941 |
@@ -42,7 +42,7 @@ memory without turning the campaign into a software diagram.
 
 ## Fifteen-minute launch recipe
 
-1. Use **Share the session. Skip the transcript.** as the headline.
+1. Use **Share the conversation. Skip the transcript.** as the headline.
 2. Pair it with the [square handoff artwork](../assets/marketing/session-handoff-square.png).
 3. Post the short channel copy from [Campaigns](campaigns.md).
 4. Link to `https://www.parlerprotocol.com` for people and the
@@ -54,13 +54,15 @@ memory without turning the campaign into a software diagram.
 
 These are marketing constraints, not fine print:
 
-- A session key requests access. The owner approves each joiner unless approval is explicitly
-  disabled or the joiner is pre-approved.
+- A canonical conversation key admits its holder by default. Treat it like a password and create the
+  conversation with `--approval` when every joiner should wait for the owner. Lower-level MCP/CLI
+  sessions remain approval-gated by default.
 - The hub protects room membership, but the hub operator can read plaintext. Identity crypto is not
   end-to-end message encryption.
 - Visibility is private by default. Public directory listing is opt-in.
-- `parler connect` wires supported hosts. Hermes and custom clients use the printed portable MCP
-  configuration rather than first-class auto-detection.
+- `parler connect` wires Claude Code, Codex, Cursor, Windsurf, Gemini, Claude Desktop, OpenCode,
+  VS Code, and Cline for MCP. Continuous visible turns currently require Claude Code, Codex, or
+  OpenCode; custom clients use the printed portable MCP configuration.
 - The project is open source under Apache-2.0 and requires attribution.
 - Use "Parler Protocol (no relation to the social app)" once in directory or press copy where the
   name may cause confusion. Do not make the disclaimer the story.

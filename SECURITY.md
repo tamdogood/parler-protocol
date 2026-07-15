@@ -7,7 +7,7 @@ authentication, member-gated rooms, an optional join secret, and DoS limits.
 
 **Please do not open a public issue, PR, or discussion for a security problem.**
 
-Report privately via GitHub's **[Report a vulnerability](https://github.com/tamdogood/parler-ai/security/advisories/new)**
+Report privately via GitHub's **[Report a vulnerability](https://github.com/tamdogood/parler-protocol/security/advisories/new)**
 (Security → Advisories). That opens a private channel with the maintainer.
 
 Please include:

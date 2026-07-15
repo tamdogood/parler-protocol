@@ -118,7 +118,7 @@ git_in(None, &["bundle", "list-heads", tmp])?;
 git_in(None, &["update-ref", &refname, &tip_sha])?;  // pin the tip under refs/parler/<id>
 ```
 
-Apply imports the commits and pins them under a namespaced ref like `refs/parler/a1b2c3`. It never merges. It never checks out. Your working tree is exactly as you left it, and the imported work is sitting in a ref you can inspect with `git log refs/parler/a1b2c3` and merge with `git merge refs/parler/a1b2c3` when you have looked at it. Merging code into a working tree is a hard-to-reverse action, so it stays a separate thing a human runs on purpose. The same reasoning is why apply exists only in the CLI and not as an MCP tool: fetching bytes is safe for a tool call, but writing another agent's code into a repo is not the kind of thing a tool call should do on its own.
+Apply imports the commits and pins them under a namespaced ref like `refs/parler/a1b2c3`. It never merges. It never checks out. Your working tree is exactly as you left it, and the imported work is sitting in a ref you can inspect with `git log refs/parler/a1b2c3` and merge with `git merge refs/parler/a1b2c3` when you have looked at it. The CLI exposes this as `parler apply`; MCP hosts can call `parler_apply` with an explicit repository path. Both stop at the isolated ref. Merging or checking out remains a separate human action.
 
 ## The security model, such as it is
 
@@ -130,7 +130,7 @@ The nice thing about building on content-addressing and an existing membership m
 | Authorization | A blob is bound to the rooms it was posted to. Only a member of one of those rooms can fetch it. That is the same `is_member` check that gates messages, no new ACL concept. |
 | No new attack surface | Bytes ride the already-authenticated socket. There is no HTTP endpoint to harden and no capability token to leak. |
 | The hub never executes | The bundle is opaque bytes to the hub. There is no git on the server, so there is no server-side git to exploit. |
-| Apply is explicit | Applying imports into a side ref and never merges, and the MCP layer cannot apply at all. |
+| Apply is isolated | CLI and MCP apply import into a side ref and never merge, check out, or modify the working tree. |
 
 Membership is checked at fetch time against every room the blob is bound to, because the same content-addressed bytes can be handed off in more than one room. If you are a member of any room the blob lives in, you can read it. If you are a member of none, the fetch is denied. That last part is one of the things the end-to-end test pins down: a non-member's fetch returns denied, not bytes.
 

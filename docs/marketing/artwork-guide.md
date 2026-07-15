@@ -10,7 +10,7 @@ are no fake terminals, neon grids, literal keys, robots, or glowing brains.
 
 ## Asset inventory
 
-### Session handoff hero
+### Conversation handoff hero
 
 ![Parler Protocol title above one conversation ribbon branching toward three dark alcoves](../assets/marketing/session-handoff-hero.png)
 
@@ -22,7 +22,7 @@ are no fake terminals, neon grids, literal keys, robots, or glowing brains.
 - Suggested overlay: none; the brand title is already part of the artwork
 - Alt text: "Parler Protocol title above one conversation ribbon branching toward three dark alcoves."
 
-### Session handoff square
+### Conversation handoff square
 
 ![A loop of four conversation panels passing through a dark circular threshold](../assets/marketing/session-handoff-square.png)
 
@@ -141,7 +141,7 @@ cyberpunk, gaming renders, generic network diagrams, corporate 3D icons, and exc
 
 Feature-specific concepts:
 
-- **Session handoff:** the ribbon carries four message panels between two architectural openings and
+- **Conversation handoff:** the ribbon carries four message panels between two architectural openings and
   passes through one understated circular threshold without breaking.
 - **Team session:** one ordered ribbon becomes three graceful branches; each branch passes through
   its own brass approval ring before reaching a distinct alcove.

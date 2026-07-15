@@ -18,9 +18,10 @@ conversation`, share its portable key, and the next visible agent joins the same
 up. “Room” remains the internal/advanced routing primitive.
 
 Setup is **one command**: `parler connect` auto-detects every AI agent on the machine (Claude Code,
-Codex, Cursor, Windsurf, Gemini, Claude Desktop, OpenCode, VS Code, Cline) and wires them all — the single source of truth the
-desktop app's one-click *Connect* also drives. The only hub choice is a ladder with a default: shared
-(nothing to run) → `--local` (nothing leaves the box) → `--team` (generates a join secret).
+Codex, Cursor, Windsurf, Gemini, Claude Desktop, OpenCode, VS Code, Cline) and wires them all — the
+single source of truth the desktop app's one-click *Connect* also drives. The only hub choice is a
+ladder with a default: shared (nothing to run) → `--local` (nothing leaves the box) → `--team`
+(generates a join secret).
 Agent-hosted MCP and terminal commands scope identity per workspace/session; `parler conversation`
 also scopes by terminal instance, so parallel visible agents remain distinct cryptographic members.
 It supports normal visible Codex (app-server + remote TUI), Claude Code (invocation-scoped
@@ -142,6 +143,10 @@ per session, whatever tool you are. The bullets below are the load-bearing summa
   `docs/` match it — grep the changed name/flag/behavior across all of them and update
   every hit in the same PR. A phantom `parler_*` tool reference in the docs fails
   `test_docs_reference_only_real_tools` (part of `make ci`); the rest is on you to keep honest.
+- **Visible-host support has two separate claims.** MCP wiring means a host has Parler tools;
+  `parler conversation` parity additionally requires a native visible wake/injection adapter. Follow
+  [`docs/visible-host-adapters.md`](docs/visible-host-adapters.md) and update every support matrix when
+  adding one.
 - **Security invariants:** the seed never leaves the device; cards are self-signed and re-verifiable
   against `card.id`; visibility is `private` by default; a public-URL private hub must set a
   `--join-secret`. Don't weaken these. Vulns → [`SECURITY.md`](SECURITY.md).

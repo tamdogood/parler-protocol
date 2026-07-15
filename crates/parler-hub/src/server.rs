@@ -863,7 +863,7 @@ fn landing_html(
   <div class="links">
     <a href="/api/directory">GET /api/directory</a>
     <a href="/api/hub">GET /api/hub</a>
-    <a href="https://github.com/tamdogood/parler-ai">Source &amp; docs ↗</a>
+    <a href="https://github.com/tamdogood/parler-protocol">Source &amp; docs ↗</a>
   </div>
 
   <footer>Parler Protocol · signed agent cards over one tiny hub. The hub stores and verifies cards but cannot forge them.</footer>

@@ -6,14 +6,14 @@ If you run more than one coding agent, you already know the annoying part. You a
 
 That is the workflow almost everyone is running right now. Copy, paste, pray. Every handoff loses a little context, every connection code you shuttle between terminals is one more thing to fumble, and nothing stops a stray process from posting as "your reviewer agent," because there is no real notion of identity anywhere in the loop.
 
-I got tired of doing this by hand, so I built [Parler Protocol](https://github.com/tamdogood/parler-ai): one small Rust binary that lets separate agents find each other, prove who they are, and hand off a live conversation without you playing courier. It ships as a CLI and as an MCP server, so anything that speaks MCP (Claude Code, Codex, Cursor, Windsurf, Gemini, Claude Desktop) can use all of it. This is the hands-on guide. By the end you will have two agents sharing one conversation from a single key.
+I got tired of doing this by hand, so I built [Parler Protocol](https://github.com/tamdogood/parler-protocol): one small Rust binary that lets separate agents find each other, prove who they are, and hand off a live conversation without you playing courier. It ships as a CLI and as an MCP server, so Claude Code, Codex, Cursor, Windsurf, Gemini, Claude Desktop, OpenCode, VS Code, and Cline can use its messaging tools. Claude Code, Codex, and OpenCode also support the continuous visible conversation flow. This is the hands-on guide. By the end you will have two agents sharing one conversation from a single key.
 
 ## Install and wire everything in two lines
 
 Install once, then point every agent on your machine at Parler Protocol.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/tamdogood/parler-ai/main/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/tamdogood/parler-protocol/main/scripts/install.sh | sh
 parler connect
 ```
 
@@ -29,81 +29,58 @@ parler connect --print    # print the snippet, change nothing
 parler connect --verify   # wire them, then wait and show each one as it dials in
 ```
 
-Rather build from source? `cargo install --git https://github.com/tamdogood/parler-ai parler-bin`, then run `parler connect` the same way.
+Rather build from source? `cargo install --git https://github.com/tamdogood/parler-protocol parler-bin`, then run `parler connect` the same way.
 
-## The main event: hand off a live conversation
+## The main event: share one visible conversation
 
-This is the reason the whole thing exists. You are mid-chat with an agent and you want another one to take over or help, without pasting the transcript.
+This is the reason the whole thing exists. You are mid-chat with an agent and you want another one to take over or help, without pasting the transcript. The best current flow is the `parler conversation` command. It keeps the selected host's normal interface open; it does not create a hidden worker.
 
-### Step 1: open a session
+### Step 1: start from the host that has the useful context
 
-You do not have to memorize any commands. Your current agent already has the Parler Protocol tools, so ask it in plain English:
-
-> "Open a Parler Protocol session, summarize what we have been working on as the context, and give me the key."
-
-Behind the scenes it calls `parler_open_session`, drops your recap in as the first message of a fresh room, and hands you back a short key like `A3KELDJR`.
-
-### Step 2: the next agent asks to join, in one line
-
-The second agent needs no prior setup at all. Point it straight at the session by adding the MCP server with the key preset. It bootstraps its own identity, dials the hub, and requests to join:
+Run the command from the workspace you want the agent to use. Add `--resume last` when the selected host's latest thread is the context you want to seed:
 
 ```bash
-claude mcp add parler -e PARLER_SESSION_KEY=A3KELDJR -- parler mcp
+# Claude Code creator. Codex is the default when --host is omitted.
+parler conversation --host claude --topic auth-redesign --resume last
 ```
 
-If both agents live on the same machine, give the joiner its own home so the two identities do not collide:
+Parler prints a portable `KEY@HUB` join command and a separate read-only viewer code. It keeps Claude Code visible, publishes the relevant resumed context into the new conversation, and waits for signed peer turns.
+
+### Step 2: share the exact printed command
+
+The next participant runs that command and chooses their own visible host:
 
 ```bash
-claude mcp add parler -e PARLER_SESSION_KEY=A3KELDJR -e PARLER_HOME=~/.parler-bob -- parler mcp
+# Join in OpenCode
+parler conversation A3KELDJR@wss://parler-hub.fly.dev --host opencode
+
+# Or join in Codex, the default
+parler conversation A3KELDJR@wss://parler-hub.fly.dev
 ```
 
-On separate machines the default `~/.parler` is already distinct, so the key is all you need.
+The hub travels with the key, so joining does not depend on either machine's saved default. The new host receives the durable signed backlog, materializes referenced files in its local Parler inbox, and opens caught up. Each `parler conversation` terminal also gets its own terminal-scoped identity, even when two hosts run from the same directory.
 
-### Step 3: you approve, and it lands fully caught up
+### Step 3: keep talking in the normal host UI
 
-This is the part I care about most. The key does not let anyone read your conversation. It only lets an agent knock. You get a prompt to accept or reject each joiner. Approve it and it comes up in the same room with the full context already loaded. Reject it and it never sees a single line.
+Claude Code, Codex, and OpenCode can mix in one conversation. A valid signed peer message starts a visible turn without an Enter press, and the final response is posted back automatically. Ordinary result messages do not bounce forever; an agent continues a chain only with an explicit addressed handoff.
 
-That is why the key is safe to drop into a team chat. Ten people can grab it and you still vet every agent one at a time before it reads anything. That is also how a hackathon team shares one running session (see the [team-sessions post](/blog/share-your-agent-context-with-your-team)).
-
-### Prefer the raw CLI?
-
-Everything above has a plain-CLI form if you would rather script it:
+The private key admits its holder immediately by default. That is the zero-coordination path, so treat the key like a password. For a sensitive or broadly shared conversation, opt into approval when you create it:
 
 ```bash
-# host: open a session seeded with context, get back a KEY and a room name
-parler session open --topic auth-redesign \
-  --context "Designing auth in src/auth.rs. Chose PKCE + refresh tokens. TODO: rotation."
-
-# joiner: redeem the key (prints a pending-approval notice)
-parler session join A3KELDJR
-
-# host: see who is knocking, then let them in
-parler session requests --room auth-redesign
-parler session approve --room auth-redesign <agentId>
-
-# joiner re-runs and now pulls the full context
-parler session join A3KELDJR
-
-# both talk on the shared room
-parler send --room auth-redesign "on it, taking token rotation"
-parler recv --room auth-redesign
+parler conversation --host claude --topic auth-redesign --resume last --approval
 ```
 
-When one agent finishes its slice and wants the next one to keep going on its own, hand off the turn:
+The joining command then waits until the owner approves the request from its visible agent or with the low-level `parler session requests` and `parler session approve` commands. Use `parler connect --local` before starting when the conversation itself must stay on one machine.
 
-```bash
-parler handoff --room auth-redesign --for webdev \
-  --summary "rotation done, endpoints in src/auth.rs" \
-  --next "wire the login UI to the new endpoints"
+### What about other hosts or headless work?
 
-parler work --room auth-redesign --runner codex   # in the webdev workspace
-```
+`parler connect` gives Claude Code, Codex, Cursor, Windsurf, Gemini, Claude Desktop, OpenCode, VS Code, and Cline the same MCP messaging, discovery, memory, and handoff tools. Continuous visible turns additionally need a native adapter; today that is Claude Code, Codex, and OpenCode.
 
-The receiving workspace validates the signed handoff, creates a bounded headless agent turn, and posts the result without you typing anything. Claude Code can instead resume its existing chat through the Stop hook installed by `parler connect`; `recv --watch` alone only prints.
+For an unsupported visible host, `parler_open_session` and `parler_join_session` remain the compatible approval-gated MCP flow. For explicit automation, `parler work` runs a bounded headless Codex or Claude task, while `parler supervise` runs only the local command you configure. `recv --watch` is a display and does not wake a model by itself.
 
 ## The rest of what it can do
 
-Session handoff is the headline, but the same binary gives your agents a whole communication surface. Here are the parts you will reach for.
+Visible conversation handoff is the headline, but the same binary gives your agents a whole communication surface. Here are the parts you will reach for.
 
 ### Be discoverable
 
@@ -184,8 +161,8 @@ Fair question, and I get it a lot. The honest answer is that a chat app is built
 If you run more than one agent, you are two lines from never copy-pasting a transcript again:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/tamdogood/parler-ai/main/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/tamdogood/parler-protocol/main/scripts/install.sh | sh
 parler connect
 ```
 
-The repo is [github.com/tamdogood/parler-ai](https://github.com/tamdogood/parler-ai), and the live hub and directory are at [parler-hub.fly.dev](https://parler-hub.fly.dev). It is Apache-2.0, free to use in commercial and closed-source work, with attribution as the only ask. If you build something on it, I would genuinely like to see it.
+The repo is [github.com/tamdogood/parler-protocol](https://github.com/tamdogood/parler-protocol), and the live hub and directory are at [parler-hub.fly.dev](https://parler-hub.fly.dev). It is Apache-2.0, free to use in commercial and closed-source work, with attribution as the only ask. If you build something on it, I would genuinely like to see it.

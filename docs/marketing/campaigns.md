@@ -12,7 +12,8 @@ the usual transcript paste that Parler removes.
 
 ### Day 2: the handoff
 
-Publish the 30 or 60 second demo with the session key and approval step visible. Attach the
+Publish the 30 or 60 second demo with the portable conversation key visible. Use `--approval` in a
+team/security version of the recording. Attach the
 [square handoff artwork](../assets/marketing/session-handoff-square.png) to the text post.
 
 ### Day 3: the honest security model
@@ -24,12 +25,13 @@ story.
 
 ### Day 4: the team use case
 
-Use the [team session artwork](../assets/marketing/team-session-wide.png). Show one session reaching
-three separately approved agents during a hackathon or shared project.
+Use the [team session artwork](../assets/marketing/team-session-wide.png). Show one conversation
+reaching three visible agents during a hackathon or shared project, with `--approval` when the owner
+should vet the team.
 
 ### Day 5: the protocol beneath the wedge
 
-Show that session handoff sits on DMs, channels, service queues, memory, signed receipts, files, and
+Show that conversation handoff sits on DMs, channels, service queues, memory, signed receipts, files, and
 code bundles. Use the [shared-memory artwork](../assets/marketing/shared-memory-wide.png),
 [signed-identity artwork](../assets/marketing/signed-identity-square.png), or
 [code/file handoff artwork](../assets/marketing/code-file-handoff-wide.png) for the feature you lead
@@ -57,11 +59,11 @@ Attach: [session-handoff-square.png](../assets/marketing/session-handoff-square.
 
 1. Most multi-agent setups still have one hidden component: you. You select the transcript, switch
    windows, paste it, then rebuild whatever context did not survive.
-2. Parler's first job is small: move the live session. Agent A opens a room and gets a short key.
-   Agent B redeems it and waits for approval.
-3. Approval matters. A leaked key does not reveal the backlog by default. The owner admits each
-   joiner separately.
-4. After approval, the joiner pulls the same durable room log. A server-side cursor tracks what it has
+2. Parler's first job is small: keep one live conversation visible across Claude Code, Codex, and
+   OpenCode. Agent A starts it and gets a portable `KEY@HUB` command.
+3. Possession admits by default. Treat the key like a password, or create with `--approval` so the
+   owner admits each joiner separately.
+4. After admission, the joiner pulls the same durable room log. A server-side cursor tracks what it has
    read, so later pulls return only what is new.
 5. Identity is an Ed25519 public key. The agent proves ownership on connect. The seed stays on its
    machine.
@@ -79,8 +81,9 @@ One tool had the decisions. Another had the codebase. A teammate's agent needed 
 select, copy, switch windows, paste, then write a smaller explanation for everything the transcript
 did not capture.
 
-Parler Protocol replaces that handoff with a session key. The next agent requests access, the owner
-approves it, and the agent joins the same live thread already caught up.
+Parler Protocol replaces that handoff with a portable conversation key. The next Claude Code, Codex,
+or OpenCode agent joins the same live thread already caught up. Add `--approval` when the owner should
+vet every joiner.
 
 It is one open-source Rust binary that ships as a CLI and MCP server. It also provides signed agent
 identity, discovery, shared memory, files, and service queues over a small WebSocket and SQLite hub.
@@ -94,16 +97,17 @@ Attach: [session-handoff-square.png](../assets/marketing/session-handoff-square.
 
 ## Hacker News
 
-**Title:** Show HN: Parler Protocol, hand off a live coding-agent session with one key
+**Title:** Show HN: Parler Protocol, keep one coding-agent conversation live across tools
 
 **First comment:**
 
 I built Parler because I was copy-pasting context between coding agents and becoming the coordination
 layer myself.
 
-The main flow is session handoff. One agent opens a conversation and gets a short key. Another agent,
-possibly in a different tool or on a teammate's machine, redeems it. The owner approves the joiner,
-then the new agent receives the existing room context and can continue in the same thread.
+The main flow is a visible conversation. One Claude Code, Codex, or OpenCode agent starts it and gets
+a portable key. Another supported visible agent, possibly on a teammate's machine, redeems it and
+continues in the same native UI with existing room context. Possession admits by default;
+`--approval` adds owner-controlled admission.
 
 The implementation is a Rust workspace. The transport is WebSocket JSON, the hub stores rooms and
 cursors in SQLite, and agent ids are Ed25519 public keys proven by challenge-response. The same
@@ -137,18 +141,19 @@ Demo and docs: https://www.parlerprotocol.com
 
 ## Product Hunt
 
-**Tagline:** Share the session. Skip the transcript.
+**Tagline:** Share the conversation. Skip the transcript.
 
 **Description:** Move a live coding-agent conversation from one tool or teammate to another with a
-short key. Parler Protocol wires supported agent hosts with one command, then gives them session
+portable key. Parler Protocol wires supported agent hosts with one command, then gives them conversation
 handoff, signed identity, discovery, shared memory, messaging, and files through one open-source Rust
 binary.
 
 **Maker comment:**
 
 I built Parler after noticing that every multi-agent workflow still had one manual integration: the
-human clipboard. The first thing I wanted was a clean session handoff. Open the session, share a key,
-approve the joiner, and let the next agent continue from the same thread.
+human clipboard. The first thing I wanted was a clean conversation handoff. Start it, share the
+portable key, and let the next supported visible agent continue from the same thread. Add approval
+when the key may leave the trusted group.
 
 The broader protocol grew from that flow. Agents need a way to prove who they are, find peers, pull
 only new context, and exchange code or files without living in one framework. Parler packages those
@@ -163,8 +168,9 @@ Please try the handoff and tell me where the flow still makes you do coordinatio
 I built Parler Protocol to remove one repetitive part of multi-agent work: carrying the conversation
 between tools.
 
-One agent opens a live session and gives you a short key. The next agent requests access, you approve
-it, and it joins the same thread already caught up. No transcript paste and no second brief.
+One agent starts a live conversation and gives you a portable key. The next supported visible agent
+joins the same thread already caught up. Add `--approval` when you need to vet the joiner. No
+transcript paste and no second brief.
 
 Install it once, then connect the supported agents on your machine:
 
@@ -181,26 +187,26 @@ See the demo and security model at https://www.parlerprotocol.com.
 
 1. Show agent A with a live coding conversation.
 2. Say: "Normally I would paste this whole thread into the next tool."
-3. Show the session key.
+3. Show the portable conversation key.
 4. Show agent B joining and receiving the existing context.
-5. End card: "Share the session. Skip the transcript."
+5. End card: "Share the conversation. Skip the transcript."
 
 ### 30 seconds
 
 1. "I am switching coding agents, but I do not want to write the brief again."
-2. Ask agent A to open a Parler session with the current context.
-3. Copy the short key into agent B.
-4. Show the approval request on agent A.
-5. Approve it and show the backlog on agent B.
-6. "Same thread, different tool. `parler connect`."
+2. Run `parler conversation --host claude --resume last` in agent A's workspace.
+3. Copy the printed `KEY@HUB` command into an OpenCode or Codex terminal.
+4. Show the backlog and a signed peer turn in both native UIs.
+5. Optionally repeat with `--approval` to demonstrate owner admission.
+6. "Same conversation, different tool. `parler connect`."
 
 ### 60 seconds
 
 1. Start with the clipboard problem in one sentence.
 2. Run `parler connect --list` to show the supported hosts already wired.
-3. Ask agent A to open a session and summarize the current work.
-4. Start agent B with the key and show the pending approval state.
-5. Approve agent B.
+3. Start `parler conversation --host claude --resume last` for agent A.
+4. Start agent B with the printed portable key and a different supported host.
+5. Show a signed message wake agent B and its response return to agent A.
 6. Ask agent B, "What decision did we make and what is next?"
 7. Show the correct answer from the shared context.
 8. Close with the honest boundary: "The shared hub sees plaintext. Use `--local` when you need the

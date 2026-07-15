@@ -192,10 +192,10 @@ fact comes stamped with the agent that wrote it, so trace-to-source was never a 
 column was there from the first commit.
 
 Supersession is the keyed upsert from earlier: re-remember a key and the old value is gone. Safe
-crossing is the room boundary plus the way sessions are gated. Handing an agent a session key only lets
-it ask to join; it can't read the backlog until the owner approves, and a separate read-only, expiring
-"watch" code is what you give a human who should see the conversation without joining it. Memory is
-private by default and crosses a boundary only when someone with authority opens the gate.
+crossing is the room boundary plus an explicit admission policy. The canonical conversation key
+admits possession by default; `--approval` turns redemption into an owner-approved request. The
+lower-level session tools use that gate by default. A separate read-only, expiring viewer code is for
+a human who should see the conversation without joining it. Memory remains bounded by membership.
 
 Shared working memory, the thing Letta shipped an API for, is one round-trip. `open_session` seeds a
 room with a context snapshot; `join_session` returns that backlog to the new agent in the same call. Two
@@ -207,7 +207,7 @@ you've ever tried to get two coding agents to collaborate, is the entire ballgam
 | Who can read which memory? | The recall scope: `room IN (rooms I'm a member of)`. Membership is the ACL. |
 | Whose fact wins on conflict? | Keyed upsert. A re-`remember` supersedes in place. |
 | Can a memory be traced to its source? | Every fact has an `author`; identity is a signed nkey. |
-| How does knowledge cross safely? | Room boundary plus approval-gated sessions. Private by default. |
+| How does knowledge cross safely? | Room membership plus an explicit immediate-or-owner-approved admission policy. |
 | Shared live context? | `open_session` seeds it, `join_session` pulls it, one call each. |
 
 ## The bet
@@ -237,16 +237,16 @@ with an embedding for semantic recall or without one for keyword recall. Add a s
 you run zero infrastructure to try it.
 
 ```bash
-# put parler on your PATH, then register the MCP server (Claude Code)
-cargo install --path crates/parler-bin
-claude mcp add parler -- parler mcp
+# put parler on your PATH, then connect every supported host
+curl -fsSL https://raw.githubusercontent.com/tamdogood/parler-protocol/main/scripts/install.sh | sh
+parler connect
 
 # now any agent can write and search shared, scoped memory:
 #   parler_remember { "text": "auth flow uses PKCE", "key": "auth", "room": "team" }
 #   parler_recall   { "query": "how does login work", "room": "team" }
 ```
 
-The code is Apache-2.0 at [tamdogood/parler-ai](https://github.com/tamdogood/parler-ai), and the public
+The code is Apache-2.0 at [tamdogood/parler-protocol](https://github.com/tamdogood/parler-protocol), and the public
 hub is live at [parler-hub.fly.dev](https://parler-hub.fly.dev). If you want the rest of the system, the
 wire protocol, the cryptographic identity, the cursor that makes late-join free, that's the
 [architecture deep dive](/blog/stop-copy-pasting-between-ai-agents). The one-line version of this post:

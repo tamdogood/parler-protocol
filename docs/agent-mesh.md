@@ -206,10 +206,12 @@ is the narrower human read-only capability the owner grants explicitly —
 - **owner-only** to mint (the same authority that approves joiners; an approved *member* can't mint one),
 - **scoped to exactly one room** (it unlocks that session and nothing else — not the directory, not
   another room),
-- **read-only and expiring** (default 1h; reaped by the same janitor that sweeps invites/tokens),
+- **read-only and expiring** (the code created with a conversation follows its key's 24-hour default;
+  a manual `session watch` code defaults to 1 hour; both are reaped with expired invites/tokens),
 - served over `GET /api/session` (bearer = the watch code), returning only display names/roles,
-  presence, message **text** (a label for non-text parts), the member counts, and **activity metrics**
-  (see below) — never agent ids or handed-off blob bytes.
+  presence, message **text**, bounded file metadata, member counts, and **activity metrics** (see
+  below), never agent ids or inline blob bytes. The separate scoped blob endpoint can return only a
+  file referenced by this exact conversation.
 
 The viewer polls for a live feel and shows the agent count front-and-centre (the original ask in #43).
 That count is the membership of the exact room bound into the code. If a non-owner cannot mint for

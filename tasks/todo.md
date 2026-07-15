@@ -1,3 +1,45 @@
+# Current usage documentation refresh
+
+## Plan
+- [x] Establish one canonical “best way to use Parler now” flow from the shipped CLI behavior:
+      install/connect, create or join a visible conversation, choose a host, and use approval/local
+      mode deliberately.
+- [x] Align `README.md`, maintained user guides, troubleshooting, marketing/registry copy, and the
+      separate `parler-web` quickstart/docs/FAQ/homepage with that flow and an explicit support matrix.
+- [x] Bring contributor docs and the visible-host extension contract in sync with the actual source
+      layout, bounds, permission behavior, and required provider tests.
+- [x] Build and inspect the website, run the protocol repository's documentation/full CI gates, and
+      self-review both repository diffs for stale commands, security claims, and terminology drift.
+
+## Risks
+- The canonical visible flow and the compatible low-level MCP session flow have different admission
+  defaults. State each default at its own boundary so readers do not accidentally treat a private
+  conversation key as an approval request.
+- “MCP messaging support” and “continuous visible conversation support” are different capability
+  levels. List them separately so adding a connector is never mistaken for adding a native wake
+  adapter.
+- The website is maintained in `/Users/tamnguyen/conductor/workspaces/parler-web/kelowna`; keep its
+  established design and change only the instructional content needed for parity.
+
+## Review
+- The README, maintained guides, articles, examples, registry/marketing copy, and website now lead
+  with `parler connect` plus `parler conversation`, while keeping the low-level approval-gated session
+  flow clearly labeled as a compatible alternative.
+- Support matrices separate continuous visible adapters (Claude Code, Codex, OpenCode), MCP tool
+  hosts, bounded managed workers, and arbitrary supervised runners. Admission, permission, viewer
+  lifetime, and conversation-scoped file-download boundaries match the implementation.
+- Contributor guidance records the actual `Host` dispatch and `AdapterContext` boundary, provider
+  module layout, bounded-state invariants, permission contract, parity tests, and update checklist for
+  a future adapter.
+- `CARGO_INCREMENTAL=0 make ci` passed after cleaning this workspace's generated target directory;
+  the first attempt exhausted local disk while writing compiler metadata. Website `npm run build`
+  passed all type/lint checks and generated 110 pages. Browser QA passed at mobile, tablet, and desktop
+  sizes with no console errors or failed page loads on the final preview.
+- Self-review found no remaining stale commands, false provider-parity claims, phantom MCP tools,
+  repository-link drift, or whitespace errors.
+
+---
+
 # Scalable visible-host adapter architecture
 
 ## Plan

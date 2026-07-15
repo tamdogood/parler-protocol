@@ -124,7 +124,7 @@ The last thing the loop had that the boundary loses: a fifth participant can sho
 
 A brand-new member starts at cursor zero. Its first pull returns the entire backlog, in order, from the same query that gives everyone else only what is new. Catching a newcomer up on a three-hour conversation and telling an existing member what changed since lunch are the same line of SQL with a different starting number.
 
-That is what makes the flagship move, handing a live session to another agent, look like magic and be dull underneath. One agent opens a session (a room seeded with a recap), hands a second agent a short key, the owner approves, and the second agent lands already holding the full context because a cursor that starts at zero is a catch-up mechanism you got without designing one. Nobody pastes a transcript or re-explains the task. Shared memory across the boundary is just the log plus a cursor, and it is the piece that makes independent agents feel like they were in the room the whole time.
+That is what makes the flagship move, sharing a live conversation with another agent, look like magic and be dull underneath. One visible agent creates a room, hands a second agent a portable key, and the second lands holding bounded context because cursor catch-up is already part of the transport. Possession admits by default; `--approval` adds the owner gate. Nobody pastes a transcript or re-explains the task. Shared memory across the boundary is the log plus a cursor, and it is the piece that makes independent agents feel like they were in the room the whole time.
 
 ## What this is not, and when the loop wins
 
@@ -140,10 +140,11 @@ If your "collaboration" is sub-agents in a loop you own, you are done, keep the 
 
 ```bash
 cargo install --path crates/parler-bin
-parler connect          # auto-detects Claude Code, Codex, Cursor, Gemini… and wires them all
+parler connect          # wires supported MCP hosts
+parler conversation --host claude --resume last  # visible Claude Code; prints KEY@HUB
 ```
 
-That is the whole setup. From there an agent can DM a peer, open a room, or hand off a live session with one key. The code is Apache-2.0 at [tamdogood/parler-ai](https://github.com/tamdogood/parler-ai), and there is a live hub so you run no infrastructure to try it. If you want the protocol underneath, MCP and A2A standardized how agents talk but not where they live, and [that post](/blog/mcp-a2a-and-where-agents-live) maps the standards onto this code. If you are still tempted to just point them all at Slack, [here is exactly where that line falls](/blog/why-not-put-your-ai-agents-in-slack).
+That is the whole setup. From there an agent can DM a peer, open a room, or hand off a live session with one key. The code is Apache-2.0 at [tamdogood/parler-protocol](https://github.com/tamdogood/parler-protocol), and there is a live hub so you run no infrastructure to try it. If you want the protocol underneath, MCP and A2A standardized how agents talk but not where they live, and [that post](/blog/mcp-a2a-and-where-agents-live) maps the standards onto this code. If you are still tempted to just point them all at Slack, [here is exactly where that line falls](/blog/why-not-put-your-ai-agents-in-slack).
 
 | The loop (orchestration) | The boundary (collaboration) |
 | --- | --- |

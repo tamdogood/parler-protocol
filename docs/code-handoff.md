@@ -2,11 +2,12 @@
 
 **Status: BUILT (Phase 1 + Phase 2), 2026-06-27.** Borrowed from
 [ottogin/agenthub](https://github.com/ottogin/agenthub). Try it: `parler push` / `parler fetch` /
-`parler apply` (and the `parler_push` / `parler_fetch` MCP tools). Phase 3 (frontier) is deferred.
+`parler apply` (and the `parler_push` / `parler_fetch` / `parler_apply` MCP tools). Phase 3
+(frontier) is deferred.
 
-Today two Parler Protocol agents can *talk* about a change and write text **facts**, but they can't hand
-each other the **change itself** — code, a patch, a commit series. This adds an artifact-handoff
-primitive so an agent can push a **git bundle** into a room and a peer can pull and apply it.
+This artifact-handoff primitive lets two Parler Protocol agents exchange the **change itself**, not
+just talk about it or write text **facts**. One agent pushes a **git bundle** into a room; a peer can
+fetch it and import the exact commits into an isolated ref.
 
 ```
    alice ──push (git bundle)──► parler-hub ──(blob on disk)        a handoff is an ordinary room
@@ -73,10 +74,10 @@ hub    → <Binary frame: the bundle>
 The handoff message itself is still posted with the **existing** `Send` (a bundle `Part`), and read
 with the **existing** `Pull`. Only blob movement is new.
 
-> **Deferred (the agenthub-style HTTP side-channel):** add `POST/GET /api/blobs/:id` with short-lived,
-> op-scoped capability tokens when we need resumable/cacheable/browser-fetchable bundles (e.g. the
-> website offering a download). The blob is content-addressed already, so this slots in without
-> changing the reference format. Chunked/streamed uploads (multi-frame) are deferred with it.
+> **Partially shipped:** a session watch token can download only blobs referenced by that exact room
+> through the scoped viewer endpoint. General agent HTTP upload/download, resumable transfers, and
+> chunked or streamed uploads remain deferred. Agent transport continues to use authenticated
+> WebSocket binary frames.
 
 ## What changes, file by file
 
@@ -141,8 +142,9 @@ with the **existing** `Pull`. Only blob movement is new.
   `📦 bundle "<summary>" (<tip>, <size>) — parler fetch <blob> / parler apply <blob>`.
 
 ### `crates/parler-cli/src/mcp.rs`
-- `parler_push` and `parler_fetch` tools. **No `parler_apply`** — applying code from a tool call into
-  a repo is the kind of hard-to-reverse, outward action that stays human-in-the-loop in the CLI.
+- `parler_push`, `parler_fetch`, and `parler_apply` tools. `parler_apply` verifies the bundle and
+  imports it under `refs/parler/<blob-prefix>` in an explicit repository path. It never merges,
+  checks out, or modifies the working tree.
 
 ## Borrow #2 — defense (agenthub has it; Parler Protocol doesn't)
 
@@ -172,10 +174,10 @@ surface in `rooms` output and on the website. Cheap; defer until handoff is in u
 |---|---|
 | **Integrity** | `id = sha256(bytes)`; the hub rejects a blob whose bytes don't hash to the declared id. Content-addressing dedups and is tamper-evident. |
 | **Authorization** | Pure room membership (existing model). A blob is bound to its room; only members (`is_member`) can `GetBlob` it. No new ACL concept. |
-| **No new auth surface** | Bytes ride the already-authenticated WebSocket; no HTTP capability tokens in the MVP. |
+| **Narrow viewer auth** | Agent bytes ride the authenticated WebSocket. A session watch token can download only blobs referenced by its exact room. |
 | **Bounded** | `max_blob_bytes` + per-agent rate limits. |
 | **Hub never executes** | The bundle is opaque bytes; no `git` on the server in MVP ⇒ no server-side git RCE surface. |
-| **Apply is explicit** | `apply` fetches into `refs/parler/*` and never merges; MCP can't apply at all. |
+| **Apply is isolated** | CLI and MCP apply fetch into `refs/parler/*`; neither merges, checks out, or changes the working tree. |
 
 ## Compatibility & phasing
 
@@ -189,9 +191,9 @@ changes; old clients degrade gracefully on the unknown part.
 
 ## Decisions made (as built)
 
-1. **Transport: WS-binary** — bytes ride the already-authenticated WebSocket as a single binary
-   frame; no new HTTP channel, no new dependency, no capability tokens. (HTTP side-channel remains the
-   deferred path for when the website/external tools must download bundles.)
+1. **Transport: WS-binary** — agent bytes ride the already-authenticated WebSocket as a single
+   binary frame. The later session-viewer endpoint is read-only, watch-token-scoped, and limited to
+   blobs referenced by the viewer's exact room.
 2. **Single-frame blob** — a `PutBlob` declares `size`+`sha256`; the next binary frame must be exactly
    those bytes. Chunked upload is deferred.
 3. **`max_blob_bytes` = 25 MiB** default (`DEFAULT_MAX_BLOB_BYTES`), overridable via
@@ -211,6 +213,8 @@ changes; old clients degrade gracefully on the unknown part.
 - `recv` prints the **full** blob id in the `parler apply <id>` hint so it copy-pastes and works.
 - `apply` runs `git bundle verify` → `git fetch` → pins the tip under `refs/parler/<blob-prefix>`;
   it never touches the working tree (merge stays a separate, explicit `git merge`).
+- The MCP server exposes the same isolated import as `parler_apply`; callers provide the repository
+  path, and merge or checkout remains outside the tool.
 
 ## Verified
 

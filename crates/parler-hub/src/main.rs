@@ -201,7 +201,7 @@ async fn main() -> anyhow::Result<()> {
         // Pass the hub + secret as `-e` flags so they persist into the stored MCP server config; a
         // shell-env prefix in front of `claude mcp add` would NOT survive into the launched
         // `parler mcp` (issue #100). First, install the binary; then wire the agent.
-        println!("    cargo install --git https://github.com/tamdogood/parler-ai parler-bin\n");
+        println!("    cargo install --git https://github.com/tamdogood/parler-protocol parler-bin\n");
         match &state.join_secret {
             Some(secret) => println!(
                 "    claude mcp add parler \\\n      -e PARLER_HUB={connect_url} \\\n      -e PARLER_JOIN_SECRET={secret} \\\n      -- parler mcp\n"

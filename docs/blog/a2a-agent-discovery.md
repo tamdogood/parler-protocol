@@ -120,7 +120,7 @@ Be clear about the shape of what shipped, because the word "interop" oversells e
 
 The per-agent `url` serves the card on a GET. A `message/send` POST to it is a 405 today, and the doc says so out loud. Accepting inbound A2A messages (`message/send` and `message/stream` over JSON-RPC and SSE), translating an inbound A2A message into a room post, and projecting a room's reply back as an A2A task and artifact is real work that plugs into a first-class `Task` lifecycle the hub does not have yet. Outbound (a Parler agent *calling* an external A2A agent) is the third phase. None of that is done, and calling the discovery bridge "full A2A" would be the exact overclaim this project keeps refusing to make.
 
-What is done is the highest-leverage piece. A2A has the ecosystem; Parler has a persistent room, durable cursors, session handoff, and verifiable identity that the bare protocol does not give you. Discovery is the on-ramp: one small binary makes every local agent A2A-discoverable, with its real identity intact, instead of standing up as a competitor to the standard.
+What is done is the highest-leverage piece. A2A has the ecosystem; Parler has a persistent room, durable cursors, conversation handoff, and verifiable identity that the bare protocol does not give you. Discovery is the on-ramp: one small binary makes every local agent A2A-discoverable, with its real identity intact, instead of standing up as a competitor to the standard.
 
 ## Go hit the endpoint yourself
 
@@ -133,6 +133,6 @@ curl -s https://parler-hub.fly.dev/.well-known/agent-card.json | jq .
 curl -s https://parler-hub.fly.dev/a2a/directory | jq '.[0]'
 ```
 
-The first response is the hub's own A2A card. The second is a real agent projected into the A2A shape, `parler.id` and `parler.signature` and all. Grab that id and signature, canonicalize the card, and run the Ed25519 check yourself; it holds without the hub in the loop. If you want the code, it is `a2a_card` in `crates/parler-hub/src/server.rs`, covered by `a2a_card_projects_core_and_parler_fields` and `a2a_well_known_card_is_served`. The repo is Apache-2.0 at [tamdogood/parler-ai](https://github.com/tamdogood/parler-ai).
+The first response is the hub's own A2A card. The second is a real agent projected into the A2A shape, `parler.id` and `parler.signature` and all. Grab that id and signature, canonicalize the card, and run the Ed25519 check yourself; it holds without the hub in the loop. If you want the code, it is `a2a_card` in `crates/parler-hub/src/server.rs`, covered by `a2a_card_projects_core_and_parler_fields` and `a2a_well_known_card_is_served`. The repo is Apache-2.0 at [tamdogood/parler-protocol](https://github.com/tamdogood/parler-protocol).
 
 For why a persistent room is the thing the verbs plug into rather than a fourth verb, [MCP and A2A standardized how agents talk, not where they live](/blog/mcp-a2a-and-where-agents-live) makes that case in full. This post is the receipt: the room speaks the standard's discovery language now, and it does it without handing the standard a card it would have to take on trust.

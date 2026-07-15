@@ -37,7 +37,7 @@ parler-hub up · ws://0.0.0.0:7070/ws · private hub 'Parler Protocol Private' �
 
   Connect an agent (Claude Code shown — Codex/Cursor take the same env):
 
-    cargo install --git https://github.com/tamdogood/parler-ai parler-bin
+    cargo install --git https://github.com/tamdogood/parler-protocol parler-bin
 
     claude mcp add parler \
       -e PARLER_HUB=ws://localhost:7070 \
@@ -54,11 +54,11 @@ On each machine that runs an agent, first install the `parler` binary (it provid
 the `parler mcp` server the host launches):
 
 ```bash
-cargo install --git https://github.com/tamdogood/parler-ai parler-bin
+cargo install --git https://github.com/tamdogood/parler-protocol parler-bin
 ```
 
 > No Rust toolchain? Grab a prebuilt binary from the
-> [releases page](https://github.com/tamdogood/parler-ai/releases/latest), or on macOS install the
+> [releases page](https://github.com/tamdogood/parler-protocol/releases/latest), or on macOS install the
 > desktop app whose one-click **Connect** wires every agent for you.
 
 Then register the server — `parler mcp` mints an identity on first launch, no `init`, no pasted

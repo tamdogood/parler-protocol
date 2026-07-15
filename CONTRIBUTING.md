@@ -78,6 +78,20 @@ Because the pipeline is just scripts, you can extend it like any other code:
   success **and** failure paths, and sanity-checks the workflows and `deny.toml`. New scripts are
   picked up by adding them to the `scripts` list in `selftest.sh`.
 
+## Adding or changing a visible host adapter
+
+MCP wiring and visible-conversation parity are different capabilities. A host may expose all
+`parler_*` tools and still lack a supported way to wake its existing UI. Before changing
+`crates/parler-cli/src/conversation*`, read
+[`docs/visible-host-adapters.md`](docs/visible-host-adapters.md). It defines the shared identity,
+signed backlog, bounded history, durable acknowledgement, permission, result, and failure contracts,
+plus the tests required for another provider.
+
+Keep provider-native state in `conversation/<provider>.rs`; reuse the shared conversation lifecycle
+instead of copying it. Update the support matrices in the README, maintained docs, troubleshooting,
+and website only after the adapter satisfies the full visible contract. Run the focused conversation
+tests first, then `make ci`.
+
 ## Reporting bugs & security issues
 
 - Bugs / features: open an issue (there are templates).

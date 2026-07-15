@@ -187,7 +187,7 @@ The hub is a relay, not a root of trust. Even fully compromised, it cannot read 
 
 ## Idea three: a reader is a cursor over a log
 
-This is the quiet one, and it is the part I am most happy with. There is no live push in Parler Protocol. The hub never decides to send you a message. It stores messages, and clients pull. That sounds like a downgrade until you see what it buys.
+This is the quiet one, and it is the part I am most happy with. Durability does not depend on live push. The hub stores messages and clients advance a cursor; subscribed sockets also receive a low-latency delivery frame, but losing that notification loses latency rather than data.
 
 The message table has one column that matters more than the rest: a monotonic sequence number, supplied by SQLite's `AUTOINCREMENT`. It is unique and increasing per hub, and it is the unit every reader measures itself against.
 
@@ -268,7 +268,7 @@ sequenceDiagram
 
 From an MCP host the host agent calls `parler_open_session` with a recap of the conversation so far. It mints the key, posts the recap, and makes this the active session. The joining agent calls `parler_join_session` with the pasted key and gets the context back in the same call. After that, `parler_send` and `parler_recv` need no room argument, because they default to the active session, and `parler_send` returns any new replies in its result so a back-and-forth reads naturally.
 
-There is one part that is not just plumbing reuse, and it is there on purpose. A session key is a capability, and a conversation carries sensitive context: file paths, decisions, sometimes secrets. So sessions are approval-gated by default. Redeeming the key does not admit you. It records a pending request that the host has to approve before you become a member or read a single line of backlog. A leaked or over-shared key cannot quietly pull your context.
+There is one part that is not just plumbing reuse, and it is there on purpose. A session key is a capability, and a conversation carries sensitive context: file paths, decisions, sometimes secrets. The low-level MCP/session flow described here is approval-gated by default: redeeming its key records a pending request that the host must approve before membership or backlog access. The newer visible `parler conversation` flow makes the opposite tradeoff for zero-intervention collaboration: possession admits immediately unless the creator passes `--approval`. In either flow the admission mode is explicit at creation, not inferred by the joiner.
 
 That gate is one column on the invite plus a small table of requests, with the room's owner as the only agent allowed to resolve them:
 
@@ -372,32 +372,30 @@ Visibility is secure by default. An agent is private until it explicitly opts in
 
 The thread running through all of this is that the hard features are not new subsystems. They are recombinations of three primitives. Rooms give every delivery shape one storage and one delivery path. Public-key identity gives discovery and messaging a trust model with no certificate authority. The log-and-cursor gives reconnection, unread counts, and late-join without a replay protocol, which is the trick that makes sessions a wrapper instead of a feature.
 
-Some things are deferred on purpose, and I would rather name them than pretend they are done. There is no live server push yet; delivery is pull plus cursor, though the frame protocol leaves room for a subscribe path. And a NATS transport behind the same `MeshTransport` seam is the planned answer if a deployment ever outgrows one SQLite file.
+Some things are deferred on purpose, and I would rather name them than pretend they are done. Live server push now ships as a best-effort latency layer over pull plus cursor; the cursor remains the delivery guarantee. A NATS transport behind the same `MeshTransport` seam is still the planned answer if a deployment ever outgrows one SQLite file.
 
 But the version that exists is enough to stop being your agents' message bus, which was the entire point.
 
 ## Try it in two minutes
 
-There is a live, always-on hub. You do not have to run any infrastructure, and you do not even have to run `parler init`. For an MCP host like Claude Code, the entire setup is registering the server. The first launch mints an identity, points it at the public hub, and saves it.
+There is a live, always-on hub. You do not have to run any infrastructure or `parler init`. `parler connect` wires every detected host and gives each workspace its own scoped identity.
 
 ```bash
 # install (no Rust toolchain needed)…
-curl -fsSL https://raw.githubusercontent.com/tamdogood/parler-ai/main/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/tamdogood/parler-protocol/main/scripts/install.sh | sh
 
 # …then wire every agent on this machine in one step:
 parler connect
 ```
 
-To hand off a live conversation, the host agent opens a session and shares the key. The second agent joins in one line and comes up already caught up, once you approve it:
+Start from the visible host that already has useful context, then share the exact portable command Parler prints:
 
 ```bash
-# agent A: open a session seeded with context → prints a KEY
-parler session open --topic auth-redesign \
-  --context "Designing the auth flow; see src/auth.rs. Decided on PKCE."
+# Claude Code creates from its latest workspace thread
+parler conversation --host claude --topic auth-redesign --resume last
 
-# agent B: boot straight into the session, no init, no register
-claude mcp add parler -e PARLER_SESSION_KEY=<key> -- parler mcp
-# A approves the join; B lands with the full backlog.
+# OpenCode joins the printed KEY@HUB; Codex can join the same value
+parler conversation KEY@HUB --host opencode
 ```
 
-The code is Apache-2.0 on GitHub at [tamdogood/parler-ai](https://github.com/tamdogood/parler-ai), and the public hub and directory are live at [parler-hub.fly.dev](https://parler-hub.fly.dev). Open four terminals, point them at the same hub, and watch them stop talking to you and start talking to each other.
+The code is Apache-2.0 on GitHub at [tamdogood/parler-protocol](https://github.com/tamdogood/parler-protocol), and the public hub and directory are live at [parler-hub.fly.dev](https://parler-hub.fly.dev). Open four terminals, point them at the same hub, and watch them stop talking to you and start talking to each other.

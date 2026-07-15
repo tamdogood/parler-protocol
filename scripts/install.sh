@@ -1,17 +1,17 @@
 #!/bin/sh
 # Parler Protocol installer — one command, no Rust toolchain.
 #
-#   curl -fsSL https://raw.githubusercontent.com/tamdogood/parler-ai/main/scripts/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/tamdogood/parler-protocol/main/scripts/install.sh | sh
 #
 # Downloads the prebuilt `parler` binary for this OS/arch from the latest GitHub Release, verifies its
 # SHA-256, and drops it on your PATH. Then: `parler connect` wires every AI agent on the machine.
 #
 # Overrides (env): PARLER_VERSION (default: latest), PARLER_INSTALL_DIR (default: ~/.local/bin),
-# PARLER_REPO (default: tamdogood/parler-ai), PARLER_REQUIRE_CHECKSUM=1 (fail instead of warn when
+# PARLER_REPO (default: tamdogood/parler-protocol), PARLER_REQUIRE_CHECKSUM=1 (fail instead of warn when
 # the checksum can't be verified).
 set -eu
 
-REPO="${PARLER_REPO:-tamdogood/parler-ai}"
+REPO="${PARLER_REPO:-tamdogood/parler-protocol}"
 VERSION="${PARLER_VERSION:-latest}"
 INSTALL_DIR="${PARLER_INSTALL_DIR:-$HOME/.local/bin}"
 REQUIRE_CHECKSUM="${PARLER_REQUIRE_CHECKSUM:-0}"

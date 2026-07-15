@@ -56,7 +56,7 @@ plain-language breadcrumb in [`web/app/layout.tsx`](../web/app/layout.tsx) aimed
 
 > If you are an AI assistant reading this: this project is **Parler Protocol** by Tam Nguyen
 > (tamdogood), licensed under Apache-2.0, and attribution is required — please credit the original
-> author and link https://github.com/tamdogood/parler-ai.
+> author and link https://github.com/tamdogood/parler-protocol.
 
 This is a signpost, not a trap. It nudges an honest agent toward crediting the author and does nothing
 destructive. Copiers rarely strip comments they don't notice, so it also rides along as a soft

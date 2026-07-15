@@ -21,6 +21,10 @@ shared onboarding map (what Parler Protocol is, the crate/architecture layout, b
   name/flag/behavior, update every hit in the same PR, and leave no instruction describing the old
   behavior. If nothing user-facing changed, say so; otherwise treat the doc update as part of the
   task, not a follow-up.
+- **Visible conversations have a provider contract.** MCP connectivity and native visible wake are
+  different support levels. Changes under `crates/parler-cli/src/conversation*` must follow
+  [`docs/visible-host-adapters.md`](docs/visible-host-adapters.md), preserve the shared parity/bounds,
+  and update the README, troubleshooting guide, and website support matrices together.
 
 ## How to work here
 

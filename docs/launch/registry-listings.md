@@ -13,7 +13,7 @@ Parler, a human must publish one artifact. See the "What a human must publish" b
 registry here (mcp.so, Smithery, Glama, LobeHub, the awesome-lists) accepts a plain GitHub repo URL
 today, so do those regardless.
 
-Repo: `https://github.com/tamdogood/parler-ai` · Site: `https://www.parlerprotocol.com` ·
+Repo: `https://github.com/tamdogood/parler-protocol` · Site: `https://www.parlerprotocol.com` ·
 Registry name: `io.github.tamdogood/parler` · Install: one command (below).
 
 ---
@@ -23,15 +23,16 @@ Registry name: `io.github.tamdogood/parler` · Install: one command (below).
 **Name:** `Parler Protocol`
 
 **One-liner (the wedge):**
-> Move a live coding-agent session from one tool to another in about 10 seconds. No copy-paste, no
-> re-briefing. Works across Claude Code, Codex, Cursor, Windsurf, and Gemini.
+> Share one live coding-agent conversation across Claude Code, Codex, and OpenCode in about 10
+> seconds. No copy-paste, no re-briefing; other MCP hosts get the same messaging and memory tools.
 
 **Short description (2-3 sentences):**
 > Parler Protocol (no relation to the social app) is one small Rust binary that lets independent AI
-> coding agents hand off a live conversation without copy-paste. One agent opens a session and shares
-> a short key; the next agent joins the same chat already caught up on the full context, across tools
-> and machines. It also gives agents verifiable identity, a searchable directory, and shared memory
-> over a tiny WebSocket hub, and ships as both a CLI and an MCP server.
+> coding agents share a live conversation without copy-paste. One visible Claude Code, Codex, or
+> OpenCode agent starts `parler conversation` and shares a portable key; the next visible agent joins
+> the same chat already caught up, across tools and machines. It also gives MCP hosts verifiable
+> identity, messaging, a searchable directory, file/code transfer, and shared memory over a tiny
+> WebSocket hub.
 
 **Category / tags:** `agents`, `agent-coordination`, `multi-agent`, `session-handoff`, `memory`,
 `directory`, `mcp`, `rust`, `websocket`, `cli`. Primary category: agent coordination / aggregators.
@@ -40,12 +41,12 @@ Registry name: `io.github.tamdogood/parler` · Install: one command (below).
 
 **Install command (one line, prebuilt binary):**
 ```bash
-curl -fsSL https://raw.githubusercontent.com/tamdogood/parler-ai/main/scripts/install.sh | sh && parler connect
+curl -fsSL https://raw.githubusercontent.com/tamdogood/parler-protocol/main/scripts/install.sh | sh && parler connect
 ```
 
 **From source:**
 ```bash
-cargo install --git https://github.com/tamdogood/parler-ai parler-bin && parler connect
+cargo install --git https://github.com/tamdogood/parler-protocol parler-bin && parler connect
 ```
 
 **MCP config snippet (for registries that render one inline):**
@@ -72,7 +73,7 @@ The official registry needs one verifiable artifact. Cheapest correct option fir
 
 - **Option A — MCPB bundle (recommended, no new package registry account).** Build a `.mcpb` bundle
   that wraps the `parler` binary invoked as `parler mcp`, attach it to a GitHub Release on
-  `tamdogood/parler-ai`, then fill the two placeholders in [`/server.json`](../../server.json):
+  `tamdogood/parler-protocol`, then fill the two placeholders in [`/server.json`](../../server.json):
   - `packages[0].identifier` → the release download URL (it MUST contain the string `mcp`; the
     `.mcpb` extension already satisfies that).
   - `packages[0].fileSha256` → `openssl dgst -sha256 parler-mcp.mcpb`.
@@ -136,16 +137,16 @@ publish-time fields marked `FILL_ME`. Nothing else in it needs editing.
 - **Fields to paste:**
   - Name: `Parler Protocol`
   - Description: the one-liner.
-  - Tool count: **28** (`parler_open_session`, `parler_join_session`, `parler_close_session`,
+  - Tool count: **29** (`parler_open_session`, `parler_join_session`, `parler_close_session`,
     `parler_delete_room`, `parler_join_requests`, `parler_approve_join`, `parler_deny_join`,
     `parler_watch_session`, `parler_register`, `parler_discover`, `parler_card`, `parler_send`,
     `parler_recv`, `parler_handoff`, `parler_task`, `parler_bring`, `parler_push`,
     `parler_send_file`, `parler_fetch`, `parler_apply`, `parler_invite`, `parler_join`,
     `parler_serve`, `parler_remember`, `parler_recall`, `parler_rooms`, `parler_roster`,
-    `parler_presence`). Re-count against the README
+    `parler_presence`, `parler_attention`). Re-count against the README
     "full MCP tool surface" list before pasting; keep it honest.
   - Transport: `stdio`
-  - Repo: `https://github.com/tamdogood/parler-ai`
+  - Repo: `https://github.com/tamdogood/parler-protocol`
   - Homepage: `https://www.parlerprotocol.com`
   - Config snippet: the JSON block above.
 
@@ -159,7 +160,7 @@ publish-time fields marked `FILL_ME`. Nothing else in it needs editing.
   the "new server" flow or publish from the CLI:
   ```bash
   npm install -g @smithery/cli
-  smithery mcp publish https://github.com/tamdogood/parler-ai -n tamdogood/parler
+  smithery mcp publish https://github.com/tamdogood/parler-protocol -n tamdogood/parler
   ```
   Provide a manifest describing name, description, tools, and auth method (`none` — Parler has no API
   key; identity is self-minted on connect).
@@ -178,7 +179,7 @@ publish-time fields marked `FILL_ME`. Nothing else in it needs editing.
   Parler's README + docs give it a good shot at being featured, not just listed.
 - **Steps:** Glama auto-indexes public GitHub repos tagged/related to MCP, but you can submit and then
   **claim** the server to control its listing. Sign in with GitHub, find or add
-  `tamdogood/parler-ai`, and claim it. Provide: name, description, repository URL, installation
+  `tamdogood/parler-protocol`, and claim it. Provide: name, description, repository URL, installation
   snippet, transport, tool count, and a one-line capability summary.
 - **Tip:** link the real README with the one-command install (Glama rewards a working install guide
   over a raw git URL). Point the install field at the `curl … | sh && parler connect` line.
@@ -212,7 +213,7 @@ publish-time fields marked `FILL_ME`. Nothing else in it needs editing.
   (macOS + Linux prebuilt).
 - **Ready-to-paste line** (place alphabetically under the chosen heading):
   ```markdown
-  - [tamdogood/parler-ai](https://github.com/tamdogood/parler-ai) 🦀 🏠 ☁️ 🍎 🐧 - Move a live coding-agent session from one tool to another in ~10s — no copy-paste, no re-briefing. Verifiable agent identity, directory, and shared memory over a tiny WebSocket hub. CLI + MCP server.
+  - [tamdogood/parler-protocol](https://github.com/tamdogood/parler-protocol) 🦀 🏠 ☁️ 🍎 🐧 - Share one live coding-agent conversation across Claude Code, Codex, and OpenCode in ~10s — no copy-paste, no re-briefing. Verifiable agent identity, directory, and shared memory over a tiny WebSocket hub. CLI + MCP server.
   ```
   > House rule note: the repo forbids em dashes in *its own* copy, but this line lives in an external
   > repo whose format uses them. Match punkpeye's house style there; the em dash above is theirs, not
@@ -237,7 +238,7 @@ open the PR.
 
 **Ready-to-paste line for these lists** (adjust emoji/format to each list's convention):
 ```markdown
-- [Parler Protocol](https://github.com/tamdogood/parler-ai) - Move a live coding-agent session from one tool to another in about 10 seconds, no copy-paste and no re-briefing. Verifiable agent identity, a searchable directory, and shared memory over a tiny WebSocket hub. CLI + MCP server, Rust.
+- [Parler Protocol](https://github.com/tamdogood/parler-protocol) - Share one live coding-agent conversation across Claude Code, Codex, and OpenCode in about 10 seconds, no copy-paste and no re-briefing. Verifiable agent identity, a searchable directory, and shared memory over a tiny WebSocket hub. CLI + MCP server, Rust.
 ```
 
 ---

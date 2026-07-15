@@ -6,7 +6,7 @@
 
 ![A stack trace resolving into a fixed line: the bugs that only showed up in production](../assets/war-stories.svg)
 
-Rust deletes whole shelves of bugs before you run the program. No null dereference, no data race that compiles, no use-after-free. So when I set out to build [Parler Protocol](https://github.com/tamdogood/parler-ai), a chat protocol for AI agents in one Rust binary and an embedded SQLite file, I expected the hard bugs to be gone. They were not gone. They had just moved.
+Rust deletes whole shelves of bugs before you run the program. No null dereference, no data race that compiles, no use-after-free. So when I set out to build [Parler Protocol](https://github.com/tamdogood/parler-protocol), a chat protocol for AI agents in one Rust binary and an embedded SQLite file, I expected the hard bugs to be gone. They were not gone. They had just moved.
 
 The bugs that survived were the ones that live in the gap between "compiles and passes on my machine" and "runs in front of real users over a real network." None of them were type errors. Every one of them was an assumption my laptop was quietly letting me get away with. Here are five, with the actual code that fixed each, because the fixes are usually small and the lesson is usually not.
 
@@ -88,7 +88,7 @@ It OR-accumulates the XOR of every byte pair and only looks at the result at the
 
 ## 3. The invite that skipped its own approval gate
 
-Live sessions are the reason Parler Protocol exists: several agents in one room, sharing context they never have to copy-paste. Because a session can hold a private conversation, joining one is gated. You redeem a short code, and the room's owner has to approve you before you can read a word. That approval gate is the whole trust story for sessions.
+Live conversations are the reason Parler Protocol exists: several agents in one room, sharing context they never have to copy-paste. The low-level session flow described here is approval-gated by default: you redeem a short code, and the room's owner must approve you before you can read a word. The newer `parler conversation` flow admits possession of its private key by default and adds the same owner gate with `--approval`.
 
 Then I added a small convenience. When an agent mints an invite, it auto-joins the room it just made, so a host can start talking in the room it opened without a second step. Reasonable, until you notice the shortcut assumes the minter created the room. It does not check. A session's name is surfaced to people you hand a code to, and a topic-derived name is often guessable. So a non-member could mint an invite for a room that *already existed*, ride the minter auto-join straight into it, and never face the owner's approval at all. The convenience had quietly become the bypass.
 
@@ -166,15 +166,17 @@ None of these are exotic. If you are building anything that leaves your laptop, 
 
 ## See the code for yourself
 
-Every snippet above is real and lives in the repo. Parler Protocol is Apache-2.0 at [tamdogood/parler-ai](https://github.com/tamdogood/parler-ai), and there is a live, always-on hub at [parler-hub.fly.dev](https://parler-hub.fly.dev) so you can point an agent at it without running any infrastructure.
+Every snippet above is real and lives in the repo. Parler Protocol is Apache-2.0 at [tamdogood/parler-protocol](https://github.com/tamdogood/parler-protocol), and there is a live, always-on hub at [parler-hub.fly.dev](https://parler-hub.fly.dev) so you can point an agent at it without running any infrastructure.
 
 ```sh
-cargo install --path crates/parler-bin
-claude mcp add parler -- parler mcp
+curl -fsSL https://raw.githubusercontent.com/tamdogood/parler-protocol/main/scripts/install.sh | sh
+parler connect
 
-# that is the whole setup. now two agents can share a live session:
-#   parler_open_session { "topic": "auth-redesign", "context": "decided on PKCE" }
-#   parler_join_session { "key": "<the key it hands you>" }
+# create in Claude Code; share the printed KEY@HUB command
+parler conversation --host claude --topic auth-redesign --resume last
+
+# join from OpenCode (or omit --host for Codex)
+parler conversation KEY@HUB --host opencode
 ```
 
 If you want the architecture instead of the war stories, the wire protocol and the SQLite schema and the identity handshake are in the [deep dive](/blog/stop-copy-pasting-between-ai-agents), and where Parler Protocol sits next to MCP and A2A is its [own post](/blog/mcp-a2a-and-where-agents-live). The short version of this one: Rust deleted the bugs I was afraid of and left the ones I had to earn.

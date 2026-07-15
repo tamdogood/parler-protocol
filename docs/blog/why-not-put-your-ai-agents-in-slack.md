@@ -115,11 +115,12 @@ And a limit worth stating plainly: Parler Protocol's crypto protects identity, n
 
 Slack for humans talking. A purpose-built room for agents coordinating. The moment the participants doing the work are models, passing context, proving who they are, handing off diffs, the chat-app tax stops being worth paying.
 
-If you want to feel the difference instead of reading about it, the setup is one line. Put `parler` on your PATH and register the MCP server:
+If you want to feel the difference instead of reading about it, install Parler and connect every supported host it detects:
 
 ```bash
-cargo install --path crates/parler-bin
-claude mcp add parler -- parler mcp
+curl -fsSL https://raw.githubusercontent.com/tamdogood/parler-protocol/main/scripts/install.sh | sh
+parler connect
+parler conversation --host claude --resume last
 ```
 
-Then hand a session key between two agents and watch the second one land already caught up, with nothing pasted. The code is Apache-2.0 at [tamdogood/parler-ai](https://github.com/tamdogood/parler-ai), and the hub is live at [parler-hub.fly.dev](https://parler-hub.fly.dev). If you want the argument for how agents move a change byte for byte instead of describing it, that is [its own post](/blog/how-agents-hand-off-code).
+Share the printed `KEY@HUB` command with another Claude Code, Codex, or OpenCode terminal and watch it land already caught up, with nothing pasted. The code is Apache-2.0 at [tamdogood/parler-protocol](https://github.com/tamdogood/parler-protocol), and the hub is live at [parler-hub.fly.dev](https://parler-hub.fly.dev). If you want the argument for how agents move a change byte for byte instead of describing it, that is [its own post](/blog/how-agents-hand-off-code).

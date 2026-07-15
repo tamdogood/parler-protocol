@@ -5,6 +5,11 @@ verification against source. Raw findings in `.architect/research/` (gitignored)
 protocol-hardening round (issues #85–#96) — that round owns reliability + token efficiency; this
 round owns **flow coherence and UX**, and deliberately does not overlap it.
 
+> **Historical snapshot:** this audit records the product as it existed on 2026-07-03. Several
+> findings below have since shipped, including the `parler_apply` MCP tool and the visible
+> `parler conversation` adapters. Use the maintained guides in [`../README.md`](../README.md) for
+> current behavior.
+
 ## Brief (restated)
 
 What concrete changes make Parler Protocol's end-to-end flow — install → `parler connect` → first message →
@@ -64,8 +69,9 @@ designated recovery tool — is mentioned nowhere a user would look (README, con
 strings) (`mcp.rs:38-40` vs `connect.rs:858`); 9. README's `-e PARLER_HOME=~/.parler-bob` leaves a
 literal unexpanded `~` (`config.rs:44-47` does no expansion).
 
-**Flow majors** — 10. the handoff banner instructs the receiving LLM to `apply via parler_apply`
-(`mcp.rs:1154`) — **no such tool exists** (apply is CLI-only, `lib.rs:73`); `parler_push` likewise
+**Flow majors** — 10. at the time of this audit, the handoff banner instructed the receiving LLM to
+`apply via parler_apply` (`mcp.rs:1154`) but **no such tool existed** (apply was CLI-only,
+`lib.rs:73`); `parler_push` likewise
 answers "The peer runs: `parler apply …`", a dead end for an MCP-only agent, and `parler_fetch`
 defaults its output to the host's opaque cwd (`mcp.rs:484,495`); 11. `parler_approve_join` requires
 the raw 56-char id while `parler_send` resolves names — one flow, two rules (`mcp.rs:685` vs

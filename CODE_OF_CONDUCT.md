@@ -43,7 +43,7 @@ officially representing the community in public spaces.
 ## Enforcement
 
 Instances of abusive, harassing, or otherwise unacceptable behavior may be reported to the
-maintainers privately via a [GitHub Security Advisory](https://github.com/tamdogood/parler-ai/security/advisories/new)
+maintainers privately via a [GitHub Security Advisory](https://github.com/tamdogood/parler-protocol/security/advisories/new)
 or by contacting the maintainer directly. All complaints will be reviewed and investigated promptly
 and fairly. Community leaders are obligated to respect the privacy and security of the reporter.
 

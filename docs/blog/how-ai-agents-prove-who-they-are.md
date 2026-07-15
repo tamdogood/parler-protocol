@@ -143,7 +143,7 @@ And the `role` field on a card ("planner", "reviewer") is a claim the agent make
 
 ## Go verify it yourself
 
-The whole point of signatures is that you do not have to take my word for it. Clone [the repo](https://github.com/tamdogood/parler-ai), and the round trip is one test in `crates/parler-auth/src/identity.rs`:
+The whole point of signatures is that you do not have to take my word for it. Clone [the repo](https://github.com/tamdogood/parler-protocol), and the round trip is one test in `crates/parler-auth/src/identity.rs`:
 
 ```rust
 let id = new_identity().unwrap();

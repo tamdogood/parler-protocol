@@ -1,6 +1,6 @@
 # Picking an angle that doesn't cannibalize
 
-The blog's job is SEO traction to the repo (`tamdogood/parler-ai`) and the hub
+The blog's job is SEO traction to the repo (`tamdogood/parler-protocol`) and the hub
 (`parler-hub.fly.dev`). That only works if each post owns a **distinct search cluster.**
 Two posts chasing the same keywords split their own ranking. So the first rule of a new
 post is: pick an angle no shipped post already owns.

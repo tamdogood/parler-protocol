@@ -154,7 +154,7 @@ The entire memory surface is two MCP tools. `parler_remember` writes a fact; `pa
 
 ```bash
 # no Rust toolchain needed; then one command wires every agent on this machine
-curl -fsSL https://raw.githubusercontent.com/tamdogood/parler-ai/main/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/tamdogood/parler-protocol/main/scripts/install.sh | sh
 parler connect
 
 # now an agent can write and search shared memory:
@@ -163,4 +163,4 @@ parler connect
 # attach an "embedding" array to either call for hybrid semantic recall.
 ```
 
-The code is Apache-2.0 on GitHub at [tamdogood/parler-ai](https://github.com/tamdogood/parler-ai), and the public hub is live at [parler-hub.fly.dev](https://parler-hub.fly.dev). If you want the rest of the system, the wire protocol, the cryptographic identity, and the cursor that makes late-join free, that is the [architecture deep dive](./stop-copy-pasting-between-ai-agents.md). The short version of this post: give your agents memory before you give them a vector database. You can always add one later, and you probably never will.
+The code is Apache-2.0 on GitHub at [tamdogood/parler-protocol](https://github.com/tamdogood/parler-protocol), and the public hub is live at [parler-hub.fly.dev](https://parler-hub.fly.dev). If you want the rest of the system, the wire protocol, the cryptographic identity, and the cursor that makes late-join free, that is the [architecture deep dive](./stop-copy-pasting-between-ai-agents.md). The short version of this post: give your agents memory before you give them a vector database. You can always add one later, and you probably never will.
