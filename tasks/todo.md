@@ -219,3 +219,31 @@ the two concrete DoS vectors (writer contention, disk fill) with minimal surface
 - Self-review: no correctness, security, protocol-compatibility, or documentation-drift findings
   remain. External side effects are honestly documented as at-least-once, and users are warned not to
   run two activation consumers on the same identity/room cursor.
+
+---
+
+# Fresh installs use the shared hub
+
+## Plan
+- [x] Confirm the slow MCP startup was stale local-hub wiring rather than a slow shared hub.
+- [x] Make the desktop app's first-run settings, onboarding, and app identity follow the shared
+      public hub without starting a local service.
+- [x] Add a first-install default-policy test and document recovery from stale local wiring.
+- [x] Run the desktop build/type checks and the repository CI gate; self-review the finished diff.
+
+## Risks
+- Existing saved local configurations must remain local; only a settings file absent on a fresh
+  installation may receive the new shared-hub default.
+- The shared hub sees plaintext, so the onboarding and troubleshooting guidance must state when a
+  user should explicitly choose local mode.
+
+## Review
+- A missing desktop settings file now selects the shared hub and leaves `autoStartHub` off. Existing
+  settings still merge over those defaults, so current local installations are not moved.
+- Onboarding starts a local process only after the user explicitly selected local mode; automatic
+  agent wiring and the app identity follow the selected target.
+- Added the public/local recovery guide and linked it from the README, MCP setup docs, and the
+  project map. The website implementation is maintained in its separate repository, so this repo
+  now contains the canonical troubleshooting source to publish there.
+- Verified with `npm test`, `npm run typecheck`, `npm run build`, `git diff --check`, targeted MCP
+  documentation-reference coverage, and `make ci`. Self-review found no remaining findings.

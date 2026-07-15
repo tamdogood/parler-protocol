@@ -6,7 +6,7 @@ export type HubTarget = "local" | "public";
 
 /** Persisted user settings (JSON in userData/settings.json). */
 export interface Settings {
-  /** Start the local hub automatically when the app launches. */
+  /** Start the local hub automatically when the app launches. Off on a fresh install. */
   autoStartHub: boolean;
   /** Local hub is world-readable (public directory) vs. token-gated private. Default private. */
   hubPublic: boolean;
@@ -23,8 +23,9 @@ export interface Settings {
   /** Which hub the Connect flow targets by default. */
   connectTarget: HubTarget;
   /**
-   * Keep every detected agent wired to the selected hub automatically. First-run setup runs as soon
-   * as the local hub is ready; later scans pick up newly installed agents without another visit.
+   * Keep every detected agent wired to the selected hub automatically. First-run setup uses the
+   * selected hub; local mode waits for its hub to be ready. Later scans pick up newly installed
+   * agents without another visit.
    */
   autoConnectAgents: boolean;
   /** Launch Parler Protocol at login (kept hidden in the tray) so the hub is up before agents dial in. */

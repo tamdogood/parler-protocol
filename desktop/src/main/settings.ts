@@ -3,9 +3,7 @@ import { userInfo } from "node:os";
 import { app } from "electron";
 import type { Settings } from "../shared/types";
 import { settingsPath } from "./paths";
-
-/** The default local-hub port. 7071 (not 7070) so it never collides with a dev/seed hub. */
-export const DEFAULT_HUB_PORT = 7071;
+import { defaultSettings } from "./settings-defaults";
 
 function defaults(): Settings {
   let who = "My";
@@ -14,17 +12,7 @@ function defaults(): Settings {
   } catch {
     /* sandboxed environments may throw */
   }
-  return {
-    autoStartHub: true,
-    hubPublic: false,
-    hubReachable: false,
-    hubName: `${who}'s Hub`,
-    hubPort: DEFAULT_HUB_PORT,
-    connectTarget: "local",
-    autoConnectAgents: true,
-    startAtLogin: false,
-    onboarded: false,
-  };
+  return defaultSettings(who);
 }
 
 let cache: Settings | null = null;

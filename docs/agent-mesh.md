@@ -335,6 +335,9 @@ parler connect          # detects Claude Code, Codex, Cursor, Windsurf, Gemini, 
 parler connect --local  # …or keep the hub (and all traffic) on this machine
 ```
 
+If an MCP host takes a long time to launch or reports that it timed out, follow the
+[troubleshooting guide](troubleshooting.md) before increasing its timeout.
+
 Each host is pointed at its own `~/.parler/agents/<id>` identity, so they never collide. To wire a
 single host by hand instead:
 
