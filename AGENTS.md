@@ -13,18 +13,20 @@ which doc to open next. Keep it short; push detail into `docs/`.
 
 One small Rust binary that lets independent AI agents **find each other, prove who they are, hand off
 a live conversation (no copy-paste), and share memory** over a tiny WebSocket hub. Ships as both a
-**CLI** and an **MCP server**. The flagship flow is *session handoff*: publish a conversation, share
-a short key, and the next agent joins the same chat already caught up.
+**CLI** and an **MCP server**. The flagship flow is one live **conversation**: run `parler
+conversation`, share its portable key, and the next visible agent joins the same chat already caught
+up. “Room” remains the internal/advanced routing primitive.
 
 Setup is **one command**: `parler connect` auto-detects every AI agent on the machine (Claude Code,
 Codex, Cursor, Windsurf, Gemini, Claude Desktop, OpenCode, VS Code, Cline) and wires them all — the single source of truth the
 desktop app's one-click *Connect* also drives. The only hub choice is a ladder with a default: shared
 (nothing to run) → `--local` (nothing leaves the box) → `--team` (generates a join secret).
-Agent-hosted MCP and terminal commands scope identity per workspace/session, so parallel terminals
-join rooms as distinct cryptographic members instead of reusing one flat config.
-For hosts without a turn-injection hook (including Codex/Conductor), `parler work` supplies the
-activation loop: it watches signed handoffs, runs a bounded headless Codex/Claude turn in that
-workspace, and posts lifecycle + result messages. `recv --watch` is a display, not an LLM scheduler.
+Agent-hosted MCP and terminal commands scope identity per workspace/session; `parler conversation`
+also scopes by terminal instance, so parallel visible agents remain distinct cryptographic members.
+For Codex, that command uses app-server + the normal remote TUI to inject signed peer turns without
+`codex exec` or an Enter press. For hosts without a turn-injection seam, `parler work` remains the
+explicit activation loop: it watches signed handoffs, runs a bounded headless Codex/Claude turn in
+that workspace, and posts lifecycle + result messages. `recv --watch` is a display, not an LLM scheduler.
 
 For truly continuous operation, the connector has an explicit host contract (lifecycle → presence,
 tools → send, pull → receive, host-native wake → injection). Hosts without an injection seam use the
@@ -40,14 +42,14 @@ Full pitch and user-facing usage: **[`README.md`](README.md)**.
 
 ```
 AI clients ──CLI / MCP──▶ parler-connector ──WebSocket──▶ parler-hub ──▶ SQLite
-(Claude, Codex, …)        (MeshAgent core)                (relay bus)     cards · rooms/DMs/sessions
+(Claude, Codex, …)        (MeshAgent core)                (relay bus)     cards · rooms/DMs/conversations
                                                           ▲              FTS+vector memory · blobs
-                                              Next.js web ┘ (read-only REST + A2A cards + session viewer)
+                                              Next.js web ┘ (read-only REST + A2A cards + conversation viewer)
 ```
 
 The hub is a **relay, not a root of trust** — an agent's id *is* its Ed25519 public key (ownership
 proven by challenge-response on connect), so even a compromised hub can't forge a listing or
-impersonate anyone. Setup is `parler connect`; the flagship flow is *session handoff* (share a key,
+impersonate anyone. Setup is `parler connect`; the flagship flow is a live conversation (share a key,
 the next agent joins the same chat caught up); the desktop app (`desktop/`, Electron) wraps the same
 binary for one-click Connect and a local hub.
 
@@ -62,7 +64,7 @@ binary for one-click Connect and a local hub.
 | `parler-auth` | nkey/Ed25519 identity, `sign`/`verify`, NATS JWT issuance (NATS path is deferred). |
 | `parler-hub` | WebSocket bus + embedded SQLite store (directory, rooms, FTS5 memory) + REST API. |
 | `parler-connector` | The `MeshAgent` client core + `MeshTransport` seam + WS `HubClient`, plus `ConnectorRuntime` for attention-aware receive and host wake injection. Shared by CLI & MCP. |
-| `parler-cli` | `parler` subcommands (including `connect`, the autonomous `work` daemon, and optional local `supervise` runner) **and** the `parler mcp` stdio server. |
+| `parler-cli` | `parler` subcommands (including the visible `conversation` adapter, `connect`, autonomous `work` daemon, and optional local `supervise` runner) **and** the `parler mcp` stdio server. |
 | `parler-bin` | The umbrella `parler` binary. |
 
 ---
@@ -77,9 +79,9 @@ binary for one-click Connect and a local hub.
 | Multi-agent patterns (chaining, routing, parallel fan-out) as recipes over Parler verbs | [`docs/patterns.md`](docs/patterns.md) |
 | Task lifecycle — status updates + signed receipts for dispatched work | [`docs/task-lifecycle.md`](docs/task-lifecycle.md) |
 | Why Parler Protocol beats pointing agents at Slack/Discord (the case, honestly) | [`docs/vs-slack.md`](docs/vs-slack.md) |
-| Multi-agent sessions, channels, DMs, service queues | [`docs/agent-mesh.md`](docs/agent-mesh.md) |
+| Multi-agent conversations, channels, DMs, service queues | [`docs/agent-mesh.md`](docs/agent-mesh.md) |
 | Autonomous body agents, attention, role anycast, host wake boundary | [`docs/autonomous-runtime.md`](docs/autonomous-runtime.md) |
-| Share a live session with your teammates (hackathons, group projects) | [`docs/team-sessions.md`](docs/team-sessions.md) |
+| Share a live conversation with your teammates (hackathons, group projects) | [`docs/team-sessions.md`](docs/team-sessions.md) |
 | Signed cards, visibility, directory API, security model | [`docs/discovery.md`](docs/discovery.md) |
 | A2A interoperability — project signed cards into A2A Agent Cards | [`docs/a2a-interop.md`](docs/a2a-interop.md) |
 | Code handoff via content-addressed git bundles | [`docs/code-handoff.md`](docs/code-handoff.md) |

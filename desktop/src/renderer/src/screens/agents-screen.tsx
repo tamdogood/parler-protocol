@@ -30,7 +30,7 @@ export function AgentsScreen({
             <Plug className="size-4" /> Manage connections
           </Button>
           <Button variant="primary" onClick={onStartSession}>
-            <MessagesSquare className="size-4" /> Start a handoff
+            <MessagesSquare className="size-4" /> Start a conversation
           </Button>
         </div>
       </div>

@@ -1,25 +1,53 @@
 # Autonomous agents, attention, and role queues
 
 Parler Protocol can deliver a durable message while the receiving model host is idle. A cursor proves
-that an agent can read a message later; it does not make Claude Code, Codex, Cursor, or another host
-start a model turn by itself. This document covers the explicit autonomous path that removes the need
-for a human to enter the other chat and press Enter.
+that an agent can read a message later; the receiver still needs a host injection seam or an explicit
+runner to start a model turn. This document covers the autonomous paths that remove the need for a
+human to enter the other chat and press Enter, including a normal visible Codex session.
 
 ## Wake paths
 
-1. **Host-native injection.** A host integration with a wake seam can inject a normal next model
-   turn. The Claude Stop hook is one adapter: it receives a policy-approved batch and emits the
+1. **Visible Codex conversation.** `parler conversation [KEY]` starts Codex app-server and attaches
+   the normal remote TUI. Signed peer messages become turns in that same visible thread, human-typed
+   turns are shared back, and no `codex exec` process or Enter press is involved.
+2. **Other host-native injection.** A host integration with a wake seam can inject a normal next
+   model turn. The Claude Stop hook is one adapter: it receives a policy-approved batch and emits the
    host's continuation response.
-2. **Managed headless worker.** `parler work` is a separate local process that runs a bounded Codex
+3. **Managed headless worker.** `parler work` is a separate local process that runs a bounded Codex
    or Claude turn for each signed task.
-3. **Optional local supervisor.** `parler supervise` is a separate local process with an explicit runner
+4. **Optional local supervisor.** `parler supervise` is a separate local process with an explicit runner
    command. It stays connected, receives work, runs the command, observes the child, and posts signed
    task updates. This is the portable fully autonomous option when a host has no injection API.
-4. **Manual pull.** `parler recv` and `parler_recv` remain valid for a human-directed conversation;
+5. **Manual pull.** `parler recv` and `parler_recv` remain valid for a human-directed conversation;
    they do not claim to wake an idle host.
 
 The hub stays out of process supervision. It persists messages, presence, role registrations, and
 short task leases; it never spawns a child or executes a peer's command.
+
+## Visible Codex safety and turn flow
+
+```bash
+parler conversation --topic audit --resume last   # create; prints KEY@HUB + viewer code
+parler conversation KEY@HUB                       # join in another visible Codex
+```
+
+The adapter accepts only validly signed peer messages and ignores its own messages. An ordinary
+peer message fans out once; the automatic reply carries a task-result part, so it does not trigger
+another automatic reply. A model can request one intentional continuation by ending with an
+addressed `PARLER_HANDOFF` marker, which the adapter validates and converts to a signed handoff.
+
+The user keeps Codex's configured sandbox. Approval and elicitation requests for a peer-injected turn
+are declined by the bridge; a peer can request work but cannot grant itself more filesystem/network
+authority or impersonate human input. Approvals for turns the human types remain with the TUI.
+
+Codex currently labels app-server WebSocket mode experimental. The command probes `codex` and the
+loopback server at startup and fails with an update/troubleshooting message when that interface is
+unavailable; it never substitutes a hidden headless worker.
+
+Each conversation terminal adds a private terminal-instance key to the workspace identity scope.
+Two visible agents in the same directory therefore remain two cryptographic roster members instead
+of collapsing into one shared identity. `PARLER_AGENT_SESSION` explicitly overrides that private
+scope when a terminal host does not expose a stable identifier.
 
 ## Attention is local policy
 
@@ -60,8 +88,19 @@ hub pull              → receive()   → attention-filtered batch + cursor deci
 host wake seam        → inject()    → host-native next model turn
 ```
 
-The contract does not invent an injection capability where a host has none. Such a host can still
-offer send/receive tools and use the local supervisor for continuous operation.
+The Codex conversation adapter is one implementation of `inject`; the Claude Stop hook is another.
+The contract does not invent an injection capability where a different host has none. Such a host
+can still offer send/receive tools and use the local supervisor for continuous operation.
+
+## Presence stays live while the host is live
+
+Presence is self-reported lifecycle plus connection freshness. The hub treats a row as offline after
+five minutes without a fresh signal; it does not inspect whether a model process happens to be using
+CPU. Protocol `Ping` now refreshes only the presence timestamp, preserving `working`/`waiting`, the
+activity label, and attention. `parler mcp` also republishes its last lifecycle once a minute for
+compatibility with older hubs, and `parler conversation` reports `working` during a turn and
+`waiting` between turns. A connected, quiet agent therefore no longer appears offline merely because
+it has not called `parler_presence` recently.
 
 ## Role-addressed anycast
 

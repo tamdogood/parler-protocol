@@ -5,7 +5,7 @@
 //! onto the same [`MeshAgent`] the CLI uses. Hand-rolled on purpose: it keeps the dependency
 //! surface tiny and gives exact control over the wire, which matters more than an SDK here.
 
-use anyhow::{anyhow, bail, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use parler_connector::{BundleMeta, Config, JoinOutcome, MeshAgent, RoomAttention};
 use parler_protocol::{
     AgentSkill, Attention, BundleRef, DiscoverScope, DispatchRef, FileRef, HandoffRef, RoomKind,
@@ -35,11 +35,59 @@ struct McpState {
     /// trust. In-memory only: after an MCP restart the list is gone and listed joiners fall back to
     /// manual approval — a safe degradation that never over-admits.
     preapprovals: HashMap<String, Vec<String>>,
+    /// Last lifecycle explicitly advertised through `parler_presence`. The MCP heartbeat republishes
+    /// it for older hubs whose `Ping` did not refresh presence, instead of resetting a live
+    /// `working` agent to `idle` every minute.
+    presence_status: String,
+    presence_activity: Option<String>,
+    /// A host-native conversation adapter may own this identity's richer lifecycle. Its MCP child
+    /// still sends transport heartbeats, but must not overwrite that adapter's `working`/`waiting`
+    /// state with its generic startup status.
+    presence_managed_externally: bool,
+    /// A visible conversation adapter writes the current room pointer after app-server may already
+    /// have launched this MCP process. Refresh it from disk at each session-aware request so the
+    /// nested tools always address the conversation shown in the TUI.
+    active_conversation_managed_externally: bool,
 }
 
 impl McpState {
     fn new(agent: MeshAgent) -> Self {
-        McpState { agent, active_session: None, preapprovals: HashMap::new() }
+        McpState {
+            agent,
+            active_session: None,
+            preapprovals: HashMap::new(),
+            presence_status: "idle".into(),
+            presence_activity: Some("MCP connected".into()),
+            presence_managed_externally: false,
+            active_conversation_managed_externally: false,
+        }
+    }
+
+    fn with_external_presence(mut self, managed: bool) -> Self {
+        self.presence_managed_externally = managed;
+        self
+    }
+
+    fn with_external_active_conversation(mut self, managed: bool) -> Self {
+        self.active_conversation_managed_externally = managed;
+        self
+    }
+
+    fn refresh_external_active_conversation_from(&mut self, home: &std::path::Path) {
+        if self.active_conversation_managed_externally {
+            self.active_session = crate::load_active_session_at(home);
+        }
+    }
+
+    async fn heartbeat_presence(&mut self) {
+        self.agent.heartbeat().await;
+        if self.presence_managed_externally {
+            return;
+        }
+        let _ = self
+            .agent
+            .presence(&self.presence_status, self.presence_activity.clone())
+            .await;
     }
 }
 
@@ -49,6 +97,8 @@ impl McpState {
 /// identity (the default, so a live session shows every agent, not a single collapsed member).
 const SHARED_IDENTITY_ENV: &str = "PARLER_SHARED_IDENTITY";
 const AGENT_SESSION_ENV: &str = "PARLER_AGENT_SESSION";
+const PRESENCE_MANAGED_ENV: &str = "PARLER_PRESENCE_MANAGED";
+const ACTIVE_CONVERSATION_MANAGED_ENV: &str = "PARLER_ACTIVE_CONVERSATION_MANAGED";
 
 /// The un-scoped home whose `mcp.log` breadcrumb we keep writing to even after scoping `PARLER_HOME`
 /// down into a per-workspace subdir — so `parler doctor` (run outside the workspace) still finds the
@@ -193,7 +243,12 @@ pub async fn serve_stdio() -> Result<()> {
     // `parler_register` first — "connected" should mean "discoverable". Private by default
     // (same-hub only); opt into the public directory or enrich the card via env. Best-effort.
     auto_register(&mut agent).await;
-    let mut state = McpState::new(agent);
+    let mut state = McpState::new(agent)
+        .with_external_presence(env_flag(PRESENCE_MANAGED_ENV))
+        .with_external_active_conversation(env_flag(ACTIVE_CONVERSATION_MANAGED_ENV));
+    // Make a newly launched host visible immediately. Thereafter the loop republishes this before
+    // the hub's five-minute staleness window, even against an older hub where Ping was liveness-only.
+    state.heartbeat_presence().await;
 
     // Spin-up convenience: if a session key was handed in via the environment, join it now so a
     // freshly launched agent is already in the shared conversation (with its context) before the
@@ -225,7 +280,21 @@ where
     W: tokio::io::AsyncWrite + Unpin,
 {
     let mut lines = reader.lines();
-    while let Some(line) = lines.next_line().await? {
+    let mut heartbeat = tokio::time::interval(MCP_PRESENCE_HEARTBEAT);
+    heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    // `interval` ticks immediately once. Startup already published presence above, so consume it.
+    heartbeat.tick().await;
+    loop {
+        let line = tokio::select! {
+            line = lines.next_line() => match line? {
+                Some(line) => line,
+                None => break,
+            },
+            _ = heartbeat.tick() => {
+                state.heartbeat_presence().await;
+                continue;
+            }
+        };
         let line = line.trim();
         if line.is_empty() {
             continue;
@@ -258,6 +327,9 @@ where
     state.agent.flush_acks().await;
     Ok(())
 }
+
+/// Keep well inside the hub's five-minute stale-presence window while avoiding chatty idle hosts.
+const MCP_PRESENCE_HEARTBEAT: Duration = Duration::from_secs(60);
 
 /// How long `parler mcp` keeps retrying a down hub at startup before giving up. A host often
 /// launches the agent the instant the user opens the editor — possibly *before* their `--local`
@@ -525,6 +597,9 @@ fn env_list(key: &str) -> Vec<String> {
 
 /// Dispatch one JSON-RPC method. `Err((code, message))` becomes a JSON-RPC error.
 async fn handle(state: &mut McpState, method: &str, params: Value) -> Result<Value, (i64, String)> {
+    if matches!(method, "tools/call" | "resources/read" | "prompts/get") {
+        state.refresh_external_active_conversation_from(&parler_connector::home_dir());
+    }
     match method {
         "initialize" => Ok(json!({
             "protocolVersion": MCP_PROTOCOL_VERSION,
@@ -545,7 +620,8 @@ async fn handle(state: &mut McpState, method: &str, params: Value) -> Result<Val
                 "parler_open_session" | "parler_join_session" | "parler_close_session"
                 | "parler_join" | "parler_send" | "parler_recv" | "parler_handoff"
                 | "parler_task" | "parler_join_requests" | "parler_approve_join" | "parler_deny_join"
-                | "parler_watch_session" | "parler_delete_room" | "parler_bring" | "parler_fetch" => {
+                | "parler_watch_session" | "parler_delete_room" | "parler_bring" | "parler_fetch"
+                | "parler_presence" => {
                     call_session_tool(state, &name, &args).await
                 }
                 _ => call_tool(&mut state.agent, &name, &args).await,
@@ -873,11 +949,6 @@ async fn call_tool(agent: &mut MeshAgent, name: &str, args: &Value) -> Result<St
                 .collect::<Vec<_>>()
                 .join("\n"))
         }
-        "parler_presence" => {
-            let status = s("status").ok_or_else(|| anyhow!("missing 'status'"))?;
-            agent.presence(&status, s("activity")).await?;
-            Ok(format!("presence: {status}"))
-        }
         "parler_attention" => {
             let mut cfg = Config::load()?;
             let room = s("room");
@@ -1158,6 +1229,14 @@ async fn call_session_tool(state: &mut McpState, name: &str, args: &Value) -> Re
     let u32opt = |k: &str| args.get(k).and_then(Value::as_u64).map(|x| x as u32);
 
     match name {
+        "parler_presence" => {
+            let status = s("status").ok_or_else(|| anyhow!("missing 'status'"))?;
+            let activity = s("activity");
+            state.agent.presence(&status, activity.clone()).await?;
+            state.presence_status = status.clone();
+            state.presence_activity = activity;
+            Ok(format!("presence: {status}"))
+        }
         "parler_open_session" => {
             let context = s("context");
             // Approval defaults ON: a session is a live conversation, so the host vets each joiner
@@ -1287,7 +1366,12 @@ async fn call_session_tool(state: &mut McpState, name: &str, args: &Value) -> Re
                 .or_else(|| state.active_session.clone())
                 .ok_or_else(|| anyhow!("missing 'room' (open a session, or pass room)"))?;
             let ttl = args.get("ttl_secs").and_then(Value::as_u64);
-            let (token, _expires_at) = state.agent.mint_watch_token(&room, ttl).await?;
+            let (token, _expires_at) = state.agent.mint_watch_token(&room, ttl).await.with_context(|| {
+                format!(
+                    "could not mint a viewer code for the original conversation '{room}'. Only its owner can do this. \
+                     Do not open a replacement or '_watch' conversation: ask the original owner to mint the code"
+                )
+            })?;
             Ok(format!(
                 "read-only WATCH code for session '{room}':\n{token}\n\
                  Give it to the user to paste into the website's /session viewer (they'll see the \
@@ -2227,7 +2311,7 @@ fn tool_specs() -> Vec<Value> {
         ),
         tool(
             "parler_watch_session",
-            "Mint an owner-only read-only WATCH code for a human to view the session. Separate from the join key; defaults to active session.",
+            "Mint an owner-only read-only WATCH code for this exact conversation. Separate from the join key; defaults to active session. If you are not the owner, ask the original owner—never create a replacement '_watch' session, because it has a different roster and transcript.",
             json!({
                 "room": { "type": "string", "description": "the session room (defaults to your active session)" },
                 "ttl_secs": { "type": "integer", "description": "how long the watch code stays valid (default 1h)" }
@@ -2493,6 +2577,89 @@ mod tests {
         let cfg = Config::create(hub.to_string(), name.to_string(), None).unwrap();
         let agent = MeshAgent::connect(&cfg).await.unwrap();
         McpState::new(agent)
+    }
+
+    #[tokio::test]
+    async fn mcp_heartbeat_republishes_last_lifecycle_without_resetting_it() {
+        let hub = start_hub().await;
+        let mut alice = state(&hub, "alice").await;
+        let invite = alice
+            .agent
+            .invite(RoomKind::Channel, Some("presence-heartbeat".into()), None, None)
+            .await
+            .unwrap();
+        call_session_tool(
+            &mut alice,
+            "parler_presence",
+            &json!({ "status": "working", "activity": "reviewing auth" }),
+        )
+        .await
+        .unwrap();
+
+        // Simulate an older hub/other same-identity connector replacing the row. The MCP heartbeat
+        // must restore its remembered lifecycle, not publish a hard-coded idle state.
+        alice.agent.presence("idle", Some("other connector".into())).await.unwrap();
+        alice.heartbeat_presence().await;
+        let entry = alice.agent.roster(&invite.room).await.unwrap().pop().unwrap();
+        assert_eq!(entry.status, "working");
+        assert_eq!(entry.activity.as_deref(), Some("reviewing auth"));
+    }
+
+    #[tokio::test]
+    async fn externally_managed_presence_heartbeat_does_not_overwrite_lifecycle() {
+        let hub = start_hub().await;
+        let mut alice = state(&hub, "alice").await.with_external_presence(true);
+        let invite = alice
+            .agent
+            .invite(RoomKind::Channel, Some("external-presence".into()), None, None)
+            .await
+            .unwrap();
+        alice.agent.presence("working", Some("visible conversation turn".into())).await.unwrap();
+
+        // The transport still heartbeats, but the nested MCP's generic `idle` state must not win a
+        // race against the visible host adapter that owns this identity's lifecycle.
+        alice.heartbeat_presence().await;
+        let entry = alice.agent.roster(&invite.room).await.unwrap().pop().unwrap();
+        assert_eq!(entry.status, "working");
+        assert_eq!(entry.activity.as_deref(), Some("visible conversation turn"));
+    }
+
+    #[tokio::test]
+    async fn externally_managed_mcp_tracks_the_visible_conversation_pointer() {
+        let hub = start_hub().await;
+        let home = tempfile::tempdir().unwrap();
+        let mut alice = state(&hub, "alice")
+            .await
+            .with_external_active_conversation(true);
+        alice.active_session = Some("stale-room".into());
+        std::fs::write(home.path().join("active_session"), "current-room").unwrap();
+
+        alice.refresh_external_active_conversation_from(home.path());
+        assert_eq!(alice.active_session.as_deref(), Some("current-room"));
+        std::fs::remove_file(home.path().join("active_session")).unwrap();
+        alice.refresh_external_active_conversation_from(home.path());
+        assert_eq!(alice.active_session, None, "clearing the visible conversation clears MCP defaults");
+    }
+
+    #[tokio::test]
+    async fn non_owner_viewer_error_forbids_a_shadow_conversation() {
+        let hub = start_hub().await;
+        let mut alice = state(&hub, "alice").await;
+        let invite = alice
+            .agent
+            .invite_with_approval(RoomKind::Channel, Some("original".into()), None, None, false)
+            .await
+            .unwrap();
+        let mut bob = state(&hub, "bob").await;
+        bob.agent.redeem(&invite.code).await.unwrap();
+        bob.active_session = Some(invite.room);
+
+        let error = call_session_tool(&mut bob, "parler_watch_session", &json!({}))
+            .await
+            .expect_err("a member is not the original owner");
+        let message = error.to_string();
+        assert!(message.contains("Only its owner"), "names the authority boundary: {message}");
+        assert!(message.contains("Do not open a replacement or '_watch'"), "prevents the observed shadow-room workaround: {message}");
     }
 
     /// Pull the `KEY: <code>` line out of an `open_session` result.

@@ -70,7 +70,7 @@ export function useHubSummary(base: string | null, active: boolean): HubSummary 
 
 /**
  * Total agents waiting for approval across every session the app has opened on the active hub. Drives
- * the "someone wants to join" badge on the Sessions nav item, so the flagship approval never hides on
+ * the "someone wants to join" badge on the Conversations nav item, so optional approval never hides on
  * another screen. Self-contained (fetches its own session list) and paced gently — each poll shells
  * out to the CLI once per eligible session.
  */

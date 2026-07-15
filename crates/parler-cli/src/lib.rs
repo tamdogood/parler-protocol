@@ -6,6 +6,7 @@
 
 pub mod bring;
 pub mod connect;
+pub mod conversation;
 pub mod mcp;
 pub mod worker;
 pub(crate) mod names;
@@ -60,9 +61,11 @@ enum Cmd {
     },
     /// Run an optional local supervisor that watches a room or role queue and spawns an explicit runner.
     Supervise(SuperviseArgs),
-    /// Open or join a shared live session — hand a key to another agent mid-conversation.
-    #[command(subcommand)]
+    /// Compatibility controls for the low-level room/session flow. Prefer `conversation`.
+    #[command(subcommand, hide = true)]
     Session(SessionCmd),
+    /// Start or join one live interactive conversation. No key creates; a key joins.
+    Conversation(ConversationArgs),
     /// Get a one-line second opinion from another AI agent — no copy-paste (v1: codex).
     Bring(BringArgs),
     /// Publish this agent's discovery card to the hub directory (default: private).
@@ -130,7 +133,7 @@ enum Cmd {
         /// The hook type (stop, session-start, user-prompt-submit, post-tool-use, post-tool-use-failure, session-end).
         kind: String,
     },
-    /// Consolidate the active session backlog into key semantic facts.
+    /// Consolidate the active conversation backlog into key semantic facts.
     Consolidate,
 }
 
@@ -322,6 +325,27 @@ struct BringArgs {
     /// Wall-clock timeout in seconds (default 300).
     #[arg(long)]
     timeout_secs: Option<u64>,
+}
+
+#[derive(Args)]
+struct ConversationArgs {
+    /// Portable conversation key to join. Omit it to create a new conversation.
+    key: Option<String>,
+    /// Human-readable topic for a new conversation.
+    #[arg(long)]
+    topic: Option<String>,
+    /// Resume an existing Codex thread (`last` or a thread id) instead of starting a new one.
+    #[arg(long, value_name = "LAST_OR_THREAD_ID")]
+    resume: Option<String>,
+    /// Require the owner to approve joiners. By default, possession of the private key admits them.
+    #[arg(long)]
+    approval: bool,
+    /// How long a new conversation key stays valid, in seconds (default 86400).
+    #[arg(long)]
+    ttl: Option<u64>,
+    /// How many agents may join a new conversation with the key (default 50).
+    #[arg(long)]
+    max_uses: Option<u32>,
 }
 
 #[derive(Args)]
@@ -664,6 +688,15 @@ pub async fn run() -> Result<()> {
         Cmd::Serve { service } => cmd_serve(service).await,
         Cmd::Supervise(a) => cmd_supervise(a).await,
         Cmd::Session(c) => cmd_session(c).await,
+        Cmd::Conversation(a) => conversation::run(conversation::Options {
+            key: a.key,
+            topic: a.topic,
+            resume: a.resume,
+            approval: a.approval,
+            ttl: a.ttl,
+            max_uses: a.max_uses,
+        })
+        .await,
         Cmd::Bring(a) => cmd_bring(a).await,
         Cmd::Register(a) => cmd_register(a).await,
         Cmd::Discover(a) => cmd_discover(a).await,
@@ -694,8 +727,14 @@ pub async fn run() -> Result<()> {
 }
 
 fn command_uses_workspace_identity(cmd: &Cmd, agent_shell: bool) -> bool {
+    // `conversation` scopes itself with the terminal instance as well as the workspace, then passes
+    // the unscoped base into its child Codex TUI. Doing that here would scope twice in the child.
     matches!(cmd, Cmd::Mcp | Cmd::Supervise(_) | Cmd::Work(_) | Cmd::Hook { .. })
-        || (agent_shell && !matches!(cmd, Cmd::Hub(_) | Cmd::Connect(_) | Cmd::Init(_) | Cmd::Doctor))
+        || (agent_shell
+            && !matches!(
+                cmd,
+                Cmd::Hub(_) | Cmd::Connect(_) | Cmd::Conversation(_) | Cmd::Init(_) | Cmd::Doctor
+            ))
 }
 
 /// Whether this command was launched inside an AI-agent terminal rather than an ordinary human
@@ -734,7 +773,10 @@ async fn connect_with_hub(hub_override: Option<&str>) -> Result<MeshAgent> {
                 .unwrap_or_else(|_| parler_connector::home_dir())
                 .join(".parler-codex")
                 .join("config.json");
-            if fallback_path.exists() {
+            // The legacy `~/.parler-codex` migration path must never override an explicit or
+            // workspace/terminal-scoped PARLER_HOME. Doing so would collapse two visible
+            // conversation agents back onto one identity.
+            if std::env::var_os("PARLER_HOME").is_none() && fallback_path.exists() {
                 std::env::set_var("PARLER_HOME", fallback_path.parent().unwrap());
                 mcp::apply_env_overrides(Config::load().map_err(|_| e)?)
             } else if !Config::exists() {
@@ -2255,23 +2297,35 @@ pub fn render_message(m: &StoredMessage) -> String {
 /// two workspaces with distinct `PARLER_HOME`s clobbered one global file (issue #104); deriving it
 /// from `home_dir()` gives each identity its own pointer. The default path is unchanged
 /// (`home_dir()` == `$HOME/.parler` when `PARLER_HOME` is unset).
-fn active_session_path() -> std::path::PathBuf {
-    parler_connector::home_dir().join("active_session")
+fn active_session_path_at(home: &std::path::Path) -> std::path::PathBuf {
+    home.join("active_session")
 }
 
 pub fn save_active_session(room: &str) -> Result<()> {
-    let path = active_session_path();
+    save_active_session_at(&parler_connector::home_dir(), room)
+}
+
+fn save_active_session_at(home: &std::path::Path, room: &str) -> Result<()> {
+    let path = active_session_path_at(home);
     std::fs::create_dir_all(path.parent().unwrap())?;
     std::fs::write(&path, room)?;
     Ok(())
 }
 
 pub fn load_active_session() -> Option<String> {
-    std::fs::read_to_string(active_session_path()).ok().map(|s| s.trim().to_string())
+    load_active_session_at(&parler_connector::home_dir())
+}
+
+pub(crate) fn load_active_session_at(home: &std::path::Path) -> Option<String> {
+    std::fs::read_to_string(active_session_path_at(home)).ok().map(|s| s.trim().to_string())
 }
 
 pub fn clear_active_session() -> Result<()> {
-    let path = active_session_path();
+    clear_active_session_at(&parler_connector::home_dir())
+}
+
+fn clear_active_session_at(home: &std::path::Path) -> Result<()> {
+    let path = active_session_path_at(home);
     if path.exists() {
         let _ = std::fs::remove_file(&path);
     }
@@ -2895,6 +2949,16 @@ mod tests {
         assert!(command_uses_workspace_identity(&Cmd::Hook { kind: "stop".into() }, false));
         assert!(command_uses_workspace_identity(&Cmd::Rooms, true));
         assert!(command_uses_workspace_identity(&Cmd::Whoami, true));
+        let conversation = Cmd::Conversation(ConversationArgs {
+            key: None,
+            topic: None,
+            resume: None,
+            approval: false,
+            ttl: None,
+            max_uses: None,
+        });
+        assert!(!command_uses_workspace_identity(&conversation, false));
+        assert!(!command_uses_workspace_identity(&conversation, true));
         assert!(!command_uses_workspace_identity(&Cmd::Rooms, false));
         assert!(!command_uses_workspace_identity(&Cmd::Doctor, true));
     }
@@ -3097,32 +3161,21 @@ mod tests {
         // `home_dir()`, each workspace holds its own active session without stepping on the other.
         let ws_a = tempfile::tempdir().unwrap();
         let ws_b = tempfile::tempdir().unwrap();
-        let prev = std::env::var("PARLER_HOME").ok();
 
-        std::env::set_var("PARLER_HOME", ws_a.path());
-        save_active_session("room-a").unwrap();
+        save_active_session_at(ws_a.path(), "room-a").unwrap();
         // The pointer lands *inside* this workspace's home, not a shared global path.
         assert!(ws_a.path().join("active_session").exists(), "workspace A owns its own pointer file");
 
-        std::env::set_var("PARLER_HOME", ws_b.path());
-        assert_eq!(load_active_session(), None, "a fresh workspace sees no active session");
-        save_active_session("room-b").unwrap();
+        assert_eq!(load_active_session_at(ws_b.path()), None, "a fresh workspace sees no active session");
+        save_active_session_at(ws_b.path(), "room-b").unwrap();
 
         // Switching back proves B never clobbered A, and vice versa.
-        std::env::set_var("PARLER_HOME", ws_a.path());
-        assert_eq!(load_active_session().as_deref(), Some("room-a"), "workspace A kept its session");
-        std::env::set_var("PARLER_HOME", ws_b.path());
-        assert_eq!(load_active_session().as_deref(), Some("room-b"), "workspace B kept its session");
+        assert_eq!(load_active_session_at(ws_a.path()).as_deref(), Some("room-a"), "workspace A kept its session");
+        assert_eq!(load_active_session_at(ws_b.path()).as_deref(), Some("room-b"), "workspace B kept its session");
 
         // clear only affects the active workspace.
-        clear_active_session().unwrap();
-        assert_eq!(load_active_session(), None, "cleared B");
-        std::env::set_var("PARLER_HOME", ws_a.path());
-        assert_eq!(load_active_session().as_deref(), Some("room-a"), "A survives B's clear");
-
-        match prev {
-            Some(p) => std::env::set_var("PARLER_HOME", p),
-            None => std::env::remove_var("PARLER_HOME"),
-        }
+        clear_active_session_at(ws_b.path()).unwrap();
+        assert_eq!(load_active_session_at(ws_b.path()), None, "cleared B");
+        assert_eq!(load_active_session_at(ws_a.path()).as_deref(), Some("room-a"), "A survives B's clear");
     }
 }

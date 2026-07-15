@@ -52,7 +52,7 @@ are no fake terminals, neon grids, literal keys, robots, or glowing brains.
 - Size: 1122 x 1402
 - Ratio: 4:5
 - Use: Instagram, LinkedIn, launch carousel, access-control explanation
-- Suggested overlay: "A key asks. You decide who joins."
+- Suggested overlay: "Approval when you need it."
 - Alt text: "A conversation ribbon paused at a brass-ringed doorway before entering."
 
 ### Local/private wide

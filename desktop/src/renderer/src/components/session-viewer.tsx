@@ -143,8 +143,8 @@ export function SessionViewer({ base, initialToken }: { base: string; initialTok
 
   return (
     <div className="rounded-[16px] border border-graphite-rail bg-void-black p-6">
-      <label className="text-[13px] font-medium text-frost">Watch a session</label>
-      <p className="mt-0.5 text-[13px] text-fog">Paste a watch code to follow the conversation live.</p>
+      <label className="text-[13px] font-medium text-frost">Watch a conversation</label>
+      <p className="mt-0.5 text-[13px] text-fog">Paste its viewer code to follow that exact conversation live.</p>
       <div className="mt-3 flex flex-col gap-3 sm:flex-row">
         <div className="relative flex-1">
           <KeyRound className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-steel" />
@@ -263,7 +263,7 @@ function ConnectedView({
           </p>
         )}
         {list.length === 0 ? (
-          <p className="py-10 text-center text-[14px] text-steel">No messages in this session yet.</p>
+          <p className="py-10 text-center text-[14px] text-steel">No messages in this conversation yet.</p>
         ) : (
           <div className="flex max-h-[52vh] flex-col gap-5 overflow-y-auto" data-selectable>
             {list.map((m) => (
@@ -276,7 +276,7 @@ function ConnectedView({
 
       <p className="flex items-center gap-2 border-t border-graphite-rail px-5 py-3 text-[12px] text-steel">
         <ShieldCheck className="size-3.5 text-delivered-green" />
-        Read-only — this code can only read this one room.
+        Read-only — this code can only read this exact conversation.
       </p>
     </div>
   );

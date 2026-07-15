@@ -3,6 +3,7 @@ import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { userInfo } from "node:os";
 import type { Identity, OpenedSession, SessionJoinRequest } from "../shared/types";
+import { portableConversationKey } from "../shared/conversation";
 import { parlerBinary, appParlerHome } from "./paths";
 
 /** Which hub the app's own identity talks to, plus its join secret (private hubs). */
@@ -72,25 +73,29 @@ function cleanErr(s: string): string {
   return s.trim().replace(/^error:\s*/i, "").split("\n")[0] ?? "";
 }
 
-/** Open a live session on the given hub and mint a watch code alongside. */
+/** Open a live conversation on the given hub and mint its exact viewer code alongside. */
 export async function openSession(
   input: { context?: string; topic?: string; noApproval?: boolean },
   ctx: HubContext,
 ): Promise<OpenedSession> {
   await ensureIdentity(ctx);
   const args = ["session", "open"];
-  if (input.context) args.push("--context", input.context);
-  if (input.topic) args.push("--topic", input.topic);
+  // A topic is display/context, never the internal room id. Let the hub mint a fresh room every
+  // time so repeating a topic cannot reopen an older transcript under a new key.
+  const context = [input.topic ? `Conversation topic: ${input.topic}` : "", input.context ?? ""]
+    .filter(Boolean)
+    .join("\n\n");
+  if (context) args.push("--context", context);
   if (input.noApproval) args.push("--no-approval");
 
   const r = await run(args, ctx);
-  if (r.code !== 0) throw new Error(cleanErr(r.stderr || r.stdout) || "failed to open session");
+  if (r.code !== 0) throw new Error(cleanErr(r.stderr || r.stdout) || "failed to open conversation");
 
   const room = r.stdout.match(/room '([^']+)'/)?.[1];
   const key = r.stdout.match(/KEY:\s*(\S+)/)?.[1];
-  if (!room || !key) throw new Error("could not parse the session key from parler output");
+  if (!room || !key) throw new Error("could not parse the conversation key from parler output");
 
-  // Best-effort watch code so the user can immediately paste it into the viewer.
+  // Best-effort viewer code so the user can immediately paste it into the viewer.
   let watch: string | null = null;
   try {
     const w = await mintWatch(room, ctx);
@@ -98,7 +103,7 @@ export async function openSession(
   } catch {
     /* non-fatal: they can mint one later */
   }
-  return { key, room, watch };
+  return { key: portableConversationKey(key, ctx.url), room, watch };
 }
 
 /**
@@ -151,10 +156,10 @@ export async function resolveJoin(
   }
 }
 
-/** Mint a read-only watch code for a session this identity owns. */
+/** Mint a read-only viewer code for a conversation this identity owns. */
 export async function mintWatch(room: string, ctx: HubContext): Promise<{ token: string; room: string }> {
   const r = await run(["session", "watch", "--room", room], ctx);
-  if (r.code !== 0) throw new Error(cleanErr(r.stderr || r.stdout) || "failed to mint watch code");
+  if (r.code !== 0) throw new Error(cleanErr(r.stderr || r.stdout) || "failed to mint viewer code");
   // Output: a "✓ read-only watch code…" header, a blank line, then the indented token.
   const lines = r.stdout.split(/\r?\n/);
   const headerIdx = lines.findIndex((l) => l.includes("watch code"));
@@ -162,7 +167,7 @@ export async function mintWatch(room: string, ctx: HubContext): Promise<{ token:
     .slice(headerIdx + 1)
     .map((l) => l.trim())
     .find((l) => l.length >= 12 && !/\s/.test(l));
-  if (!token) throw new Error("could not parse the watch code from parler output");
+  if (!token) throw new Error("could not parse the viewer code from parler output");
   return { token, room };
 }
 

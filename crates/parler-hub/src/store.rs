@@ -457,6 +457,19 @@ impl Store {
         Ok(())
     }
 
+    /// Refresh liveness without replacing the agent's self-reported lifecycle or attention state.
+    /// Protocol heartbeats call this so a connected agent does not decay to `offline` merely because
+    /// it has had no new status to report. The insert fallback keeps direct/test callers defined.
+    pub fn refresh_presence(&self, agent: &str, now: i64) -> Result<()> {
+        let conn = self.w();
+        conn.execute(
+            "INSERT INTO presence (agent, status, activity, attention, ts) VALUES (?1, 'idle', NULL, NULL, ?2)
+             ON CONFLICT(agent) DO UPDATE SET ts = excluded.ts",
+            params![agent, now],
+        )?;
+        Ok(())
+    }
+
     /// Refresh just the globally observable attention mode. A connection handshake normally already
     /// created an `idle` presence row; the insert fallback keeps a direct API caller well-defined
     /// without guessing an activity string or changing a live worker's status.
@@ -2212,6 +2225,29 @@ mod tests {
         assert!(s.claim_service_message(room, &out.id, "U_A", 60, 5).unwrap().is_none());
         assert!(s.complete_service_message(room, &out.id, "U_B", TaskStatus::Done, 6).unwrap());
         assert!(s.queued_service_messages(room, "U_A", "reviewer", None, 7).unwrap().is_empty());
+    }
+
+    #[test]
+    fn heartbeat_refresh_keeps_live_status_activity_and_attention() {
+        let s = Store::open(None).unwrap();
+        s.upsert_agent("U_A", "alice", Some("reviewer"), 1).unwrap();
+        s.ensure_room("team", RoomKind::Channel, None, 1).unwrap();
+        s.add_member("team", "U_A", 1).unwrap();
+        s.touch_presence(
+            "U_A",
+            "working",
+            Some("auditing auth"),
+            Some(Attention::Focus),
+            10,
+        )
+        .unwrap();
+
+        let heartbeat = 10 + PRESENCE_STALE_MS + 1;
+        s.refresh_presence("U_A", heartbeat).unwrap();
+        let entry = s.roster("team", heartbeat + 1).unwrap().pop().unwrap();
+        assert_eq!(entry.status, "working");
+        assert_eq!(entry.activity.as_deref(), Some("auditing auth"));
+        assert_eq!(entry.attention, Some(Attention::Focus));
     }
 
     #[test]

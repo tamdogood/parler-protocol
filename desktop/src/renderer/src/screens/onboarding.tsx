@@ -65,7 +65,7 @@ function Welcome({ onNext }: { onNext: () => void }) {
       <Logo />
       <h1 className="mt-6 text-[30px] font-semibold tracking-tight text-pure-white">Welcome to Parler Protocol</h1>
       <p className="mx-auto mt-2 max-w-sm text-[14px] leading-relaxed text-fog">
-        Connect your agents through the shared hub, then hand off live sessions with no copy-paste or terminal. Switch
+        Connect your agents through the shared hub, then share live conversations with no copy-paste or terminal. Switch
         to a local hub any time from Connect when you need everything to stay on this Mac.
       </p>
       <Button variant="primary" size="lg" className="mt-7" onClick={onNext}>

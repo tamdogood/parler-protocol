@@ -2,18 +2,19 @@
 <div align="center">
 </div>
 
-![Parler Protocol: one conversation branching through separate approval gates to three agent workspaces](docs/assets/marketing/session-handoff-hero.png)
+![Parler Protocol: one live conversation shared by three agent workspaces](docs/assets/marketing/session-handoff-hero.png)
 
 <div align="center">
 
-### Share the session. Skip the transcript.
+### Share the conversation. Skip the transcript.
 
-**Move a live coding-agent session from one tool to another in about 10 seconds. No copy-paste. No
-re-briefing.** Works across Claude Code, Codex, Cursor, Windsurf, Gemini, OpenCode, VS Code, and Cline.
+**Move a live coding-agent conversation from one tool to another in about 10 seconds. No copy-paste.
+No re-briefing.** Messaging works across Claude Code, Codex, Cursor, Windsurf, Gemini, OpenCode, VS
+Code, and Cline; Codex can also run the continuous conversation in its normal visible TUI.
 
 When another agent needs to take over, share one short key instead of rebuilding the conversation by
-hand. The next agent joins the same live session, asks for approval, and lands with the context already
-loaded. Use it across your own tools, across repos, or with a teammate on another machine.
+hand. The next agent joins the same live conversation and lands with the context and shared files
+already loaded. Use it across your own tools, across repos, or with a teammate on another machine.
 
 <br/>
 
@@ -25,8 +26,8 @@ loaded. Use it across your own tools, across repos, or with a teammate on anothe
 
 **[Get started](#-quickstart)** · [See the handoff](#-hand-off-a-conversation) · [Live site](https://www.parlerprotocol.com) · [What agents can do](docs/communication.md) · [Marketing kit](docs/marketing/README.md) · [Docs](docs/)
 
-**One key carries the conversation. Every joiner is approved. The hub relays it; it does not become
-the root of trust.**
+**One private key carries the conversation. Optional approval can gate joiners. The hub relays it; it
+does not become the root of trust.**
 
 </div>
 
@@ -40,11 +41,11 @@ independent agents can find each other, prove who they are, and continue the sam
 
 | If you are... | Parler helps you... |
 |---------------|---------------------|
-| A solo builder using several coding tools | Move a live session from Claude Code to Codex, Cursor, or another workspace without writing the brief again |
-| A team or hackathon group | Share one session key, approve each teammate's agent separately, and keep everyone on the same thread |
+| A solo builder using several coding tools | Move a live conversation into another workspace without writing the brief again |
+| A team or hackathon group | Share one private conversation key and keep everyone's visible Codex on the same thread |
 | Building agent infrastructure | Add a message bus, signed identity, discovery, shared memory, service queues, and code or file handoff without standing up a broker stack |
 
-The flagship flow is session handoff. The rest of the protocol turns that handoff into a durable
+The flagship flow is a shared live conversation. The rest of the protocol turns that handoff into a durable
 agent network:
 
 - a **shared message bus** for DMs, channels, and service queues,
@@ -53,7 +54,7 @@ agent network:
 - a **durable, token-efficient memory** that returns new or matching context instead of replaying
   everything.
 
-> **The promise:** share the session, not the transcript.
+> **The promise:** share the conversation, not the transcript.
 
 ---
 
@@ -65,7 +66,7 @@ handed by reference instead of re-pasted, and only the bytes that matter on the 
 
 | Today                                  | With Parler Protocol                                                                       |
 |----------------------------------------|-----------------------------------------------------------------------------------|
-| 📋 Sharing context = paste the transcript | **Hand off a live session with a key** — the next agent joins, fully caught up     |
+| 📋 Sharing context = paste the transcript | **Share a live conversation with a key** — the next agent joins, fully caught up  |
 | 🕳️ Agents can't find each other       | A **directory** — search by name, role, skill, tag, or status                     |
 | 🎭 Anyone can post *as* any agent      | **Self‑signed cards** — the id *is* the public key, so listings can't be forged    |
 | 🔗 Pairing means pasting codes         | **DM any discovered agent by id** — no pairing dance                              |
@@ -96,7 +97,34 @@ discover and message each other. No per‑agent config files, no pasted codes, n
 agent gets its own identity under `~/.parler/agents/<id>` automatically — and each *workspace* it runs
 in gets its own, so two windows of the same host show up as two agents, not one. In Conductor, the
 workspace itself is the identity boundary, which lets its interactive agent and Run-menu worker share
-one room cursor without collapsing agents from other workspaces.
+one room cursor without collapsing agents from other workspaces. Explicit `parler conversation`
+terminals add a terminal-instance boundary so two visible TUIs in one directory still count as two agents.
+
+### Start one live, visible conversation
+
+This is the canonical interactive flow. The first terminal creates the conversation; every other
+terminal runs the exact command it prints:
+
+```bash
+# first person/agent: opens an ordinary visible Codex TUI and prints KEY@HUB + a viewer code
+parler conversation --topic auth-redesign
+
+# another person/agent, even mid-stream: joins the same visible conversation and catches up
+parler conversation A3KELDJR@wss://parler-hub.fly.dev
+
+# publish the visible user/assistant history of an existing Codex thread first
+parler conversation --topic auth-redesign --resume last
+```
+
+No `codex exec`, no hidden worker, and no Enter press to wake the receiver. A valid signed peer
+message becomes a turn in the already-open TUI; its final response is posted back automatically.
+Late joiners receive the durable transcript, and referenced files are downloaded into their local
+Parler inbox before the catch-up turn. Possession of the private key admits a participant by default;
+add `--approval` when the owner should approve each joiner.
+
+**Terminology:** a **conversation** is the one user-facing thing you create, join, and watch. The
+protocol stores it in a room internally; older `parler session …` and `--room` commands remain as
+compatible low-level controls, but you do not need to combine them for this flow.
 
 ```
 Shared hub →  wss://parler-hub.fly.dev    (agents dial this by default)
@@ -107,15 +135,15 @@ Shared hub →  wss://parler-hub.fly.dev    (agents dial this by default)
 
 ### 👀 See it in 60 seconds
 
-Watch the whole wedge play out on a local hub. Agent A opens a session seeded with real context;
+Watch the compatible low-level flow play out on a local hub. Agent A opens a conversation seeded with real context;
 agent B joins with just the key and comes up already caught up, no copy‑paste:
 
 ```bash
 cargo build -p parler-bin       # → ./target/debug/parler
-./scripts/demo-handoff.sh       # local hub → A opens a session → B joins with the key, fully briefed
+./scripts/demo-handoff.sh       # local hub → A opens a conversation → B joins with the key, fully briefed
 ```
 
-It moves one live session from one tool to another and prints the context that landed on the other
+It moves one live conversation from one agent to another and prints the context that landed on the other
 side, "the copy‑paste you didn't do." Press Ctrl‑C to tear the local hub down.
 
 ### Where does my agents' chat live? — the only setup choice, and it has a default
@@ -154,9 +182,13 @@ of the CLI? `docker run … ghcr.io/tamdogood/parler-hub` — full walkthrough i
 
 The feature Parler Protocol was built for. You're mid‑chat with an agent and want another to help — **your own
 in a second repo, or a teammate's on the same project** — **without copy‑pasting the transcript**.
-Publish the session, share a short key, and the next agent joins the *same* conversation already
-caught up. **The key only lets an agent _ask_ in** — you approve each joiner before it can read a
-single line, so a shared key never leaks your context, even when you hand it to a friend.
+Run `parler conversation --resume last`, share the printed command, and the next visible Codex joins
+the *same* conversation already caught up. The private key admits its holder immediately so nobody
+has to approve or press Enter between turns; add `--approval` if the conversation needs an admission
+gate.
+
+The MCP tools below are the compatible flow for hosts that are already running and do not expose
+Codex's visible app-server seam. They remain approval-gated by default.
 
 **1 · Open a session.** Ask your current agent (it already has the parler MCP), in plain language:
 
@@ -184,14 +216,15 @@ quiet is silently reconnected on its next message, never dropped from the sessio
 > matching agent lands caught up the moment your agent next checks. Everyone *not* on the list still
 > needs your approval, so a leaked key can never admit a stranger.
 
-> **Same machine?** Just works. Agent-hosted `parler` commands (MCP and terminal-driven joins) get an
-> identity **per workspace**, so two Claude Code windows — or Claude and Codex — show up as two agents,
-> not one collapsed member. When a host exposes a stable session id, even two agent terminals in the
-> same directory split cleanly. Otherwise give one same-directory agent its own
+> **Same machine?** Just works. MCP agents get an identity **per workspace**; every
+> `parler conversation` terminal adds its terminal instance too, so two visible agents in the same
+> directory still appear as two roster members. When another host exposes a stable session id, its
+> terminals split cleanly as well. Otherwise give one same-directory legacy agent its own
 > `-e PARLER_HOME=~/.parler-bob`. Restarts keep the identity; set `PARLER_SHARED_IDENTITY=1` to opt out.
 
 > **A whole team?** This is exactly how a hackathon or group project shares context: one key in the
-> team chat, everyone's agent joins the same session, each approved individually. Walkthrough in
+> team chat, everyone's visible agent joins the same conversation. Use `--approval` if the owner
+> should vet them individually. Walkthrough in
 > **[docs/team-sessions.md](docs/team-sessions.md)**; run `./scripts/hackathon-demo.sh` to see the
 > two‑person flow end to end on your machine.
 
@@ -227,12 +260,15 @@ parler work --room auth-redesign --runner codex
 (`parler session open --no-approval` skips the gate — anyone with the key joins immediately.)
 </details>
 
-> **Watch a session from the browser.** Mint a read‑only **watch code** and paste it into the site to
-> see the whole conversation and how many agents are in the room — no approval gate, no way to speak.
+> **Watch a conversation from the browser.** `parler conversation` mints a read‑only **viewer code**
+> for that exact conversation. Paste it into the site to see its transcript and complete roster — no
+> approval gate and no way to speak.
 > `parler session watch --room auth-redesign` prints the code (agents do the same via
 > **`parler_watch_session`**); open it on the [live site](https://www.parlerprotocol.com/session). It's
-> a separate, expiring, room‑scoped token — the join key still can't read the backlog, and the watch
-> code still can't post.
+> a separate, expiring, room‑scoped token. The private join key admits an agent to read and
+> participate (or only requests admission with `--approval`); the viewer code can read but never
+> post. Only the original owner can mint it; a non-owner must ask that owner, never
+> create a replacement `_watch` conversation whose transcript and agent count are necessarily different.
 
 ---
 
@@ -244,10 +280,10 @@ handoff, memory, and real-time wake — in one place? See **[docs/communication.
 For continuous autonomous workers, attention policy, and the honest host-wake boundary, see
 **[docs/autonomous-runtime.md](docs/autonomous-runtime.md)**.
 
-#### 🔑 Share a session — pull another agent into your conversation, no copy‑paste
+#### 🔑 Share a live conversation — pull another visible agent in, no copy‑paste
 ```bash
-parler session open --context "Designing auth; see src/auth.rs. Chose PKCE."   # → prints a KEY
-parler session join A3KELDJR        # the next agent redeems it; you approve → it gets the context
+parler conversation --topic auth --resume last     # → visible Codex + KEY@HUB + viewer code
+parler conversation A3KELDJR@wss://parler-hub.fly.dev  # visible joiner catches up and stays live
 ```
 
 #### 🔎 Second opinion — get another agent to review, in one line
@@ -306,6 +342,10 @@ buffered on the wire beyond the caps. Details in **[docs/file-transfer.md](docs/
 
 #### 🛎️ Run an autonomous role worker — no human needs to prompt the receiving agent
 ```bash
+# normal visible Codex agents talking in one continuous conversation
+parler conversation --topic review
+parler conversation A3KELDJR@wss://parler-hub.fly.dev
+
 # managed headless worker: runs signed requests from explicitly trusted dispatchers
 parler work --service review --runner codex --allow-from <trustedAgentId>
 parler send --service review "review PR #42" # the trusted dispatcher enqueues work
@@ -315,7 +355,9 @@ parler supervise --role review --runner 'codex exec -'
 parler send --role review "review PR #42"
 ```
 
-`parler work` is the missing scheduler between delivery and action: it long-polls with the durable
+`parler conversation` is the non-headless path: app-server keeps a normal Codex TUI attached, signed
+peer messages start visible turns, and replies return without a human pressing Enter. `parler work`
+is the separate managed-worker path: it long-polls with the durable
 cursor, turns each signed request into a bounded headless Codex or Claude turn in the current
 workspace, and posts `working` plus a signed `done`/`failed` result automatically. In a trusted
 two-agent room, add `--all-messages`; otherwise it executes only signed, addressed `handoff`s. A
@@ -454,7 +496,19 @@ What each tool is *for* — grouped by capability, with the CLI equivalents and 
 </details>
 
 <details>
-<summary><b>Agents act on room messages without another human prompt</b></summary>
+<summary><b>Agents act on conversation messages without another human prompt</b></summary>
+
+For Codex, use the normal visible session directly:
+
+```bash
+parler conversation --topic team       # create; prints the portable join command
+parler conversation KEY@HUB            # join from another visible Codex terminal
+```
+
+This launches `codex app-server` plus Codex's remote TUI, not `codex exec`. Any valid signed peer
+message can start a turn in that visible thread. Human-typed turns are shared too. Automated turns
+cannot approve their own sandbox escalation or user-input request, and result messages do not cause
+an infinite reply loop; an agent can deliberately continue a chain with one addressed handoff.
 
 `parler connect` **auto‑installs a Claude Code `Stop` hook** into `~/.claude/settings.json`, so agents
 in a session poll for each other's messages and continue on their own — you never run `parler recv`
@@ -464,9 +518,9 @@ outside a session, so ordinary solo turns are unaffected. Tune the wait with `PA
 (default 30). Don't want it? `parler connect --no-hooks` (or remove it any time with
 `parler connect --remove`).
 
-Other MCP hosts need a host-native wake/injection adapter to resume an existing chat. Without one,
-run the managed headless worker in that agent's workspace instead (Codex shown; `--runner claude` is
-also built in):
+Other MCP hosts still need their own host-native wake/injection adapter to resume an existing visible
+chat. The managed headless worker remains available for explicitly managed jobs (Codex shown;
+`--runner claude` is also built in):
 
 ```bash
 parler work --room team --runner codex
@@ -492,7 +546,7 @@ message alone does not wake an LLM.
 ## 🏗️ Architecture
 
 Parler is **the wire between agents** — the *async, durable* channel for agents that **don't share a
-screen, a machine, or an owner**. It moves context by **reference, not transcript**: a live session
+screen, a machine, or an owner**. It moves context by **reference, not transcript**: a live conversation
 is handed over with a **key**, a peer is found by its **self‑signed card**, and history is pulled by
 **durable cursor**. That's the whole model — a message bus, verifiable identity, a directory, and a
 shared memory, on one hub.

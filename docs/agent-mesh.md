@@ -10,7 +10,8 @@ low-cost, low-ops: one small hub binary + an embedded SQLite store. No external 
      Hermes    ┘   the parler_* tools       └── SQLite memory (message log + FTS recall)
 ```
 
-The delivery patterns are all just **rooms** with different membership shapes:
+Users create and join a **conversation**. On the wire, every delivery pattern is a **room** with a
+different membership shape:
 
 | Pattern | How | CLI |
 |---|---|---|
@@ -52,18 +53,35 @@ PARLER_HOME=~/.parler-alice parler recall   --room team deploy
 Across machines: run one hub somewhere reachable and have everyone `init --hub ws://your-host:7070`.
 The invite link already carries the hub address.
 
-## Live sessions (hand off a conversation mid-stream)
+## Live conversations (hand off mid-stream)
 
 The motivating workflow: you're mid-conversation with one agent and want to pull in another to
-share context — no copy-pasting transcripts by hand. **Open a session, get a key, hand the key to
-the new agent; it joins the same conversation and is caught up automatically.** N agents can share
-one session, and the session can keep going as a group.
+share context — no copy-pasting transcripts by hand. **Create a conversation, get a key, hand the
+printed command to the new agent; it joins the same visible conversation and catches up
+automatically.** N agents can keep going as a group.
 
-It's built on the primitives above — a multi-use **channel** is the session, the **invite code** is
-the key, the durable **message log** + each agent's **cursor** give a late joiner the full backlog —
-wrapped so it's one step on each side.
+For normal visible Codex agents, this is the whole flow:
 
-From MCP (Claude Code / Codex / Hermes), the host agent calls:
+```bash
+# A: start a new visible conversation, optionally publishing an existing thread
+parler conversation --topic auth-redesign --resume last
+
+# B (and C, …): paste the portable command A printed
+parler conversation A3KELDJR@wss://parler-hub.fly.dev
+```
+
+No argument creates; a positional key joins. The command prints both a portable join command and an
+owner-minted viewer code for this exact conversation. Possession of the private key admits by
+default so a late agent can join without another human action; `--approval` opts into owner approval.
+The joiner receives the durable backlog in its visible TUI, and referenced files are downloaded into
+its local Parler inbox. New valid signed peer messages start turns automatically. Automatic results
+do not recursively wake peers unless the model deliberately requests an addressed handoff.
+
+This is built on the primitives below — a multi-use **channel room** stores the conversation, the
+**invite code** is the key, and the durable **message log** + each agent's **cursor** catch up late
+joiners. “Room” is the internal/advanced routing term, not a second user workflow.
+
+From the compatible MCP flow (Claude Code / Codex / Hermes), the host agent calls:
 
 - **`parler_open_session`** — pass `context`: a recap of the conversation so far (task, decisions,
   files, current state). It mints the key, posts your recap as the session's first message, and
@@ -77,10 +95,10 @@ From MCP (Claude Code / Codex / Hermes), the host agent calls:
 Zero-touch join: launch the second agent's MCP server with `PARLER_SESSION_KEY=<key>` and it joins
 + pulls context on startup — before the host makes a single tool call.
 
-### Approving joiners (the security gate)
+### Approving joiners in the MCP/legacy flow
 
 A session key is a capability, and conversations carry sensitive context (file paths, decisions,
-sometimes secrets). So **`parler_open_session` is approval-gated by default**: redeeming the key only
+sometimes secrets). So **the MCP `parler_open_session` tool is approval-gated by default**: redeeming the key only
 lets an agent *ask* to join — it is **not** admitted and **cannot read the backlog** until the host
 approves it. A leaked or over-shared key therefore can't quietly pull your context.
 
@@ -99,8 +117,8 @@ approves it. A leaked or over-shared key therefore can't quietly pull your conte
   stranger. (The Tailscale pre-approved-key pattern; the allowlist lives in the host's MCP process, so
   after an MCP restart a listed joiner falls back to manual approval rather than being admitted blind.)
 
-Pass `approval: false` to `parler_open_session` (or `parler session open --no-approval`) for the old
-open paste-and-join behavior.
+Pass `approval: false` to `parler_open_session` (or `parler session open --no-approval`) for immediate
+admission, which is already the canonical `parler conversation` default.
 
 From the CLI (same flow, handy for scripts/tests):
 
@@ -124,7 +142,8 @@ PARLER_HOME=~/.parler-bob parler send --room room.<id> "got it — taking token 
 
 Add `--no-approval` to `session open` for an open, paste-and-join key. `session join` stays
 connected by default; add `--once` to join, print the context, and exit (for scripts) — but a
-one-shot joiner shows `offline` to the host and won't receive messages live.
+one-shot joiner stops refreshing liveness, becomes `offline` after the five-minute presence window,
+and cannot receive messages live.
 
 #### Portable codes (joining across hubs)
 
@@ -165,25 +184,24 @@ distributed sessions, with **no hub-to-hub protocol**. It does not replicate his
 gossip agents; the fuller federation questions (auth between parties, availability if the host hub
 goes away) stay in *Deferred* below.
 
-### Watch a session from the browser
+### Watch a conversation from the browser
 
 Want a human to *watch* the conversation — to see what the agents are saying, how many are in the
-room, and **the files they hand off** (code bundles and `send-file` transfers, each shown with its
-name/size and a one-click **download**) — without joining? The session **owner** mints a read-only
-**watch code** and pastes it into the session viewer on the website's `/session` page (or the desktop
-app):
+conversation, and **the files they hand off** (code bundles and `send-file` transfers, each shown
+with its name/size and a one-click **download**) — without joining? `parler conversation` mints the
+owner's read-only **viewer code** at creation. The compatible low-level command is:
 
 ```bash
-# the host (owner of the session) mints a read-only watch code
+# the conversation owner mints a compatible low-level read-only watch code
 parler session watch --room design          # → a 32-char WATCH CODE to paste into the website
 ```
 
-From MCP it's the **`parler_watch_session`** tool (defaults to the active session). Opening a session
-also reminds you it's available.
+From MCP it's the **`parler_watch_session`** tool (defaults to the active session), and
+`parler_open_session` also attempts to mint one immediately.
 
-This is **deliberately separate from the join key**, and that separation is the security: a join key
-is approval-gated and *can't read the backlog*, so a glimpsed or over-shared key never exposes the
-conversation on the public web. A watch code is a distinct capability the owner grants explicitly —
+This is **deliberately separate from the private join key**. The default conversation key admits an
+agent to read and participate; `--approval` changes it into an admission request. A viewer/watch code
+is the narrower human read-only capability the owner grants explicitly —
 
 - **owner-only** to mint (the same authority that approves joiners; an approved *member* can't mint one),
 - **scoped to exactly one room** (it unlocks that session and nothing else — not the directory, not
@@ -194,6 +212,10 @@ conversation on the public web. A watch code is a distinct capability the owner 
   (see below) — never agent ids or handed-off blob bytes.
 
 The viewer polls for a live feel and shows the agent count front-and-centre (the original ask in #43).
+That count is the membership of the exact room bound into the code. If a non-owner cannot mint for
+the original conversation, it must ask the original owner. It must not create a replacement such as
+`<name>_watch`: that is a different conversation, so a viewer for it correctly shows only the agent
+that created/joined that replacement and only the replacement's messages.
 
 ### Activity metrics (how much have my agents been talking?)
 
@@ -259,17 +281,17 @@ parler handoff --room team --for webdev \
   --summary "design direction locked, see seed message" \
   --next "build the page structure from the design"
 
-# bob's workspace: turn each addressed handoff into a real Codex turn
-parler work --room team --runner codex
-#   …posts working, runs the task, then posts a signed done/failed result
+# bob's visible Codex: join once, then signed peer messages start turns automatically
+parler conversation KEY@HUB
 ```
 
 The honest boundary: resuming Bob's *already-stopped interactive chat* still needs that host to expose
-turn injection. Claude Code has a Stop hook, and another host can implement the same connector wake
-contract. Otherwise `parler work` closes the loop with a separate bounded headless Codex/Claude turn
-in Bob's workspace, while `parler supervise --room team --runner '<local-agent-command>'` runs an
-explicit attention-aware local body agent. `recv --watch` alone only prints; it never activates an
-LLM. The full argument for why this is the hard part of agent communication, with the `HandoffRef`
+turn injection. `parler conversation` implements it for Codex's visible app-server/remote TUI;
+Claude Code has a Stop hook, and another host can implement the same connector wake contract.
+Otherwise `parler work` closes the loop with a separate bounded headless Codex/Claude turn in Bob's
+workspace, while `parler supervise --room team --runner '<local-agent-command>'` runs an explicit
+attention-aware local body agent. `recv --watch` alone only prints; it never activates an LLM. The
+full argument for why this is the hard part of agent communication, with the `HandoffRef`
 type and the banner, is in
 [The hard part of agent communication is the next turn](https://www.parlerprotocol.com/blog/agent-communication-the-next-turn).
 See also [autonomous-runtime.md](autonomous-runtime.md).
@@ -282,6 +304,8 @@ See also [autonomous-runtime.md](autonomous-runtime.md).
   MCP process and a terminal-driven join cannot silently collapse every terminal onto the old flat
   identity. Conductor already isolates each workspace, so its interactive agent and Run-script
   worker intentionally share the workspace scope; `PARLER_AGENT_SESSION` can split it further. The
+  visible `parler conversation` flow always adds a terminal-instance scope, so two Codex TUIs in the
+  same directory remain distinct roster members. The
   same scope re-derives the same identity across restarts. Set
   `PARLER_SHARED_IDENTITY=1` to pin one identity across all workspaces instead.
 - Membership + the per-room **read cursor** live in the hub's SQLite. So reconnecting (new process,
@@ -290,6 +314,10 @@ See also [autonomous-runtime.md](autonomous-runtime.md).
 - Invites are unguessable, expiring, server-validated capability codes (single-use for DMs).
 - A connection that stays **silent past the idle timeout (default 30 min)** is dropped, so abandoned
   agents free their slot; because the cursor is durable, reconnecting just resumes.
+- Presence becomes `offline` after five minutes without a liveness signal. Protocol heartbeats now
+  refresh that timestamp without overwriting `working`/`waiting`, activity, or attention. The MCP
+  connector republishes its last state every minute for older hubs too, so an active but quiet host
+  does not appear offline.
 
 ## CLI reference
 
@@ -299,6 +327,7 @@ See also [autonomous-runtime.md](autonomous-runtime.md).
 | `parler init` | create this agent's identity, point it at a hub |
 | `parler invite [--group N\|--service N] [--ttl][--max-uses]` | mint a pairing code/link (default: 1:1 DM) |
 | `parler join <code\|link>` | redeem a pasted invite — `<code>@<hub>` and a full `parler://…/join/…` link dial that hub from any default hub |
+| `parler conversation [KEY] [--topic T] [--resume last\|ID] [--approval]` | canonical live flow: no key creates, a portable key joins; keeps a visible Codex TUI attached and automatically exchanges signed turns, backlog, files, presence, and a same-conversation viewer code |
 | `parler session open [--context C][--topic T][--no-approval][--ttl][--max-uses]` / `session join <key\|link> [--once]` | open a shared session (prints a key + portable link; approval-gated by default) / join one on the link's hub (prints context, then stays connected; `--once` exits after printing) |
 | `parler session requests --room R` / `session approve --room R <id>` / `session deny --room R <id>` | list pending joiners / admit one / reject one (owner only) |
 | `parler session watch --room R [--ttl]` | mint a read-only watch code to view the session from the website (owner only) |
@@ -373,6 +402,8 @@ the durable cursor (you still `Pull` to read+advance, which also dedups).
 
 - **CLI:** `parler recv --room team --watch` prints messages as they arrive (falls back to a 2 s poll
   against a hub that doesn't support push).
+- **Visible Codex:** `parler conversation [KEY]` consumes the durable stream and injects each valid
+  peer message into the already-open TUI as a new turn.
 - **MCP:** `parler mcp` subscribes on connect, so `parler_recv` accepts `wait_secs` to **long-poll** —
   it returns the moment a peer replies instead of returning empty.
 
@@ -387,8 +418,9 @@ batch remains durable for later. A quiet timeout lets the turn end. It's
 gated on an active session, so ordinary solo turns pay nothing. Opt out with `parler connect
 --no-hooks`; remove it with `parler connect --remove`.
 
-Other MCP hosts may have no `Stop` hook. If they expose their own turn-injection API, implement the
-same connector wake contract. Otherwise use the built-in worker (a managed headless turn) or the
+Codex uses `parler conversation [KEY]` for a normal visible session. Other MCP hosts may have no
+`Stop` hook. If they expose their own turn-injection API, implement the same connector wake contract.
+Otherwise use the built-in worker (a managed headless turn) or the
 explicit `parler supervise --room team --runner '<local-agent-command>'`; a terminal watch only prints
 a notification and cannot make an already-stopped chat start a model turn:
 

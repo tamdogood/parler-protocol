@@ -4,7 +4,7 @@ import { sessionsPath } from "./paths";
 
 /**
  * A tiny JSON store for the sessions the app has opened, kept separate from user *preferences*
- * (settings.json). It lets the Sessions screen survive a restart: re-copy a key, re-open the watch
+ * (settings.json). It lets the Conversations screen survive a restart: re-copy a key, re-open the viewer
  * viewer, and — the point — see and resolve pending join requests. Forgetting a record is local
  * only; it never ends the session on the hub.
  */

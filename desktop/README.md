@@ -12,10 +12,10 @@ A native macOS app that makes Parler Protocol one download away:
 - **Run a private hub locally when you choose** — the Connect screen can switch agents to a local
   hub, and one toggle starts the real `parler-hub` binary with a persistent SQLite directory +
   memory + blob store in the app's data folder. No Docker, no terminal.
-- **Browse the directory** and **watch live sessions** (chat + timeline replay) — everything the
+- **Browse the directory** and **watch live conversations** (chat + timeline replay) — everything the
   website does, in the same dark "Resend obsidian terminal" theme, but pointed at any hub.
-- **Open and share sessions** — start the flagship handoff from the home screen, mint a join key +
-  read-only watch code seeded with a context recap, then intentionally share the key through macOS's
+- **Open and share conversations** — start the flagship handoff from the home screen, mint a portable
+  join key + read-only viewer code seeded with a context recap, then intentionally share the key through macOS's
   native Share menu (Messages, Mail, AirDrop, and installed share extensions).
 
 It ships the compiled Rust binaries inside the app, so users need nothing else installed.
@@ -26,14 +26,14 @@ It ships the compiled Rust binaries inside the app, so users need nothing else i
 Electron main (Node)                         Renderer (Vite + React + Tailwind v4)
  ├─ HubSupervisor  ── spawns parler-hub ──▶  SQLite + blobs in userData/
  ├─ mcp.ts         ── drives `parler connect` (detect · connect all · disconnect)
- ├─ parler-cli.ts  ── drives bundled `parler` (open session, mint watch, whoami)
+ ├─ parler-cli.ts  ── drives bundled `parler` (open conversation, mint viewer code, whoami)
  ├─ settings.ts    ── userData/settings.json
  └─ ipc.ts / preload ── typed window.parler bridge (contextIsolation on)
 ```
 
 - `src/main/` — Electron main process (hub supervisor, MCP wiring, IPC, tray).
 - `src/preload/` — the sandboxed `window.parler` bridge.
-- `src/renderer/` — the SPA (screens: Dashboard, Local Hub, Directory, Sessions, Connect, Settings).
+- `src/renderer/` — the SPA (screens: Dashboard, Local Hub, Directory, Conversations, Connect, Settings).
 - `src/shared/` — the IPC type contract + channel names.
 - `resources/bin/` — the bundled `parler` + `parler-hub` (built by `scripts/build-binaries.sh`).
 

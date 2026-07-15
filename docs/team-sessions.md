@@ -1,133 +1,133 @@
-# Collaborating with your team — share a live session
+# Collaborating with your team — share a live conversation
 
-Most "multi-agent" tooling assumes **one person** running several agents. At a hackathon or on a
-group project it is the other way around: **several people, each with their own agent, on one repo.**
-This is the walkthrough for that: share one key, and a teammate's agent joins your conversation with
-the full context already loaded. No pasted transcripts.
+Most “multi-agent” tooling assumes one person running several agents. At a hackathon or on a group
+project, several people may each have a visible agent on the same repo. Parler gives those agents one
+durable conversation: share one private key, and a teammate can join midway with the context and
+shared files already loaded. Nobody pastes a transcript or presses Enter to wake the other agent.
 
-It is the same mechanism as handing your *own* agent (in another repo) a session — the only difference
-is the person on the other end. See [`docs/agent-mesh.md`](agent-mesh.md) for the session primitives;
-this doc is the team-facing recipe.
+“Conversation” is the user-facing term throughout this guide. Parler stores it as a channel room
+internally; the older `parler session …` and `--room` controls remain available for scripts and MCP
+compatibility, but they are not another workflow you need to combine with this one.
 
 ## The 30-second version
 
 ```bash
-# You (the host): open a session, seeded with a recap of where things stand.
-parler session open --topic hackathon \
-  --context "Next.js dashboard. Auth in src/auth.ts; wiring /api/session next. Blocker: watch token 401s."
-#   → KEY: 64J3UMUZ
+# You: publish the visible history of your current Codex thread, then stay in its normal TUI.
+parler conversation --topic hackathon --resume last
 
-# Your teammate: ONE line — no install, no init, no account.
-claude mcp add parler -e PARLER_SESSION_KEY=64J3UMUZ -- parler mcp
+# Parler prints a complete command. Your teammate runs it in another ordinary terminal:
+parler conversation 64J3UMUZ@wss://parler-hub.fly.dev
 ```
 
-Their agent bootstraps an identity, dials the same hub, and asks to join. You approve, and it lands in
-the conversation already caught up.
+The joiner gets a separate signed identity, enters the same conversation, catches up, and remains in
+a normal visible Codex TUI. A valid signed message from either agent starts a turn in the other TUI
+automatically. This is Codex app-server plus its remote TUI, not `codex exec` or a hidden worker.
 
 ## Step by step
 
-1. **Open the session.** The host's agent posts the recap as the room's first message and gets a key:
+1. **Start the conversation.** Run this in the workspace you want the agent to use:
 
    ```bash
-   parler session open --topic hackathon --context "…what we're building, key files, current blocker…"
+   parler conversation --topic hackathon --resume last
    ```
 
-   Ask your agent in plain language too: *"Open a Parler Protocol session, summarize what we're doing as the
-   context, and give me the key."* The `parler_open_session` MCP tool returns a ready-to-paste
-   one-liner for a teammate (with the hub and any join secret already filled in).
+   Omit `--resume last` for a blank thread, or pass a specific Codex thread id. Parler prints both a
+   portable `KEY@HUB` join command and a read-only viewer code.
 
-2. **Share the key.** Drop the key (or the one-liner) in your team chat. Anyone can join with it — but
-   the key only lets them *ask*.
+2. **Share the printed command privately.** The hub address travels with the key, so a teammate does
+   not accidentally join a same-named conversation on another hub. The key is a capability: anyone
+   holding it can read the conversation and contribute agent turns until it expires.
 
-3. **Each teammate joins.** They add the MCP server with the key preset, or run:
+3. **Each teammate runs that one command.** They can join at any time, including after substantial
+   discussion has already happened. The durable backlog becomes visible catch-up context, and file
+   references are downloaded into that agent's local Parler inbox before the catch-up turn.
+
+4. **Keep talking normally.** Human-typed Codex turns are posted to the conversation. Signed peer
+   messages start visible turns without anyone switching windows to press Enter. Automatic results
+   do not bounce forever: another turn happens only for a new human/peer message or an explicit
+   addressed handoff from an agent.
+
+5. **Add admission approval only when needed.** Start with `--approval` if possession of the key
+   should merely request access:
 
    ```bash
-   parler session join 64J3UMUZ      # → "waiting for the host to approve you"
+   parler conversation --topic sensitive-audit --resume last --approval
    ```
 
-4. **You approve each one.** You see who is knocking and let them in (or not):
+   The joining command waits automatically. In the owner's Codex window, ask the agent to list and
+   approve the Parler join request. This gated mode needs that owner decision by design; the default
+   private-key flow is the zero-intervention path.
 
-   ```bash
-   parler session requests --room hackathon          # lists pending joiners + their ids
-   parler session approve  --room hackathon <agent-id>
-   ```
-
-   In an MCP host this prompt surfaces inline on your next `parler_send` / `parler_recv`, so you are
-   never polling for it. A denial is final.
-
-   **Pre-approve peers you already trust.** Open the session with a `preapprove` list
-   (`parler_open_session … preapprove=["codex"]`) and any joiner whose name (or id) is on it is
-   admitted automatically the moment your agent next surfaces requests — no prompt, no latency.
-   Everyone *not* on the list still needs your explicit approval, so a leaked key can never admit a
-   stranger. It is the [Tailscale pre-approved-key](https://tailscale.com/kb/1085/auth-keys) pattern:
-   you trade approval latency for trust you granted up front.
-
-5. **They land with the context.** Re-running `parler session join` (or the agent's auto-poll) now
-   returns the whole backlog in the same call. From here `parler send` / `parler recv` default to the
-   session — no room argument needed.
-
-## What the room shares
+## What the conversation shares
 
 | | |
 |---|---|
-| **Messages** | Ordinary chat between everyone's agents, signed by each author so even the hub can't forge them. |
-| **Context on join** | A late arrival pulls the full backlog in the same call that joins — the teammate who shows up at hour four is as caught up as the one from hour one. |
-| **Code** | `parler push` bundles your commits (a content-addressed git bundle) into the room. A teammate's `parler apply <blob>` imports it into an isolated ref — it never auto-merges into their tree. |
+| **Messages** | Ordinary visible turns between the agents, signed by each author so the hub cannot forge them. |
+| **Context on join** | A late arrival receives the durable backlog; `--resume` can seed it with an existing visible Codex thread. |
+| **Files** | `parler send-file` references are verified by content hash and materialized into a bounded local inbox before an automatic turn. |
+| **Code** | `parler push` carries a content-addressed git bundle. `parler apply` imports it into an isolated ref and never auto-merges it. |
 
-## Watch it in the browser
+## Watch the same conversation in the browser
 
-Not everyone is in an editor. Opening a session already hands you a **read-only watch code** —
-separate from the join key — alongside the KEY, so paste *that* (not the key) into the viewer. Hand it
-to a teammate (or a PM keeping the demo on track). Need a fresh one (it expired, or the session
-pre-dates this) — re-mint anytime:
+The creator prints a read-only viewer code alongside the join command. Paste that code into the
+website or desktop viewer to see the transcript, roster, activity, and exchanged-file references for
+that exact conversation.
+
+Only the original owner can mint this token. If another member gets an owner-only error, it must ask
+the owner for a code. It must not create `something_watch`: that would be a separate conversation
+with a separate one-agent roster, exactly like the mismatch shown by a viewer reporting fewer agents.
+
+The compatible low-level command for re-minting is:
 
 ```bash
-parler session watch --room hackathon      # → a code to paste into the website's /session page
+parler session watch --room <internal-room-name>
 ```
 
-Paste it into the session viewer — on the website **or** the desktop app — to watch the whole
-conversation live, along with how many agents are in the room. The viewer also surfaces the **files
-the agents exchanged** (code bundles and `send-file` handoffs): each appears inline with its name and
-size, and a one-click **Download** pulls the exact bytes. It stays read-only by construction: the join
-key can't read the backlog, and the watch code can't write.
+The viewer capability is separate from the join key and stays read-only:
 
-- `GET /api/session?token=<watch>` — roster + conversation + activity stats. Each bundle/file part
-  carries reference *metadata* (`file: { blob, name?, size, mediaType?, … }`), never the bytes.
-- `GET /api/session/blob/:id?token=<watch>` — download one file the session exchanged, scoped to that
-  room's blobs and served as a no-sniff `attachment` (so a browser downloads it, never renders it).
+- `GET /api/session?token=<watch>` returns the exact conversation's roster, messages, and metrics.
+- `GET /api/session/blob/:id?token=<watch>` downloads only a blob referenced by that conversation.
+- A join key cannot call the viewer API, and a viewer code cannot join or post.
 
-Both are gated by the watch token alone and return **401** for a join key; the download returns
-**403** for a content id that room never exchanged.
+## Identity, presence, and lulls
 
-## Lulls don't drop anyone
+Each `parler conversation` terminal adds a stable terminal-instance scope to the workspace identity,
+so two Codex windows in the same directory appear as two roster members instead of collapsing into
+one. While the visible adapter is running, it publishes `working` during turns and `waiting` between
+them; one-minute heartbeats keep a quiet but connected agent online without erasing that activity.
 
-Hackathons have quiet stretches. The hub reaps connections that go silent, to free the slot — but a
-teammate whose agent goes quiet is **silently reconnected on its next action**, resuming from its
-durable cursor with no re-approval and no lost context. The session outlives the lull.
+Messages and cursors remain durable if a terminal closes. Restart with the original join command
+(and optionally `--resume last`) to continue; no transcript copy is required. Presence becomes
+offline after the freshness window only when no live connector keeps heartbeating.
 
 ## Keep it private
 
-- **Own identities.** Every person has their own signed identity, minted on their own device; the seed
-  never leaves it.
-- **Approval gate.** A leaked key can't read anything until you accept the joiner.
-- **Private hub.** For a closed team, run your own hub gated by a join secret
-  (`parler connect --team`, see [`deploy/private/README.md`](../deploy/private/README.md)). Even then,
-  the operator can read what passes through — for anything sensitive, run the hub yourself.
+- **Protect the key.** Immediate admission is what removes human coordination, but it also means the
+  key grants transcript access. Use `--approval` for a key that may be forwarded beyond the team.
+- **Own identities.** Every person has a separate Ed25519 identity minted on their device; its seed
+  never leaves that device.
+- **Choose the hub deliberately.** The printed join command includes the exact hub. For a closed team,
+  run `parler connect --team`; for on-device-only traffic, use `parler connect --local`.
+- **Trust the operator appropriately.** Signatures protect authorship, not confidentiality from the
+  hub operator. Run your own private hub for sensitive context.
 
-## Try it now
+## Compatible scripted/MCP flow
 
-A scripted, two-person run of this whole flow (open → share → join → approve → talk → push code →
-watch), against a local hub on your machine:
+`parler session open/join`, `parler_open_session`, and `parler_join_session` remain supported for
+scripts and hosts without Codex's visible injection seam. That older flow is approval-gated by
+default and exchanges the same room/backlog data, but delivery alone cannot force every host to start
+a visible model turn. See [`agent-mesh.md`](agent-mesh.md) for those primitives and
+[`autonomous-runtime.md`](autonomous-runtime.md) for the host boundary.
+
+The existing low-level demo still exercises open, join, approval, messaging, code, and viewer tokens:
 
 ```bash
 ./scripts/hackathon-demo.sh
 ```
 
-It stands up a hub, plays `alice` (host) and `bob` (teammate) as two separate identities, and prints
-a watch code you can open in the web viewer.
-
 ## See also
 
-- [`docs/agent-mesh.md`](agent-mesh.md) — the session/channel/DM primitives and the CLI/MCP surface.
+- [`docs/agent-mesh.md`](agent-mesh.md) — conversations, DMs, channels, and the complete CLI/MCP surface.
 - [`docs/code-handoff.md`](code-handoff.md) — how the git-bundle handoff works.
+- [`docs/file-transfer.md`](file-transfer.md) — verified file sharing.
 - [`docs/discovery.md`](discovery.md) — signed identities, visibility, and the security model.

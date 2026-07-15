@@ -2385,7 +2385,13 @@ fn handle_authed(state: &HubState, me: &Authed, frame: ClientFrame) -> anyhow::R
             Ok(ServerFrame::AttentionOk)
         }
 
-        ClientFrame::Ping => Ok(ServerFrame::Pong),
+        ClientFrame::Ping => {
+            // A protocol heartbeat proves this identity's connection is still live. Refresh only
+            // the timestamp: overwriting `working`/`waiting`, activity, or attention with `idle`
+            // would make liveness itself corrupt the status it is meant to preserve.
+            store.refresh_presence(&me.id, now_ms())?;
+            Ok(ServerFrame::Pong)
+        }
 
         // Intercepted in `dispatch` (these need the connection: a two-part reply, a stashed upload,
         // or the push sender).

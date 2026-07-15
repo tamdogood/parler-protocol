@@ -7,7 +7,7 @@ export type Screen = "agents" | "connect" | "sessions" | "settings" | "hub";
 const NAV: { id: Screen; label: string; icon: React.ReactNode }[] = [
   { id: "agents", label: "Agents", icon: <Users className="size-[18px]" /> },
   { id: "connect", label: "Connect", icon: <Plug className="size-[18px]" /> },
-  { id: "sessions", label: "Sessions", icon: <MessagesSquare className="size-[18px]" /> },
+  { id: "sessions", label: "Conversations", icon: <MessagesSquare className="size-[18px]" /> },
   { id: "hub", label: "Hub", icon: <Server className="size-[18px]" /> },
 ];
 
@@ -20,7 +20,7 @@ export function Sidebar({
   active: Screen;
   onNavigate: (s: Screen) => void;
   status: HubStatus | null;
-  /** Agents waiting for approval across the app's sessions — badged on the Sessions item. */
+  /** Agents waiting for approval across conversations — badged on the Conversations item. */
   pendingJoins?: number;
 }) {
   const settingsActive = active === "settings";
@@ -43,7 +43,7 @@ export function Sidebar({
               {badge > 0 && (
                 <span
                   className="ml-auto inline-flex min-w-5 items-center justify-center rounded-full bg-complained-yellow px-1.5 text-[11px] font-semibold text-black"
-                  title={`${badge} ${badge === 1 ? "agent is" : "agents are"} waiting to join a session`}
+                  title={`${badge} ${badge === 1 ? "agent is" : "agents are"} waiting to join a conversation`}
                 >
                   {badge}
                 </span>

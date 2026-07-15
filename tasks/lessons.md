@@ -333,3 +333,33 @@ Format: `- **<short trigger>:** <the rule>. <why, in a clause>`
   Before a host injector or local runner sees task content, require `verify_message(...) == Valid`.
   A role worker should claim and terminally reject invalid queue entries so one bad item cannot pin
   the queue head forever. (2026-07-13.)
+
+- **“Autonomous” is not interchangeable with “headless”:** when the requirement is another turn in
+  the user's already-visible agent, `codex exec`/a background worker is a different product. Use the
+  host's real injection seam (Codex app-server + remote TUI here), keep the turn visible, and preserve
+  that host's authority boundary. If a host has no seam, say so rather than silently substituting a
+  headless process. (2026-07-14.)
+
+- **A viewer code proves one exact room, not a similarly named conversation:** when a non-owner cannot
+  mint a watch token, creating `<original>_watch` makes a new room with a new roster and transcript.
+  Diagnose viewer-count reports by comparing both room name and hub first; the correct fix is for the
+  original owner to mint a token, never to seed a shadow room. (2026-07-14.)
+
+- **A Codex app-server child can ignore inherited MCP routing because saved `~/.codex/config.toml`
+  wins inside Codex:** setting `PARLER_HUB`/`PARLER_HOME` on the outer process is not sufficient when
+  Codex launches the configured MCP command with its own saved env table. Pass invocation-local `-c
+  mcp_servers.parler.*` overlays to both app-server and remote TUI, including the exact executable,
+  hub, base home, terminal scope, and identity; then inspect the actual child process/config rather
+  than trusting the parent environment. (2026-07-14.)
+
+- **A visible remote Codex TUI owns its native thread:** creating a bridge thread first and then
+  opening a blank remote TUI produces two threads that look like one product surface—human turns land
+  in one, peer-injected turns in the other. Launch the visible TUI, adopt its broadcast
+  `thread/started` id, and inject into that exact thread; resume only when an existing id was
+  explicitly selected. (2026-07-14.)
+
+- **App-server detailed turn notifications are connection-routed, not a shared event log:** a second
+  bridge connection reliably sees `thread/started` and status changes, but human turn details—and
+  sometimes bridge-origin details—may be delivered only to the TUI connection. Treat canonical
+  `thread/read(includeTurns=true)` history as the source of truth, use status to gate concurrent
+  injection, and publish each terminal turn once by id. (2026-07-14.)

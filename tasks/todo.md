@@ -1,3 +1,52 @@
+# Live interactive conversations and truthful presence
+
+## Plan
+- [x] Add one canonical `parler conversation [KEY]` flow: no key creates and shares a conversation;
+      a portable key joins it. Default keys admit immediately, while an explicit approval flag keeps
+      the gated mode for sensitive conversations.
+- [x] Add a Codex interactive host adapter using the documented app-server + remote TUI seam, so
+      signed peer messages start turns in the visible Codex thread instead of spawning `codex exec`.
+      Mirror visible agent replies back to the conversation, preserve explicit addressed handoffs for
+      longer autonomous chains, and never auto-approve shell/tool actions.
+- [x] Catch late joiners up from the durable backlog, carry resumed Codex user/agent context into a
+      newly shared conversation, and materialize shared file blobs into a content-addressed local inbox
+      before injecting their paths.
+- [x] Keep live identities genuinely live: refresh presence on protocol heartbeats, heartbeat MCP
+      connections before the five-minute stale window, and have the interactive adapter publish
+      waiting/working lifecycle state.
+- [x] Add focused app-server protocol/selection tests, a real in-process hub conversation test,
+      presence regression tests, CLI help/docs migration, and full CI/self-review.
+
+## Risks
+- Codex app-server WebSocket mode is documented as experimental. Probe capabilities/version at
+  startup and fail with an actionable message; do not fall back silently to a headless runner.
+- A shared conversation key grants transcript access and supplies model input. Keep keys private,
+  require valid message signatures for automatic turns, retain Codex's normal sandbox/approval
+  policy, and prevent response ping-pong unless an agent explicitly addresses a continuation.
+- The deployed hub and older clients require additive compatibility. Keep `room` as the internal wire
+  primitive and add `conversation` as CLI/UX sugar without renaming existing frames or fields.
+
+## Review
+- Added the canonical `parler conversation [KEY@HUB]` UX and hid the low-level `session` command from
+  normal help. A fresh invocation opens a standard visible Codex TUI; another terminal can join at
+  any point, catch up, and remain attached to the same durable conversation.
+- Codex app-server adopts the thread created by that visible TUI. Signed peer messages become turns
+  in the same window, complete local human/agent exchanges are shared back, peer results carry a
+  terminal task receipt to prevent ping-pong, and an explicit addressed marker is required to extend
+  an autonomous chain. No `codex exec` fallback and no self-approved escalation were added.
+- Portable keys include the exact hub; each terminal gets a stable distinct identity; viewer tokens
+  stay bound to the original room; non-owners are explicitly forbidden from creating `_watch`
+  shadows. MCP and adapter heartbeats preserve waiting/working lifecycle instead of decaying a live
+  agent to offline.
+- Live two-TUI validation: the exact viewer reported 2 members / 2 online; a peer answer woke the
+  other visible Codex without a keypress; simultaneous human turns queued safely; both automatic
+  results landed once; both agents returned to waiting; the message count stayed stable with no loop.
+- Verification: desktop `npm test`, typecheck, and production build pass; targeted conversation tests
+  and Clippy pass; full `make ci` passes build, Clippy `-D warnings`, workspace tests, docs, smoke, and
+  audit. Self-review against `docs/code-review-guidelines.md`: no unresolved findings.
+
+---
+
 # Autonomous agent runtime, attention, role queues, and local supervision
 
 ## Plan

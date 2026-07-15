@@ -1,6 +1,7 @@
 import { ipcMain, shell, clipboard, app, BrowserWindow, ShareMenu } from "electron";
 import { networkInterfaces } from "node:os";
 import { PUBLIC_HUB, type HubTarget } from "../shared/types";
+import { conversationShareText } from "../shared/conversation";
 import { CH } from "../shared/channels";
 import { HubSupervisor } from "./hub-supervisor";
 import { loadSettings, saveSettings, syncLoginItem } from "./settings";
@@ -154,7 +155,7 @@ export function registerIpc(supervisor: HubSupervisor): void {
   ipcMain.handle(CH.sessionOpen, async (_e, input) => {
     const ctx = hubContext();
     const opened = await cli.openSession(input, ctx);
-    // Remember it so the Sessions screen can manage it (re-copy, watch, approve joiners) later.
+    // Remember it so the Conversations screen can re-copy, watch, or approve joiners later.
     saveSession({
       room: opened.room,
       key: opened.key,
@@ -189,16 +190,17 @@ export function registerIpc(supervisor: HubSupervisor): void {
   });
   ipcMain.handle(CH.sessionShare, (event, room: string, key: string) => {
     if (!room || !key || room.length > 256 || key.length > 1024) {
-      return { ok: false, message: "Invalid session key." };
+      return { ok: false, message: "Invalid conversation key." };
     }
-    const text = `Join my Parler Protocol session (${room}):\n\n${key}`;
+    const savedHub = listSessions().find((session) => session.room === room)?.hub;
+    const text = conversationShareText(key, savedHub ?? hubContext().url);
     if (process.platform !== "darwin") {
       clipboard.writeText(text);
-      return { ok: true, message: "Session invitation copied." };
+      return { ok: true, message: "Conversation invitation copied." };
     }
     const window = BrowserWindow.fromWebContents(event.sender) ?? undefined;
     new ShareMenu({ texts: [text] }).popup(window ? { window } : undefined);
-    return { ok: true, message: "Share menu opened." };
+    return { ok: true, message: "Conversation share menu opened." };
   });
 
   ipcMain.handle(CH.clipboardWrite, (_e, text: string) => clipboard.writeText(text));

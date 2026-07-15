@@ -16,6 +16,7 @@ import {
   Share2,
 } from "lucide-react";
 import type { HubStatus, OpenedSessionRecord, SessionJoinRequest } from "@shared/types";
+import { conversationJoinCommand } from "@shared/conversation";
 import { parler } from "@/lib/ipc";
 import { cn, relativeTime, sessionOnActiveHub } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -24,10 +25,8 @@ import { CopyButton } from "@/components/copyable";
 import { SessionViewer } from "@/components/session-viewer";
 
 /**
- * Sessions = the whole mid-chat handoff lifecycle in one place:
- *  1. Open a live session (KEY + read-only watch code, seeded with a recap).
- *  2. Manage the sessions you've opened — re-copy the key, watch live, and **approve the agents
- *     asking to join** (the flagship flow: a session is approval-gated by default).
+ * Conversations = the whole mid-chat handoff lifecycle in one place. Internal session/room names
+ * remain compatibility details; the UI exposes one conversation key and one exact viewer code.
  * Opens on your local hub when it's running, else the public hub.
  */
 export function SessionsScreen({
@@ -55,7 +54,7 @@ export function SessionsScreen({
     refresh();
   }, [refresh]);
 
-  // When a session card sends a watch code to the viewer, bring the viewer into view.
+  // When a conversation card sends its viewer code across, bring the viewer into view.
   const watchHere = useCallback((token: string) => {
     setWatchToken(token);
     requestAnimationFrame(() => viewerRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }));
@@ -76,8 +75,8 @@ export function SessionsScreen({
           <MessagesSquare className="size-5 text-electric-blue" />
         </span>
         <div>
-          <h1 className="text-[22px] font-semibold tracking-tight text-pure-white">Sessions</h1>
-          <p className="text-[13px] text-fog">Hand off a live conversation, approve who joins, then watch it — no copy-paste.</p>
+          <h1 className="text-[22px] font-semibold tracking-tight text-pure-white">Conversations</h1>
+          <p className="text-[13px] text-fog">Share one live conversation, let visible agents join, and watch the exact same roster.</p>
         </div>
       </div>
 
@@ -94,18 +93,18 @@ export function SessionsScreen({
       />
 
       <div className="mt-6" ref={viewerRef}>
-        <p className="mb-2 text-[12px] uppercase tracking-wide text-steel">Watch any session</p>
+        <p className="mb-2 text-[12px] uppercase tracking-wide text-steel">Watch any conversation</p>
         <SessionViewer base={openBase} initialToken={watchToken} />
       </div>
     </div>
   );
 }
 
-/** The form that opens a new session. On success it clears and the new session drops into the list. */
+/** The form that opens a new conversation. */
 function OpenSessionPanel({ openOnLocal, onOpened }: { openOnLocal: boolean; onOpened: (room: string) => void }) {
   const [context, setContext] = useState("");
   const [topic, setTopic] = useState("");
-  const [noApproval, setNoApproval] = useState(false);
+  const [requireApproval, setRequireApproval] = useState(false);
   const [showOptions, setShowOptions] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -117,13 +116,13 @@ function OpenSessionPanel({ openOnLocal, onOpened }: { openOnLocal: boolean; onO
       const r = await parler.session.open({
         context: context.trim() || undefined,
         topic: topic.trim() || undefined,
-        noApproval,
+        noApproval: !requireApproval,
       });
       setContext("");
       setTopic("");
       onOpened(r.room);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to open the session.");
+      setError(e instanceof Error ? e.message : "Failed to open the conversation.");
     } finally {
       setBusy(false);
     }
@@ -132,17 +131,17 @@ function OpenSessionPanel({ openOnLocal, onOpened }: { openOnLocal: boolean; onO
   return (
     <div className="rounded-[16px] border border-graphite-rail bg-void-black p-6">
       <div className="flex items-center gap-2 text-[14px] font-semibold text-frost">
-        <Plus className="size-4 text-electric-blue" /> Open a session
+        <Plus className="size-4 text-electric-blue" /> Open a conversation
       </div>
       <p className="mt-1 text-[13px] text-fog">
-        Opens on your {openOnLocal ? "local hub" : "the public hub"}. Joiners need your approval by default.
+        Opens on {openOnLocal ? "your local hub" : "the public hub"}. The private key admits joiners immediately by default.
       </p>
 
       <textarea
         value={context}
         onChange={(e) => setContext(e.target.value)}
         rows={4}
-        placeholder="Context recap to seed the room: where we are, what's decided, what's next…"
+        placeholder="Context recap: where we are, what's decided, what's next…"
         className="no-drag mt-4 w-full resize-y rounded-[10px] border border-graphite-rail bg-transparent px-3 py-2.5 text-[14px] text-frost placeholder:text-steel outline-none transition-colors focus:border-electric-blue/70 focus:ring-1 focus:ring-electric-blue/40"
       />
 
@@ -159,8 +158,8 @@ function OpenSessionPanel({ openOnLocal, onOpened }: { openOnLocal: boolean; onO
             <Input value={topic} onChange={(e) => setTopic(e.target.value)} placeholder="e.g. payments-refactor" />
           </label>
           <label className="no-drag flex cursor-pointer items-center gap-2 pb-2.5 text-[13px] text-fog">
-            <input type="checkbox" checked={noApproval} onChange={(e) => setNoApproval(e.target.checked)} className="accent-electric-blue" />
-            Skip join approval
+            <input type="checkbox" checked={requireApproval} onChange={(e) => setRequireApproval(e.target.checked)} className="accent-electric-blue" />
+            Require owner approval
           </label>
         </div>
       )}
@@ -169,7 +168,7 @@ function OpenSessionPanel({ openOnLocal, onOpened }: { openOnLocal: boolean; onO
 
       <div className="mt-4">
         <Button variant="primary" onClick={open} disabled={busy}>
-          {busy ? <Loader2 className="size-4 animate-spin" /> : <KeyRound className="size-4" />} Open session
+          {busy ? <Loader2 className="size-4 animate-spin" /> : <KeyRound className="size-4" />} Open conversation
         </Button>
       </div>
     </div>
@@ -192,7 +191,7 @@ function SessionList({
   if (sessions === null) {
     return (
       <div className="mt-5 flex items-center gap-2 text-[13px] text-steel">
-        <Loader2 className="size-4 animate-spin" /> Loading your sessions…
+        <Loader2 className="size-4 animate-spin" /> Loading your conversations…
       </div>
     );
   }
@@ -200,7 +199,7 @@ function SessionList({
 
   return (
     <div className="mt-6">
-      <p className="mb-2 text-[12px] uppercase tracking-wide text-steel">Your sessions</p>
+      <p className="mb-2 text-[12px] uppercase tracking-wide text-steel">Your conversations</p>
       <div className="flex flex-col gap-3">
         {sessions.map((s) => (
           <SessionCard
@@ -274,6 +273,7 @@ function SessionCard({
   };
 
   const pending = requests.length;
+  const joinCommand = conversationJoinCommand(session.key, session.hub);
 
   return (
     <div
@@ -315,7 +315,7 @@ function SessionCard({
           )}
           <button
             onClick={forget}
-            title="Forget this session (does not end it on the hub)"
+            title="Forget this conversation (does not end it on the hub)"
             className="no-drag rounded-[6px] border border-graphite-rail p-1.5 text-steel transition-colors hover:border-bounced-red/40 hover:text-bounced-red"
           >
             <Trash2 className="size-3.5" />
@@ -323,10 +323,10 @@ function SessionCard({
         </div>
       </div>
 
-      {/* The two codes — the whole point of an opened session. */}
+      {/* One key joins; one code watches this exact conversation read-only. */}
       <div className="mt-4 grid gap-2 sm:grid-cols-2">
-        <TokenRow label="Session key" value={session.key} shareRoom={session.room} />
-        {session.watch && <TokenRow label="Watch code" value={session.watch} />}
+        <TokenRow label="Join command" value={joinCommand} shareRoom={session.room} />
+        {session.watch && <TokenRow label="Viewer code" value={session.watch} />}
       </div>
 
       {/* Pending joiners — approve/deny inline. Only shown for a live, approval-gated session. */}

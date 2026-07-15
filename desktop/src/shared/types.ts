@@ -123,25 +123,26 @@ export interface ConnectSnippet {
   binPath: string;
 }
 
-/** A freshly opened live session. */
+/** A freshly opened live conversation (stored as a room internally). */
 export interface OpenedSession {
+  /** Portable KEY@HUB descriptor accepted by `parler conversation`. */
   key: string;
   room: string;
-  /** A read-only watch code minted alongside, to paste into the viewer. */
+  /** A read-only viewer code minted alongside, to paste into the viewer. */
   watch: string | null;
 }
 
-/** A persisted session the app opened — remembered across restarts so it can be managed later. */
+/** A persisted conversation the app opened — remembered across restarts so it can be managed later. */
 export interface OpenedSessionRecord {
   room: string;
   key: string;
-  /** Read-only watch code minted at open time (null if minting failed). */
+  /** Read-only viewer code minted at open time (null if minting failed). */
   watch: string | null;
   /** Optional short name given at open time. */
   topic: string | null;
   /** Whether joiners must be approved before they can read the conversation. */
   approval: boolean;
-  /** The hub URL this session was opened on — scopes which sessions the active hub can manage. */
+  /** The hub URL this conversation was opened on. */
   hub: string;
   /** epoch ms the session was opened. */
   createdAt: number;
@@ -214,7 +215,7 @@ export interface ParlerApi {
     approve(room: string, agent: string): Promise<ActionResult>;
     /** Turn away a pending joiner. */
     deny(room: string, agent: string): Promise<ActionResult>;
-    /** Open the native macOS Share menu for an intentionally selected session key. */
+    /** Open the native macOS Share menu for an intentionally selected conversation key. */
     share(room: string, key: string): Promise<ActionResult>;
   };
   clipboard: {
