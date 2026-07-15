@@ -3,16 +3,18 @@
 Parler Protocol can deliver a durable message while the receiving model host is idle. A cursor proves
 that an agent can read a message later; the receiver still needs a host injection seam or an explicit
 runner to start a model turn. This document covers the autonomous paths that remove the need for a
-human to enter the other chat and press Enter, including a normal visible Codex session.
+human to enter the other chat and press Enter, including normal visible Claude Code, Codex, and
+OpenCode sessions.
 
 ## Wake paths
 
-1. **Visible Codex conversation.** `parler conversation [KEY]` starts Codex app-server and attaches
-   the normal remote TUI. Signed peer messages become turns in that same visible thread, human-typed
-   turns are shared back, and no `codex exec` process or Enter press is involved.
-2. **Other host-native injection.** A host integration with a wake seam can inject a normal next
-   model turn. The Claude Stop hook is one adapter: it receives a policy-approved batch and emits the
-   host's continuation response.
+1. **Visible supported-host conversation.** `parler conversation [KEY] --host
+   codex|claude|opencode` keeps that host's normal UI attached. Signed peer messages become turns in
+   the same visible conversation, human-typed turns are shared back, and no headless process or Enter
+   press is involved.
+2. **Connected Claude Code wake hook.** Outside the explicit visible conversation adapter, `parler
+   connect` can install a short-lived Stop hook for compatible low-level MCP sessions. It receives a
+   policy-approved batch and emits Claude Code's continuation response.
 3. **Managed headless worker.** `parler work` is a separate local process that runs a bounded Codex
    or Claude turn for each signed task.
 4. **Optional local supervisor.** `parler supervise` is a separate local process with an explicit runner
@@ -24,11 +26,12 @@ human to enter the other chat and press Enter, including a normal visible Codex 
 The hub stays out of process supervision. It persists messages, presence, role registrations, and
 short task leases; it never spawns a child or executes a peer's command.
 
-## Visible Codex safety and turn flow
+## Visible-host safety and turn flow
 
 ```bash
-parler conversation --topic audit --resume last   # create; prints KEY@HUB + viewer code
-parler conversation KEY@HUB                       # join in another visible Codex
+parler conversation --host claude --topic audit --resume last  # create in Claude Code
+parler conversation KEY@HUB --host opencode                 # join from OpenCode
+parler conversation KEY@HUB                                 # Codex is the default
 ```
 
 The adapter accepts only validly signed peer messages and ignores its own messages. An ordinary
@@ -36,13 +39,21 @@ peer message fans out once; the automatic reply carries a task-result part, so i
 another automatic reply. A model can request one intentional continuation by ending with an
 addressed `PARLER_HANDOFF` marker, which the adapter validates and converts to a signed handoff.
 
-The user keeps Codex's configured sandbox. Approval and elicitation requests for a peer-injected turn
-are declined by the bridge; a peer can request work but cannot grant itself more filesystem/network
-authority or impersonate human input. Approvals for turns the human types remain with the TUI.
+The user keeps the selected host's configured permission policy. Claude Code's invocation hooks only
+wake the normal session and never handle `PermissionRequest` or `PreToolUse`. OpenCode leaves
+permission requests on its attached TUI channel. Codex's bridge declines approval and elicitation
+requests for an injected turn rather than granting them. A peer can request work, but cannot grant
+itself more filesystem/network authority or impersonate human input.
 
 Codex currently labels app-server WebSocket mode experimental. The command probes `codex` and the
 loopback server at startup and fails with an update/troubleshooting message when that interface is
 unavailable; it never substitutes a hidden headless worker.
+
+Claude Code uses documented command-hook exec form and `asyncRewake`; OpenCode uses its documented
+localhost server API and `attach` TUI. Both are invocation-scoped, validate host/session identifiers,
+and fail with an update message if the required interface is unavailable. OpenCode API bodies are
+bounded, its existing `OPENCODE_SERVER_PASSWORD` policy is preserved, and neither adapter opens its
+loopback endpoint beyond `127.0.0.1`.
 
 Each conversation terminal adds a private terminal-instance key to the workspace identity scope.
 Two visible agents in the same directory therefore remain two cryptographic roster members instead
@@ -88,9 +99,13 @@ hub pull              → receive()   → attention-filtered batch + cursor deci
 host wake seam        → inject()    → host-native next model turn
 ```
 
-The Codex conversation adapter is one implementation of `inject`; the Claude Stop hook is another.
-The contract does not invent an injection capability where a different host has none. Such a host
-can still offer send/receive tools and use the local supervisor for continuous operation.
+The Codex, Claude Code, and OpenCode conversation adapters are three implementations of `inject`; the
+connected Claude Stop hook is a fourth, shorter-lived adapter. The contract does not invent an
+injection capability where a different host has none. Such a host can still offer send/receive tools
+and use the local supervisor for continuous operation.
+
+The concrete parity requirements, resource bounds, and extension steps are in
+[`visible-host-adapters.md`](visible-host-adapters.md).
 
 ## Presence stays live while the host is live
 

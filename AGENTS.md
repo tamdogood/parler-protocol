@@ -23,10 +23,12 @@ desktop app's one-click *Connect* also drives. The only hub choice is a ladder w
 (nothing to run) → `--local` (nothing leaves the box) → `--team` (generates a join secret).
 Agent-hosted MCP and terminal commands scope identity per workspace/session; `parler conversation`
 also scopes by terminal instance, so parallel visible agents remain distinct cryptographic members.
-For Codex, that command uses app-server + the normal remote TUI to inject signed peer turns without
-`codex exec` or an Enter press. For hosts without a turn-injection seam, `parler work` remains the
-explicit activation loop: it watches signed handoffs, runs a bounded headless Codex/Claude turn in
-that workspace, and posts lifecycle + result messages. `recv --watch` is a display, not an LLM scheduler.
+It supports normal visible Codex (app-server + remote TUI), Claude Code (invocation-scoped
+`asyncRewake` hooks), and OpenCode (local server + attached TUI) with the same signed backlog, files,
+presence, result, and native-permission behavior. For hosts without a turn-injection seam, `parler
+work` remains the explicit activation loop: it watches signed handoffs, runs a bounded headless
+Codex/Claude turn in that workspace, and posts lifecycle + result messages. `recv --watch` is a
+display, not an LLM scheduler.
 
 For truly continuous operation, the connector has an explicit host contract (lifecycle → presence,
 tools → send, pull → receive, host-native wake → injection). Hosts without an injection seam use the
@@ -76,6 +78,7 @@ binary for one-click Connect and a local hub.
 | **The engineering contract — how every change is written** (hard gates, invariants, definition of done) | [`docs/engineering-guidelines.md`](docs/engineering-guidelines.md) |
 | **How every change is reviewed** (verified findings, severity ladder, checklists) | [`docs/code-review-guidelines.md`](docs/code-review-guidelines.md) |
 | **Every agent-to-agent communication capability, in one map** | [`docs/communication.md`](docs/communication.md) |
+| Visible-host adapter parity, scaling bounds, and provider extension checklist | [`docs/visible-host-adapters.md`](docs/visible-host-adapters.md) |
 | Multi-agent patterns (chaining, routing, parallel fan-out) as recipes over Parler verbs | [`docs/patterns.md`](docs/patterns.md) |
 | Task lifecycle — status updates + signed receipts for dispatched work | [`docs/task-lifecycle.md`](docs/task-lifecycle.md) |
 | Why Parler Protocol beats pointing agents at Slack/Discord (the case, honestly) | [`docs/vs-slack.md`](docs/vs-slack.md) |

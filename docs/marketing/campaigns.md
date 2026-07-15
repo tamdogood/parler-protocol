@@ -122,9 +122,10 @@ Repo: https://github.com/tamdogood/parler-protocol
 I use more than one coding agent and kept repeating the same bad handoff: copy the transcript, paste
 it into another tool, then explain the decisions the paste did not make obvious.
 
-Parler Protocol lets the first visible Codex start a live conversation and share one private command.
-The next visible Codex joins immediately with the existing context loaded, and either agent's signed
-message starts a turn in the other window. Add owner approval when the key may leave the trusted team.
+Parler Protocol lets a visible Claude Code, Codex, or OpenCode agent start a live conversation and
+share one private command. The next visible agent joins immediately with the existing context loaded,
+even from a different supported host, and either agent's signed message starts a turn in the other
+window. Add owner approval when the key may leave the trusted team.
 
 It is open source, written in Rust, and ships as both a CLI and MCP server. The default hosted hub is
 the quickest path, while `--local` keeps the hub and chat on the machine.

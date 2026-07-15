@@ -130,7 +130,7 @@ enum Cmd {
     /// Handle a Claude Code / editor lifecycle hook. `stop` is the wake hook: it blocks briefly for
     /// peers' messages and continues the turn so agents auto-poll (wired by `parler connect`).
     Hook {
-        /// The hook type (stop, session-start, user-prompt-submit, post-tool-use, post-tool-use-failure, session-end).
+        /// The hook type (normal lifecycle values plus internal visible-conversation adapters).
         kind: String,
     },
     /// Consolidate the active conversation backlog into key semantic facts.
@@ -331,11 +331,14 @@ struct BringArgs {
 struct ConversationArgs {
     /// Portable conversation key to join. Omit it to create a new conversation.
     key: Option<String>,
+    /// Visible agent host to open for this conversation.
+    #[arg(long, value_enum, default_value_t = conversation::Host::Codex)]
+    host: conversation::Host,
     /// Human-readable topic for a new conversation.
     #[arg(long)]
     topic: Option<String>,
-    /// Resume an existing Codex thread (`last` or a thread id) instead of starting a new one.
-    #[arg(long, value_name = "LAST_OR_THREAD_ID")]
+    /// Resume an existing host conversation (`last` or a host session/thread id).
+    #[arg(long, value_name = "LAST_OR_ID")]
     resume: Option<String>,
     /// Require the owner to approve joiners. By default, possession of the private key admits them.
     #[arg(long)]
@@ -690,6 +693,7 @@ pub async fn run() -> Result<()> {
         Cmd::Session(c) => cmd_session(c).await,
         Cmd::Conversation(a) => conversation::run(conversation::Options {
             key: a.key,
+            host: a.host,
             topic: a.topic,
             resume: a.resume,
             approval: a.approval,
@@ -728,7 +732,7 @@ pub async fn run() -> Result<()> {
 
 fn command_uses_workspace_identity(cmd: &Cmd, agent_shell: bool) -> bool {
     // `conversation` scopes itself with the terminal instance as well as the workspace, then passes
-    // the unscoped base into its child Codex TUI. Doing that here would scope twice in the child.
+    // the unscoped base into its child host UI. Doing that here would scope twice in the child.
     matches!(cmd, Cmd::Mcp | Cmd::Supervise(_) | Cmd::Work(_) | Cmd::Hook { .. })
         || (agent_shell
             && !matches!(
@@ -2551,6 +2555,21 @@ async fn cmd_doctor() -> Result<()> {
 }
 
 async fn cmd_hook(kind: String) -> Result<()> {
+    match kind.as_str() {
+        "conversation-prompt" => return conversation::claude::prompt_hook().await,
+        "conversation-end" => return conversation::claude::end_hook().await,
+        "conversation-wake" => {
+            if let Some(reason) = conversation::claude::wake_hook().await? {
+                // Claude Code's documented `asyncRewake` contract consumes stderr with exit 2 as
+                // the next system reminder. Exit here so the binary wrapper cannot prepend an
+                // anyhow `error:` label that would become model input.
+                eprintln!("{reason}");
+                std::process::exit(2);
+            }
+            return Ok(());
+        }
+        _ => {}
+    }
     // The Stop/wake hook is the *inbound* path: block briefly for peers' messages and, if any land,
     // print Claude Code's continue-the-turn JSON so the agent keeps polling on its own — no human
     // running `parler recv`. Every other kind below is the *outbound* path (mirror lifecycle events
@@ -2685,6 +2704,14 @@ async fn cmd_hook(kind: String) -> Result<()> {
 /// a quiet/focus hold intentionally does not, and the connector suppresses duplicate injections
 /// while that held context is re-read.
 async fn wake_hook() -> Result<()> {
+    // A visible Claude conversation installs its own asyncRewake adapter. The ordinary user-scope
+    // Stop hook is still present, but must not race that adapter or acknowledge its durable turn.
+    if std::env::var("PARLER_ACTIVE_CONVERSATION_MANAGED")
+        .ok()
+        .is_some_and(|value| !value.is_empty() && value != "0" && !value.eq_ignore_ascii_case("false"))
+    {
+        return Ok(());
+    }
     // No active session → nothing to poll. Keep this before any hub round-trip so a plain Claude Code
     // turn pays zero latency for having Parler Protocol wired in.
     let Some(room) = load_active_session() else {
@@ -2951,6 +2978,7 @@ mod tests {
         assert!(command_uses_workspace_identity(&Cmd::Whoami, true));
         let conversation = Cmd::Conversation(ConversationArgs {
             key: None,
+            host: conversation::Host::Codex,
             topic: None,
             resume: None,
             approval: false,
@@ -2961,6 +2989,25 @@ mod tests {
         assert!(!command_uses_workspace_identity(&conversation, true));
         assert!(!command_uses_workspace_identity(&Cmd::Rooms, false));
         assert!(!command_uses_workspace_identity(&Cmd::Doctor, true));
+    }
+
+    #[test]
+    fn conversation_cli_selects_each_visible_host() {
+        let cli = Cli::try_parse_from(["parler", "conversation"]).unwrap();
+        let Cmd::Conversation(args) = cli.cmd else { panic!("conversation command") };
+        assert_eq!(args.host, conversation::Host::Codex);
+
+        for (value, expected) in [
+            ("codex", conversation::Host::Codex),
+            ("claude", conversation::Host::Claude),
+            ("claude-code", conversation::Host::Claude),
+            ("opencode", conversation::Host::Opencode),
+            ("open-code", conversation::Host::Opencode),
+        ] {
+            let cli = Cli::try_parse_from(["parler", "conversation", "--host", value]).unwrap();
+            let Cmd::Conversation(args) = cli.cmd else { panic!("conversation command") };
+            assert_eq!(args.host, expected);
+        }
     }
 
     #[test]

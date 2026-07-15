@@ -1,3 +1,87 @@
+# Scalable visible-host adapter architecture
+
+## Plan
+- [x] Replace Codex full-thread polling/resume hydration with bounded `thread/turns/list` pages and
+      synchronize only while a turn is active or a status transition requires it.
+- [x] Replace OpenCode full-history timer polling with its SSE event stream, bounded message tails,
+      and bounded completion-id retention.
+- [x] Centralize the provider-independent identity environment, backlog validation/materialization,
+      connected lifecycle, and durable result contract so a new adapter cannot silently omit parity.
+- [x] Clean up Claude hook state at session end and keep its existing bounded transcript/hook model.
+- [x] Add scaling and contract regression tests, document the provider extension checklist, run
+      targeted checks plus `make ci`, and self-review the union against `origin/main`.
+
+## Risks
+- Codex canonical history is still the fallback when detailed notifications are connection-routed.
+  Use the host's paginated recent-turn API with full item detail and retain a window larger than a
+  page so an anchor cannot be republished after eviction.
+- OpenCode SSE is a latency/source-of-change signal, not durable state. Re-read a bounded canonical
+  message tail on terminal session status and leave Parler's cursor uncommitted on stream/API errors.
+- Backlog cursor advancement differs by host: Codex commits after a bootstrap turn, OpenCode after
+  persisted no-reply context, and Claude after its rewake turn. Centralize preparation but keep each
+  adapter's acknowledgement point explicit.
+- No wire or hub change is needed. Keep one additive exact-cursor commit primitive in the connector
+  and preserve old deployed hub compatibility.
+
+## Review
+- The adapter boundary now passes one shared context into native provider state machines. Identity,
+  signed catch-up, files, lifecycle, result receipts, and cursor semantics are centralized; native
+  attach/injection/completion and permission channels remain provider-owned.
+- Room catch-up pages through 1,000-message batches, retains a 24,000-character trusted tail, stops
+  explicitly at 10,000 messages, and commits the exact received cursor only after host acceptance.
+- Codex reads bounded 64-turn canonical pages only around active/status transitions and retains 256
+  terminal ids. OpenCode uses its SSE stream, a 256-message terminal tail, 1,024 ids, and bounded API
+  buffers. Claude bounds native rewake context at 9,000 characters and removes ended hook state.
+- OpenCode terminal reconciliation collapses multiple assistant records for one native parent into
+  one final result. Claude catch-up selection preserves the newest context inside its native limit.
+- `docs/visible-host-adapters.md` defines parity, scaling invariants, failure semantics, and the
+  extension checklist for another provider. No wire frame or deployed hub behavior changed.
+- `CARGO_INCREMENTAL=0 make ci` passes build, all-target Clippy with warnings denied, 171 CLI tests,
+  19 connector tests, all workspace/integration suites, docs, smoke, advisories, sources, licenses,
+  and bans. Self-review found no unresolved findings.
+
+---
+
+# Visible conversation parity for Claude Code and OpenCode
+
+## Plan
+- [x] Add an explicit conversation host selector while preserving Codex as the backward-compatible
+      default, and keep identity, hub routing, backlog, files, presence, and loop prevention shared.
+- [x] Add a normal visible Claude Code adapter using invocation-scoped MCP plus documented
+      `asyncRewake` hooks, with durable per-session turn state and no automatic permission grants.
+- [x] Add a normal visible OpenCode adapter using its documented local server, attached TUI,
+      asynchronous prompt API, and canonical session/message state.
+- [x] Add focused regression coverage for host configuration, hook state/locking, transcript and
+      message parsing, durable result acknowledgement, and CLI selection.
+- [x] Update README/AGENTS/docs for equal host behavior, run targeted checks plus `make ci`, and
+      self-review against `docs/code-review-guidelines.md`.
+
+## Risks
+- Claude Code can fire overlapping async hooks. Serialize one waiter per visible session, use a
+  separate atomic state update lock, and cancel an idle waiter when a local prompt starts.
+- An injected peer turn must retain normal host permission policy. Use Claude Code's system-reminder
+  rewake and OpenCode's server/TUI permission channel; never synthesize approval responses.
+- OpenCode's HTTP API is local but still user-input-facing through `--resume`; validate session ids
+  before constructing paths and accept only successful, bounded JSON responses.
+- The deployed hub and old clients require additive compatibility. Keep the wire protocol and room
+  storage unchanged.
+
+## Review
+- `parler conversation --host codex|claude|opencode` now selects a normal visible host while Codex
+  remains the default. All adapters reuse the same signed backlog/file handling, terminal task
+  receipt, explicit continuation marker, identity scope, presence, and durable cursor semantics.
+- Claude Code runs with invocation-scoped MCP plus `asyncRewake` lifecycle hooks. Hook input,
+  transcript reads, prompt state, file locks, and rewake text are bounded; overlapping lifecycle
+  events are generation-cancelled; no permission hook or automatic approval path was added.
+- OpenCode runs a loopback server and attached TUI, preserves configured Basic Auth, validates
+  resume ids, bounds and times out every API response, rechecks canonical session status before
+  injection, and leaves permission decisions with the visible TUI.
+- Verified the installed Claude Code and OpenCode interfaces against their native local protocols.
+  `make ci` passes build, Clippy `-D warnings`, the CLI tests plus the workspace suites, docs, smoke,
+  advisories, sources, licenses, and bans. Self-review found no unresolved findings.
+
+---
+
 # Live interactive conversations and truthful presence
 
 ## Plan

@@ -20,6 +20,29 @@ The shared hub is a relay, not end-to-end encryption: other agents cannot read r
 joined, but the hub operator can read plaintext that passes through it. Choose local mode for
 sensitive work that must remain on your Mac.
 
+## A visible conversation host does not start
+
+`parler conversation` defaults to Codex. Select another supported visible host explicitly:
+
+```bash
+parler conversation --host claude --topic review
+parler conversation KEY@HUB --host opencode
+```
+
+The command probes the selected binary first, then verifies its native injection interface. Update
+the host when the error names a missing interface: Codex needs app-server/remote TUI support, Claude
+Code needs command-hook exec form plus `asyncRewake`, and OpenCode needs `serve`, `attach`, and the
+local session API. Claude Code installations with managed policy must permit session hooks. OpenCode
+keeps any existing `OPENCODE_SERVER_PASSWORD`/`OPENCODE_SERVER_USERNAME` configuration; do not unset
+it for Parler.
+
+`--resume last` refers to the selected host's most recent conversation in the current workspace. A
+specific value must be that host's session/thread id. Omit `--resume` to separate a host-interface
+problem from a stale or cross-workspace id.
+
+These adapters never fall back to a headless worker. The selected host's normal permission UI remains
+authoritative, so a peer turn may legitimately pause for your approval.
+
 ## Symptom: an MCP host takes about 30 seconds to start
 
 Codex can show a message like this:

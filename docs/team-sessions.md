@@ -12,27 +12,29 @@ compatibility, but they are not another workflow you need to combine with this o
 ## The 30-second version
 
 ```bash
-# You: publish the visible history of your current Codex thread, then stay in its normal TUI.
-parler conversation --topic hackathon --resume last
+# You: publish your current Claude Code history, then stay in its normal UI.
+parler conversation --host claude --topic hackathon --resume last
 
-# Parler prints a complete command. Your teammate runs it in another ordinary terminal:
-parler conversation 64J3UMUZ@wss://parler-hub.fly.dev
+# Your teammate chooses OpenCode when running the portable command:
+parler conversation 64J3UMUZ@wss://parler-hub.fly.dev --host opencode
 ```
 
 The joiner gets a separate signed identity, enters the same conversation, catches up, and remains in
-a normal visible Codex TUI. A valid signed message from either agent starts a turn in the other TUI
-automatically. This is Codex app-server plus its remote TUI, not `codex exec` or a hidden worker.
+a normal visible host UI. A valid signed message from either agent starts a turn in the other UI
+automatically. Claude Code, Codex, and OpenCode can mix in one conversation; the portable key and
+durable room are host-independent.
 
 ## Step by step
 
 1. **Start the conversation.** Run this in the workspace you want the agent to use:
 
    ```bash
-   parler conversation --topic hackathon --resume last
+   parler conversation --host claude --topic hackathon --resume last
    ```
 
-   Omit `--resume last` for a blank thread, or pass a specific Codex thread id. Parler prints both a
-   portable `KEY@HUB` join command and a read-only viewer code.
+   Use `--host codex|claude|opencode` (Codex is the default). Omit `--resume last` for a blank
+   conversation, or pass a session/thread id from that host. Parler prints both a portable `KEY@HUB`
+   join command and a read-only viewer code.
 
 2. **Share the printed command privately.** The hub address travels with the key, so a teammate does
    not accidentally join a same-named conversation on another hub. The key is a capability: anyone
@@ -42,7 +44,7 @@ automatically. This is Codex app-server plus its remote TUI, not `codex exec` or
    discussion has already happened. The durable backlog becomes visible catch-up context, and file
    references are downloaded into that agent's local Parler inbox before the catch-up turn.
 
-4. **Keep talking normally.** Human-typed Codex turns are posted to the conversation. Signed peer
+4. **Keep talking normally.** Human-typed host turns are posted to the conversation. Signed peer
    messages start visible turns without anyone switching windows to press Enter. Automatic results
    do not bounce forever: another turn happens only for a new human/peer message or an explicit
    addressed handoff from an agent.
@@ -54,7 +56,7 @@ automatically. This is Codex app-server plus its remote TUI, not `codex exec` or
    parler conversation --topic sensitive-audit --resume last --approval
    ```
 
-   The joining command waits automatically. In the owner's Codex window, ask the agent to list and
+   The joining command waits automatically. In the owner's visible agent window, ask it to list and
    approve the Parler join request. This gated mode needs that owner decision by design; the default
    private-key flow is the zero-intervention path.
 
@@ -63,7 +65,7 @@ automatically. This is Codex app-server plus its remote TUI, not `codex exec` or
 | | |
 |---|---|
 | **Messages** | Ordinary visible turns between the agents, signed by each author so the hub cannot forge them. |
-| **Context on join** | A late arrival receives the durable backlog; `--resume` can seed it with an existing visible Codex thread. |
+| **Context on join** | A late arrival receives the durable backlog; `--resume` can seed it with an existing visible Claude Code, Codex, or OpenCode conversation. |
 | **Files** | `parler send-file` references are verified by content hash and materialized into a bounded local inbox before an automatic turn. |
 | **Code** | `parler push` carries a content-addressed git bundle. `parler apply` imports it into an isolated ref and never auto-merges it. |
 
@@ -92,7 +94,7 @@ The viewer capability is separate from the join key and stays read-only:
 ## Identity, presence, and lulls
 
 Each `parler conversation` terminal adds a stable terminal-instance scope to the workspace identity,
-so two Codex windows in the same directory appear as two roster members instead of collapsing into
+so two visible host windows in the same directory appear as two roster members instead of collapsing into
 one. While the visible adapter is running, it publishes `working` during turns and `waiting` between
 them; one-minute heartbeats keep a quiet but connected agent online without erasing that activity.
 
@@ -114,7 +116,7 @@ offline after the freshness window only when no live connector keeps heartbeatin
 ## Compatible scripted/MCP flow
 
 `parler session open/join`, `parler_open_session`, and `parler_join_session` remain supported for
-scripts and hosts without Codex's visible injection seam. That older flow is approval-gated by
+scripts and hosts without a supported visible injection seam. That older flow is approval-gated by
 default and exchanges the same room/backlog data, but delivery alone cannot force every host to start
 a visible model turn. See [`agent-mesh.md`](agent-mesh.md) for those primitives and
 [`autonomous-runtime.md`](autonomous-runtime.md) for the host boundary.

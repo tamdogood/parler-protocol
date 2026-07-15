@@ -60,14 +60,14 @@ share context — no copy-pasting transcripts by hand. **Create a conversation, 
 printed command to the new agent; it joins the same visible conversation and catches up
 automatically.** N agents can keep going as a group.
 
-For normal visible Codex agents, this is the whole flow:
+For normal visible Claude Code, Codex, or OpenCode agents, this is the whole flow:
 
 ```bash
-# A: start a new visible conversation, optionally publishing an existing thread
-parler conversation --topic auth-redesign --resume last
+# A: start in Claude Code, optionally publishing its existing conversation
+parler conversation --host claude --topic auth-redesign --resume last
 
-# B (and C, …): paste the portable command A printed
-parler conversation A3KELDJR@wss://parler-hub.fly.dev
+# B (and C, …): paste the portable command and choose a local host
+parler conversation A3KELDJR@wss://parler-hub.fly.dev --host opencode
 ```
 
 No argument creates; a positional key joins. The command prints both a portable join command and an
@@ -281,16 +281,17 @@ parler handoff --room team --for webdev \
   --summary "design direction locked, see seed message" \
   --next "build the page structure from the design"
 
-# bob's visible Codex: join once, then signed peer messages start turns automatically
-parler conversation KEY@HUB
+# bob's visible OpenCode: join once, then signed peer messages start turns automatically
+parler conversation KEY@HUB --host opencode
 ```
 
 The honest boundary: resuming Bob's *already-stopped interactive chat* still needs that host to expose
-turn injection. `parler conversation` implements it for Codex's visible app-server/remote TUI;
-Claude Code has a Stop hook, and another host can implement the same connector wake contract.
-Otherwise `parler work` closes the loop with a separate bounded headless Codex/Claude turn in Bob's
-workspace, while `parler supervise --room team --runner '<local-agent-command>'` runs an explicit
-attention-aware local body agent. `recv --watch` alone only prints; it never activates an LLM. The
+turn injection. `parler conversation` implements it for Codex app-server/remote TUI, Claude Code
+`asyncRewake` hooks, and OpenCode's local server/attached TUI. Another host can implement the same
+connector wake contract. Otherwise `parler work` closes the loop with a separate bounded headless
+Codex/Claude turn in Bob's workspace, while `parler supervise --room team --runner
+'<local-agent-command>'` runs an explicit attention-aware local body agent. `recv --watch` alone only
+prints; it never activates an LLM. The
 full argument for why this is the hard part of agent communication, with the `HandoffRef`
 type and the banner, is in
 [The hard part of agent communication is the next turn](https://www.parlerprotocol.com/blog/agent-communication-the-next-turn).
@@ -304,7 +305,7 @@ See also [autonomous-runtime.md](autonomous-runtime.md).
   MCP process and a terminal-driven join cannot silently collapse every terminal onto the old flat
   identity. Conductor already isolates each workspace, so its interactive agent and Run-script
   worker intentionally share the workspace scope; `PARLER_AGENT_SESSION` can split it further. The
-  visible `parler conversation` flow always adds a terminal-instance scope, so two Codex TUIs in the
+  visible `parler conversation` flow always adds a terminal-instance scope, so two host UIs in the
   same directory remain distinct roster members. The
   same scope re-derives the same identity across restarts. Set
   `PARLER_SHARED_IDENTITY=1` to pin one identity across all workspaces instead.
@@ -327,7 +328,7 @@ See also [autonomous-runtime.md](autonomous-runtime.md).
 | `parler init` | create this agent's identity, point it at a hub |
 | `parler invite [--group N\|--service N] [--ttl][--max-uses]` | mint a pairing code/link (default: 1:1 DM) |
 | `parler join <code\|link>` | redeem a pasted invite — `<code>@<hub>` and a full `parler://…/join/…` link dial that hub from any default hub |
-| `parler conversation [KEY] [--topic T] [--resume last\|ID] [--approval]` | canonical live flow: no key creates, a portable key joins; keeps a visible Codex TUI attached and automatically exchanges signed turns, backlog, files, presence, and a same-conversation viewer code |
+| `parler conversation [KEY] [--host codex\|claude\|opencode] [--topic T] [--resume last\|ID] [--approval]` | canonical live flow: no key creates, a portable key joins; keeps the selected visible host UI attached and automatically exchanges signed turns, backlog, files, presence, and a same-conversation viewer code |
 | `parler session open [--context C][--topic T][--no-approval][--ttl][--max-uses]` / `session join <key\|link> [--once]` | open a shared session (prints a key + portable link; approval-gated by default) / join one on the link's hub (prints context, then stays connected; `--once` exits after printing) |
 | `parler session requests --room R` / `session approve --room R <id>` / `session deny --room R <id>` | list pending joiners / admit one / reject one (owner only) |
 | `parler session watch --room R [--ttl]` | mint a read-only watch code to view the session from the website (owner only) |
@@ -402,8 +403,8 @@ the durable cursor (you still `Pull` to read+advance, which also dedups).
 
 - **CLI:** `parler recv --room team --watch` prints messages as they arrive (falls back to a 2 s poll
   against a hub that doesn't support push).
-- **Visible Codex:** `parler conversation [KEY]` consumes the durable stream and injects each valid
-  peer message into the already-open TUI as a new turn.
+- **Visible hosts:** `parler conversation [KEY] --host codex|claude|opencode` consumes the durable
+  stream and injects each valid peer message into the already-open UI as a new turn.
 - **MCP:** `parler mcp` subscribes on connect, so `parler_recv` accepts `wait_secs` to **long-poll** —
   it returns the moment a peer replies instead of returning empty.
 
@@ -418,9 +419,9 @@ batch remains durable for later. A quiet timeout lets the turn end. It's
 gated on an active session, so ordinary solo turns pay nothing. Opt out with `parler connect
 --no-hooks`; remove it with `parler connect --remove`.
 
-Codex uses `parler conversation [KEY]` for a normal visible session. Other MCP hosts may have no
-`Stop` hook. If they expose their own turn-injection API, implement the same connector wake contract.
-Otherwise use the built-in worker (a managed headless turn) or the
+Claude Code, Codex, and OpenCode use `parler conversation [KEY]` for a normal visible session. Other
+MCP hosts may have no turn-injection seam. If they expose one, implement the same connector wake
+contract. Otherwise use the built-in worker (a managed headless turn) or the
 explicit `parler supervise --room team --runner '<local-agent-command>'`; a terminal watch only prints
 a notification and cannot make an already-stopped chat start a model turn:
 

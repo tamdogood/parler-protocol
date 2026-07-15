@@ -10,7 +10,8 @@
 
 **Move a live coding-agent conversation from one tool to another in about 10 seconds. No copy-paste.
 No re-briefing.** Messaging works across Claude Code, Codex, Cursor, Windsurf, Gemini, OpenCode, VS
-Code, and Cline; Codex can also run the continuous conversation in its normal visible TUI.
+Code, and Cline; Claude Code, Codex, and OpenCode can also keep the continuous conversation in their
+normal visible interfaces.
 
 When another agent needs to take over, share one short key instead of rebuilding the conversation by
 hand. The next agent joins the same live conversation and lands with the context and shared files
@@ -42,7 +43,7 @@ independent agents can find each other, prove who they are, and continue the sam
 | If you are... | Parler helps you... |
 |---------------|---------------------|
 | A solo builder using several coding tools | Move a live conversation into another workspace without writing the brief again |
-| A team or hackathon group | Share one private conversation key and keep everyone's visible Codex on the same thread |
+| A team or hackathon group | Share one private conversation key and keep everyone's visible agents on the same thread |
 | Building agent infrastructure | Add a message bus, signed identity, discovery, shared memory, service queues, and code or file handoff without standing up a broker stack |
 
 The flagship flow is a shared live conversation. The rest of the protocol turns that handoff into a durable
@@ -106,21 +107,26 @@ This is the canonical interactive flow. The first terminal creates the conversat
 terminal runs the exact command it prints:
 
 ```bash
-# first person/agent: opens an ordinary visible Codex TUI and prints KEY@HUB + a viewer code
-parler conversation --topic auth-redesign
+# first person/agent: resumes Claude Code and prints KEY@HUB + a viewer code
+parler conversation --host claude --topic auth-redesign --resume last
 
-# another person/agent, even mid-stream: joins the same visible conversation and catches up
-parler conversation A3KELDJR@wss://parler-hub.fly.dev
+# another person/agent joins from OpenCode, catches up, and stays live
+parler conversation A3KELDJR@wss://parler-hub.fly.dev --host opencode
 
-# publish the visible user/assistant history of an existing Codex thread first
+# Codex remains the default host; --resume uses the selected host's session/thread id
 parler conversation --topic auth-redesign --resume last
 ```
 
-No `codex exec`, no hidden worker, and no Enter press to wake the receiver. A valid signed peer
-message becomes a turn in the already-open TUI; its final response is posted back automatically.
+No headless runner, hidden worker, or Enter press wakes the receiver. A valid signed peer message
+becomes a turn in the already-open host UI; its final response is posted back automatically.
 Late joiners receive the durable transcript, and referenced files are downloaded into their local
 Parler inbox before the catch-up turn. Possession of the private key admits a participant by default;
 add `--approval` when the owner should approve each joiner.
+
+Each terminal chooses its own host with `--host codex|claude|opencode`; the portable key is
+host-independent. Codex uses app-server plus its remote TUI, Claude Code uses invocation-scoped
+`asyncRewake` hooks, and OpenCode uses its local server plus an attached TUI. All three preserve the
+host's normal permission policy and share the same signed backlog, file, presence, and result flow.
 
 **Terminology:** a **conversation** is the one user-facing thing you create, join, and watch. The
 protocol stores it in a room internally; older `parler session …` and `--room` commands remain as
@@ -182,13 +188,14 @@ of the CLI? `docker run … ghcr.io/tamdogood/parler-hub` — full walkthrough i
 
 The feature Parler Protocol was built for. You're mid‑chat with an agent and want another to help — **your own
 in a second repo, or a teammate's on the same project** — **without copy‑pasting the transcript**.
-Run `parler conversation --resume last`, share the printed command, and the next visible Codex joins
-the *same* conversation already caught up. The private key admits its holder immediately so nobody
+Run `parler conversation --host <host> --resume last`, share the printed command, and the next
+visible Claude Code, Codex, or OpenCode agent joins the *same* conversation already caught up. The
+private key admits its holder immediately so nobody
 has to approve or press Enter between turns; add `--approval` if the conversation needs an admission
 gate.
 
 The MCP tools below are the compatible flow for hosts that are already running and do not expose
-Codex's visible app-server seam. They remain approval-gated by default.
+one of the supported visible injection seams. They remain approval-gated by default.
 
 **1 · Open a session.** Ask your current agent (it already has the parler MCP), in plain language:
 
@@ -282,8 +289,9 @@ For continuous autonomous workers, attention policy, and the honest host-wake bo
 
 #### 🔑 Share a live conversation — pull another visible agent in, no copy‑paste
 ```bash
-parler conversation --topic auth --resume last     # → visible Codex + KEY@HUB + viewer code
-parler conversation A3KELDJR@wss://parler-hub.fly.dev  # visible joiner catches up and stays live
+parler conversation --host claude --topic auth --resume last  # Claude Code + key + viewer code
+parler conversation A3KELDJR@wss://parler-hub.fly.dev --host opencode
+# omit --host for the backward-compatible Codex default
 ```
 
 #### 🔎 Second opinion — get another agent to review, in one line
@@ -342,9 +350,9 @@ buffered on the wire beyond the caps. Details in **[docs/file-transfer.md](docs/
 
 #### 🛎️ Run an autonomous role worker — no human needs to prompt the receiving agent
 ```bash
-# normal visible Codex agents talking in one continuous conversation
-parler conversation --topic review
-parler conversation A3KELDJR@wss://parler-hub.fly.dev
+# normal visible hosts talking in one continuous conversation
+parler conversation --host claude --topic review
+parler conversation A3KELDJR@wss://parler-hub.fly.dev --host opencode
 
 # managed headless worker: runs signed requests from explicitly trusted dispatchers
 parler work --service review --runner codex --allow-from <trustedAgentId>
@@ -355,9 +363,9 @@ parler supervise --role review --runner 'codex exec -'
 parler send --role review "review PR #42"
 ```
 
-`parler conversation` is the non-headless path: app-server keeps a normal Codex TUI attached, signed
-peer messages start visible turns, and replies return without a human pressing Enter. `parler work`
-is the separate managed-worker path: it long-polls with the durable
+`parler conversation` is the non-headless path: the selected Claude Code, Codex, or OpenCode UI stays
+attached, signed peer messages start visible turns, and replies return without a human pressing
+Enter. `parler work` is the separate managed-worker path: it long-polls with the durable
 cursor, turns each signed request into a bounded headless Codex or Claude turn in the current
 workspace, and posts `working` plus a signed `done`/`failed` result automatically. In a trusted
 two-agent room, add `--all-messages`; otherwise it executes only signed, addressed `handoff`s. A
@@ -498,17 +506,19 @@ What each tool is *for* — grouped by capability, with the CLI equivalents and 
 <details>
 <summary><b>Agents act on conversation messages without another human prompt</b></summary>
 
-For Codex, use the normal visible session directly:
+For Claude Code, Codex, or OpenCode, use the normal visible session directly:
 
 ```bash
-parler conversation --topic team       # create; prints the portable join command
-parler conversation KEY@HUB            # join from another visible Codex terminal
+parler conversation --host claude --topic team  # create; prints the portable join command
+parler conversation KEY@HUB --host opencode     # join from another visible host
+parler conversation KEY@HUB                     # Codex is the default
 ```
 
-This launches `codex app-server` plus Codex's remote TUI, not `codex exec`. Any valid signed peer
-message can start a turn in that visible thread. Human-typed turns are shared too. Automated turns
-cannot approve their own sandbox escalation or user-input request, and result messages do not cause
-an infinite reply loop; an agent can deliberately continue a chain with one addressed handoff.
+This launches the host's visible interface, not a headless agent: Codex app-server plus remote TUI,
+Claude Code with invocation-scoped `asyncRewake` hooks, or OpenCode serve plus attach. Any valid
+signed peer message can start a turn in that visible conversation. Human-typed turns are shared too.
+Native permission UI remains authoritative, and result messages do not cause an infinite reply loop;
+an agent can deliberately continue a chain with one addressed handoff.
 
 `parler connect` **auto‑installs a Claude Code `Stop` hook** into `~/.claude/settings.json`, so agents
 in a session poll for each other's messages and continue on their own — you never run `parler recv`

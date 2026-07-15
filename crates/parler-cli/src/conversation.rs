@@ -1,15 +1,18 @@
 //! One live, interactive conversation surface.
 //!
 //! `parler conversation [KEY]` is the user-facing composition of the existing durable room,
-//! portable invite, backlog, file transport, and host-wake pieces. For Codex it uses app-server's
-//! remote-TUI protocol: the user keeps a normal visible Codex session while signed peer messages
-//! become real turns in that same thread. No `codex exec` process is involved.
+//! portable invite, backlog, file transport, and host-wake pieces. Each supported host keeps its
+//! normal visible session while signed peer messages become real turns in that same conversation.
+
+pub(crate) mod claude;
+mod opencode;
 
 use anyhow::{anyhow, bail, Context, Result};
+use clap::ValueEnum;
 use futures::{SinkExt, StreamExt};
 use parler_connector::{verify_message, JoinOutcome, MeshAgent, SigStatus};
 use parler_protocol::{FileRef, HandoffRef, MessageSig, Part, RoomKind, StoredMessage, Target, TaskRef, TaskStatus};
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::IsTerminal;
 use std::net::TcpListener;
@@ -28,14 +31,60 @@ const JOIN_RETRY: Duration = Duration::from_secs(2);
 const RECEIVE_WAIT_SECS: u64 = 25;
 const PRESENCE_HEARTBEAT: Duration = Duration::from_secs(60);
 const LOCAL_TURN_POLL: Duration = Duration::from_secs(2);
+const CODEX_TURN_PAGE_SIZE: u32 = 64;
+const CODEX_SEEN_TURNS: usize = 256;
+const BACKLOG_PAGE_SIZE: u32 = 1_000;
+const MAX_BACKLOG_MESSAGES: usize = 10_000;
 const MAX_CONTEXT_CHARS: usize = 24_000;
+const CLAUDE_WAKE_PROMPT_CHARS: usize = 9_000;
 const MAX_REPLY_CHARS: usize = 16_000;
 const MAX_AUTO_FILES: usize = 32;
 const MAX_AUTO_FILE_BYTES: u64 = 100 * 1024 * 1024;
 const HANDOFF_MARKER: &str = "PARLER_HANDOFF ";
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+pub enum Host {
+    Codex,
+    #[value(name = "claude", alias = "claude-code")]
+    Claude,
+    #[value(alias = "open-code")]
+    Opencode,
+}
+
+impl Host {
+    fn binary(self) -> &'static str {
+        match self {
+            Host::Codex => "codex",
+            Host::Claude => "claude",
+            Host::Opencode => "opencode",
+        }
+    }
+
+    fn display(self) -> &'static str {
+        match self {
+            Host::Codex => "Codex",
+            Host::Claude => "Claude Code",
+            Host::Opencode => "OpenCode",
+        }
+    }
+
+    fn catchup_prompt_chars(self) -> usize {
+        match self {
+            Host::Claude => CLAUDE_WAKE_PROMPT_CHARS,
+            Host::Codex | Host::Opencode => MAX_CONTEXT_CHARS,
+        }
+    }
+}
+
+impl std::fmt::Display for Host {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.binary())
+    }
+}
+
 pub struct Options {
     pub key: Option<String>,
+    pub host: Host,
     pub topic: Option<String>,
     pub resume: Option<String>,
     pub approval: bool,
@@ -43,18 +92,89 @@ pub struct Options {
     pub max_uses: Option<u32>,
 }
 
+struct AdapterContext {
+    options: Options,
+    identity: TuiIdentity,
+    cwd: PathBuf,
+    hub_override: Option<String>,
+    sender: MeshAgent,
+}
+
+#[derive(Debug)]
+struct RecentIds {
+    capacity: usize,
+    order: VecDeque<String>,
+    set: HashSet<String>,
+}
+
+impl RecentIds {
+    fn new(capacity: usize) -> RecentIds {
+        RecentIds { capacity, order: VecDeque::new(), set: HashSet::new() }
+    }
+
+    fn contains(&self, id: &str) -> bool {
+        self.set.contains(id)
+    }
+
+    fn insert(&mut self, id: String) -> bool {
+        if self.capacity == 0 || self.set.contains(&id) {
+            return false;
+        }
+        while self.order.len() >= self.capacity {
+            if let Some(oldest) = self.order.pop_front() {
+                self.set.remove(&oldest);
+            }
+        }
+        self.set.insert(id.clone());
+        self.order.push_back(id);
+        true
+    }
+
+    fn extend<I>(&mut self, ids: I)
+    where
+        I: IntoIterator<Item = String>,
+    {
+        for id in ids {
+            self.insert(id);
+        }
+    }
+}
+
 type AppSocket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
-/// Start or join a conversation, then keep a normal interactive Codex TUI attached while Parler
-/// injects signed peer messages into that same visible thread.
+/// Start or join a conversation, then keep the selected host's normal interactive UI attached while
+/// Parler injects signed peer messages into that same visible conversation.
 pub async fn run(options: Options) -> Result<()> {
     let tui_identity = prepare_identity_scope()?;
-    ensure_codex_available().await?;
+    ensure_host_available(options.host).await?;
     let cwd = std::env::current_dir()?.canonicalize().unwrap_or(std::env::current_dir()?);
     // A portable key carries its hub. The conversation command owns the whole flow, so unlike a
     // long-lived generic MCP server it can dial that hub without rewriting the user's configuration.
     let hub_override = options.key.as_deref().and_then(|key| crate::split_portable_key(key).1);
-    let mut sender = crate::connect_with_hub(hub_override.as_deref()).await?;
+    let sender = crate::connect_with_hub(hub_override.as_deref()).await?;
+    let host = options.host;
+    let context = AdapterContext {
+        options,
+        identity: tui_identity,
+        cwd,
+        hub_override,
+        sender,
+    };
+    match host {
+        Host::Codex => run_codex(context).await,
+        Host::Claude => claude::run(context).await,
+        Host::Opencode => opencode::run(context).await,
+    }
+}
+
+async fn run_codex(context: AdapterContext) -> Result<()> {
+    let AdapterContext {
+        options,
+        identity: tui_identity,
+        cwd,
+        hub_override,
+        mut sender,
+    } = context;
     let mut host = CodexHost::start(
         &cwd,
         options.resume.as_deref(),
@@ -62,10 +182,8 @@ pub async fn run(options: Options) -> Result<()> {
         &sender,
     )
     .await?;
-    let entry = enter_conversation(&mut sender, &options, &host.transcript).await?;
-    let room = entry.room;
-    let initial = entry.initial;
-    let created = entry.created;
+    let entry = enter_conversation(&mut sender, &options, &host.transcript, Host::Codex.display()).await?;
+    let ConversationEntry { room, initial, created, share } = entry;
     crate::save_active_session(&room)?;
 
     let needs_visible_thread = host.thread_id.is_none();
@@ -84,37 +202,18 @@ pub async fn run(options: Options) -> Result<()> {
     }
     let thread_id = host.thread_id.clone().ok_or_else(|| anyhow!("Codex thread was not established"))?;
 
-    // Joining late means the first visible turn is the catch-up. It is injected into the same TUI,
-    // then the durable cursor is committed only after Codex has actually received the context.
-    if !initial.is_empty() && !created {
-        let trusted = initial
-            .iter()
-            .filter(|message| valid_in_conversation(message, &room))
-            .cloned()
-            .collect::<Vec<_>>();
-        let rejected = initial.len() - trusted.len();
-        if rejected > 0 {
-            eprintln!("⚠ ignored {rejected} unsigned, invalid, or wrong-conversation backlog message(s)");
-        }
-        if !trusted.is_empty() {
-            let files = materialize_backlog_files(&mut sender, &trusted).await;
-            let prompt = catchup_prompt(&room, &trusted, &files);
-            let _ = host.run_bootstrap_turn(&thread_id, &prompt).await?;
-        }
-        sender.commit_reads(&room).await?;
-    } else if !initial.is_empty() {
-        // The owner already has this resumed transcript in the visible thread; it was posted only
-        // so later participants can catch up. Commit the local echo without spending a duplicate
-        // model turn re-reading it.
-        sender.commit_reads(&room).await?;
+    // The provider-independent preparation validates signatures and materializes files. Codex owns
+    // the acknowledgement point: advance only after the visible thread accepted the catch-up turn.
+    let backlog = prepare_backlog(&mut sender, &room, &initial, created, Host::Codex).await?;
+    if let Some(prompt) = backlog.prompt {
+        let _ = host.run_bootstrap_turn(&thread_id, &prompt).await?;
+        let cursor = backlog
+            .commit_cursor
+            .ok_or_else(|| anyhow!("prepared Codex backlog is missing its commit cursor"))?;
+        sender.commit_reads_through(&room, cursor).await?;
     }
 
-    let arrival = if created {
-        format!("{} started this live conversation", sender.name)
-    } else {
-        format!("{} joined this live conversation", sender.name)
-    };
-    sender.send_text(Target::Room { room: room.clone() }, &arrival).await?;
+    announce_arrival(&mut sender, &room, created).await?;
 
     // Use a second connection for the blocking receive path. One task owns it end-to-end, so a
     // long-poll is never cancelled halfway through a WebSocket request when a TUI event arrives.
@@ -122,20 +221,9 @@ pub async fn run(options: Options) -> Result<()> {
     let (incoming_tx, incoming_rx) = mpsc::channel(1);
     let receive_task = tokio::spawn(receive_loop(receiver, room.clone(), incoming_tx));
 
-    sender
-        .presence("waiting", Some(format!("live conversation '{room}'")))
-        .await?;
-    eprintln!("🟢 live conversation connected — peer messages now start turns in this Codex window");
-    eprintln!("   Exit Codex normally to leave. Command/tool approvals remain under your Codex policy.");
-    if let Some(share) = entry.share {
-        eprintln!();
-        eprintln!("   Share:  parler conversation {}@{}", share.code, sender.hub_url);
-        if let Some(watch) = share.watch {
-            eprintln!("   Viewer: {watch}  (this exact conversation)");
-        }
-    }
+    print_connected(&sender, Host::Codex, share);
 
-    let outcome = coordinate(&mut host, &mut tui, &mut sender, &room, incoming_rx).await;
+    let outcome = coordinate_codex(&mut host, &mut tui, &mut sender, &room, incoming_rx).await;
     receive_task.abort();
     outcome
 }
@@ -150,7 +238,7 @@ struct TuiIdentity {
 /// server and any `parler` commands it runs resolve to exactly this identity (without nested scopes).
 fn prepare_identity_scope() -> Result<TuiIdentity> {
     if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
-        bail!("`parler conversation` needs an interactive terminal because it opens a visible Codex session");
+        bail!("`parler conversation` needs an interactive terminal because it opens a visible agent session");
     }
     let base_home = parler_connector::home_dir();
     let terminal_session = std::env::var("PARLER_AGENT_SESSION")
@@ -172,8 +260,8 @@ fn prepare_identity_scope() -> Result<TuiIdentity> {
     Ok(TuiIdentity { base_home, terminal_session })
 }
 
-async fn ensure_codex_available() -> Result<()> {
-    let status = Command::new("codex")
+async fn ensure_host_available(host: Host) -> Result<()> {
+    let status = Command::new(host.binary())
         .arg("--version")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -182,11 +270,40 @@ async fn ensure_codex_available() -> Result<()> {
         .await;
     match status {
         Ok(status) if status.success() => Ok(()),
-        Ok(status) => bail!("Codex is installed but `codex --version` exited with {status}"),
+        Ok(status) => bail!("{} is installed but `{} --version` exited with {status}", host.display(), host.binary()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            bail!("interactive conversations currently require Codex on PATH; install/login to Codex, then retry")
+            bail!("{} is not on PATH; install/login to {}, then retry", host.display(), host.display())
         }
         Err(error) => Err(error.into()),
+    }
+}
+
+/// The identity and policy boundary every visible provider process and invocation-local MCP server
+/// must receive. Provider adapters encode this map into their native configuration format.
+fn managed_host_environment(identity: &TuiIdentity, agent: &MeshAgent) -> Map<String, Value> {
+    let mut environment = Map::new();
+    environment.insert("PARLER_HOME".into(), json!(identity.base_home));
+    environment.insert("PARLER_AGENT_SESSION".into(), json!(identity.terminal_session));
+    environment.insert("PARLER_HUB".into(), json!(agent.hub_url));
+    environment.insert("PARLER_NAME".into(), json!(agent.name));
+    environment.insert("PARLER_PRESENCE_MANAGED".into(), json!("1"));
+    environment.insert("PARLER_ACTIVE_CONVERSATION_MANAGED".into(), json!("1"));
+    if let Some(role) = &agent.role {
+        environment.insert("PARLER_ROLE".into(), json!(role));
+    }
+    if let Ok(secret) = std::env::var("PARLER_JOIN_SECRET") {
+        if !secret.is_empty() {
+            environment.insert("PARLER_JOIN_SECRET".into(), json!(secret));
+        }
+    }
+    environment
+}
+
+fn configure_host_process(command: &mut Command, identity: &TuiIdentity, agent: &MeshAgent) {
+    for (key, value) in managed_host_environment(identity, agent) {
+        if let Some(value) = value.as_str() {
+            command.env(key, value);
+        }
     }
 }
 
@@ -200,31 +317,19 @@ fn configure_parler_mcp(
     agent: &MeshAgent,
 ) -> Result<()> {
     let executable = std::env::current_exe().context("could not locate the running parler binary")?;
-    let join_secret = std::env::var("PARLER_JOIN_SECRET").unwrap_or_default();
     let values = [
         ("mcp_servers.parler.command", json!(executable)),
         ("mcp_servers.parler.args", json!(["mcp"])),
         ("mcp_servers.parler.enabled", json!(true)),
-        ("mcp_servers.parler.env.PARLER_HOME", json!(identity.base_home)),
-        (
-            "mcp_servers.parler.env.PARLER_AGENT_SESSION",
-            json!(identity.terminal_session),
-        ),
-        ("mcp_servers.parler.env.PARLER_HUB", json!(agent.hub_url)),
-        ("mcp_servers.parler.env.PARLER_NAME", json!(agent.name)),
-        (
-            "mcp_servers.parler.env.PARLER_ROLE",
-            json!(agent.role.as_deref().unwrap_or_default()),
-        ),
-        ("mcp_servers.parler.env.PARLER_JOIN_SECRET", json!(join_secret)),
-        ("mcp_servers.parler.env.PARLER_PRESENCE_MANAGED", json!("1")),
-        (
-            "mcp_servers.parler.env.PARLER_ACTIVE_CONVERSATION_MANAGED",
-            json!("1"),
-        ),
     ];
     for (key, value) in values {
         command.arg("-c").arg(format!("{key}={}", serde_json::to_string(&value)?));
+    }
+    for (key, value) in managed_host_environment(identity, agent) {
+        command.arg("-c").arg(format!(
+            "mcp_servers.parler.env.{key}={}",
+            serde_json::to_string(&value)?
+        ));
     }
     Ok(())
 }
@@ -233,6 +338,7 @@ async fn enter_conversation(
     agent: &mut MeshAgent,
     options: &Options,
     transcript: &str,
+    transcript_host: &str,
 ) -> Result<ConversationEntry> {
     match &options.key {
         None => {
@@ -254,7 +360,7 @@ async fn enter_conversation(
             }
             if !transcript.trim().is_empty() {
                 seed.push(format!(
-                    "📋 context shared from {}'s resumed Codex thread:\n{}",
+                    "📋 context shared from {}'s resumed {transcript_host} conversation:\n{}",
                     agent.name,
                     transcript.trim()
                 ));
@@ -293,7 +399,7 @@ async fn enter_conversation(
                 }
             };
             let (initial, _) = agent.pull(&room, None, None).await?;
-            eprintln!("✓ joined conversation on {} — {} earlier message(s) ready", agent.hub_url, initial.len());
+            eprintln!("✓ joined conversation on {} — signed backlog ready", agent.hub_url);
             Ok(ConversationEntry { room, initial, created: false, share: None })
         }
     }
@@ -304,6 +410,152 @@ struct ConversationEntry {
     initial: Vec<StoredMessage>,
     created: bool,
     share: Option<ShareDetails>,
+}
+
+struct PreparedBacklog {
+    prompt: Option<String>,
+    commit_cursor: Option<i64>,
+}
+
+struct BacklogWindow {
+    messages: VecDeque<(StoredMessage, usize)>,
+    retained_chars: usize,
+    total: usize,
+    rejected: usize,
+    cursor: i64,
+}
+
+impl BacklogWindow {
+    fn new() -> BacklogWindow {
+        BacklogWindow {
+            messages: VecDeque::new(),
+            retained_chars: 0,
+            total: 0,
+            rejected: 0,
+            cursor: 0,
+        }
+    }
+
+    fn push(&mut self, room: &str, message: StoredMessage) {
+        self.total += 1;
+        self.cursor = self.cursor.max(message.seq);
+        if !valid_in_conversation(&message, room) {
+            self.rejected += 1;
+            return;
+        }
+        let rendered_chars = crate::render_message(&message).chars().count().saturating_add(1);
+        self.retained_chars = self.retained_chars.saturating_add(rendered_chars);
+        self.messages.push_back((message, rendered_chars));
+        while self.retained_chars > MAX_CONTEXT_CHARS && self.messages.len() > 1 {
+            if let Some((_, chars)) = self.messages.pop_front() {
+                self.retained_chars = self.retained_chars.saturating_sub(chars);
+            }
+        }
+    }
+
+    fn into_messages(self) -> Vec<StoredMessage> {
+        self.messages.into_iter().map(|(message, _)| message).collect()
+    }
+}
+
+/// Validate and materialize a joined backlog once for every provider. A non-empty prompt remains
+/// deliberately uncommitted: each adapter advances the durable cursor only after its native host
+/// has accepted that context.
+async fn prepare_backlog(
+    agent: &mut MeshAgent,
+    room: &str,
+    initial: &[StoredMessage],
+    created: bool,
+    host: Host,
+) -> Result<PreparedBacklog> {
+    if initial.is_empty() {
+        return Ok(PreparedBacklog { prompt: None, commit_cursor: None });
+    }
+    if created {
+        // The owner already has this resumed transcript in the visible host. Commit the local seed
+        // echo without spending a duplicate model turn re-reading it.
+        let cursor = initial.last().map(|message| message.seq).unwrap_or_default();
+        agent.commit_reads_through(room, cursor).await?;
+        return Ok(PreparedBacklog { prompt: None, commit_cursor: None });
+    }
+
+    let mut backlog = BacklogWindow::new();
+    for message in initial.iter().cloned() {
+        backlog.push(room, message);
+    }
+    loop {
+        let remaining = MAX_BACKLOG_MESSAGES.saturating_add(1).saturating_sub(backlog.total);
+        let limit = BACKLOG_PAGE_SIZE.min(u32::try_from(remaining).unwrap_or(BACKLOG_PAGE_SIZE));
+        let (page, cursor) = agent.pull(room, Some(backlog.cursor), Some(limit)).await?;
+        if page.is_empty() {
+            break;
+        }
+        if cursor <= backlog.cursor {
+            bail!("conversation backlog pagination did not advance past cursor {}", backlog.cursor);
+        }
+        let page_len = page.len();
+        for message in page {
+            backlog.push(room, message);
+        }
+        if backlog.total > MAX_BACKLOG_MESSAGES {
+            bail!(
+                "conversation backlog exceeds {MAX_BACKLOG_MESSAGES} messages; start a fresh conversation or consolidate this one before joining"
+            );
+        }
+        if page_len < limit as usize {
+            break;
+        }
+    }
+
+    let rejected = backlog.rejected;
+    let commit_cursor = backlog.cursor;
+    if rejected > 0 {
+        eprintln!("⚠ ignored {rejected} unsigned, invalid, or wrong-conversation backlog message(s)");
+    }
+    let trusted = backlog.into_messages();
+    if trusted.is_empty() {
+        agent.commit_reads_through(room, commit_cursor).await?;
+        return Ok(PreparedBacklog { prompt: None, commit_cursor: None });
+    }
+
+    let files = materialize_backlog_files(agent, &trusted).await;
+    let prompt = catchup_prompt(room, &trusted, &files, host);
+    Ok(PreparedBacklog {
+        prompt: Some(prompt),
+        commit_cursor: Some(commit_cursor),
+    })
+}
+
+async fn announce_arrival(agent: &mut MeshAgent, room: &str, created: bool) -> Result<()> {
+    let arrival = if created {
+        format!("{} started this live conversation", agent.name)
+    } else {
+        format!("{} joined this live conversation", agent.name)
+    };
+    agent.send_text(Target::Room { room: room.to_string() }, &arrival).await?;
+    agent
+        .presence("waiting", Some(format!("live conversation '{room}'")))
+        .await?;
+    Ok(())
+}
+
+fn print_connected(agent: &MeshAgent, host: Host, share: Option<ShareDetails>) {
+    eprintln!(
+        "🟢 live conversation connected — peer messages now start turns in this {} window",
+        host.display()
+    );
+    eprintln!(
+        "   Exit {} normally to leave. Command/tool approvals remain under your {} policy.",
+        host.display(),
+        host.display()
+    );
+    if let Some(share) = share {
+        eprintln!();
+        eprintln!("   Share:  parler conversation {}@{}", share.code, agent.hub_url);
+        if let Some(watch) = share.watch {
+            eprintln!("   Viewer: {watch}  (this exact conversation)");
+        }
+    }
 }
 
 struct ShareDetails {
@@ -343,21 +595,31 @@ async fn print_created(
     ShareDetails { code: code.to_string(), watch }
 }
 
-fn catchup_prompt(room: &str, messages: &[StoredMessage], files: &[String]) -> String {
-    let rendered = messages.iter().map(crate::render_message).collect::<Vec<_>>().join("\n");
-    let rendered = clip_tail(&rendered, MAX_CONTEXT_CHARS);
-    let files = if files.is_empty() {
+fn catchup_prompt(room: &str, messages: &[StoredMessage], files: &[String], host: Host) -> String {
+    let max_chars = host.catchup_prompt_chars();
+    let prefix = format!(
+        "You have joined the live Parler conversation '{room}' in this visible {} conversation. Read the \n\
+         signed backlog below as conversation context, including any shared-file paths or fetch \n\
+         instructions. Catch up silently: do not re-summarize it, call Parler, or claim work merely \n\
+         because it appears in history. After this turn, new signed peer messages will arrive here \n\
+         automatically.\n\n--- CONVERSATION SO FAR ---\n",
+        host.display()
+    );
+    let closing = "\n--- END CONTEXT ---\n";
+    let raw_files = if files.is_empty() {
         String::new()
     } else {
         format!("\nShared files already materialized in this agent's local Parler inbox:\n{}\n", files.join("\n"))
     };
-    format!(
-        "You have joined the live Parler conversation '{room}' in this visible Codex thread. Read the \n\
-         signed backlog below as conversation context, including any shared-file paths or fetch \n\
-         instructions. Catch up silently: do not re-summarize it, call Parler, or claim work merely \n\
-         because it appears in history. After this turn, new signed peer messages will arrive here \n\
-         automatically.\n\n--- CONVERSATION SO FAR ---\n{rendered}\n--- END CONTEXT ---\n{files}"
-    )
+    let fixed_chars = prefix.chars().count() + closing.chars().count();
+    let file_budget = max_chars.saturating_sub(fixed_chars).min(max_chars / 4);
+    let files = if file_budget == 0 { String::new() } else { clip(&raw_files, file_budget) };
+    let context_budget = max_chars
+        .saturating_sub(fixed_chars)
+        .saturating_sub(files.chars().count());
+    let rendered = messages.iter().map(crate::render_message).collect::<Vec<_>>().join("\n");
+    let rendered = clip_tail(&rendered, context_budget);
+    format!("{prefix}{rendered}{closing}{files}")
 }
 
 struct CodexHost {
@@ -368,7 +630,8 @@ struct CodexHost {
     buffered: VecDeque<Value>,
     thread_id: Option<String>,
     transcript: String,
-    known_turns: HashSet<String>,
+    known_turns: RecentIds,
+    initially_active: bool,
 }
 
 impl CodexHost {
@@ -388,22 +651,14 @@ impl CodexHost {
         configure_parler_mcp(&mut command, identity, agent)?;
         command
             .args(["--listen", &url])
-            // The app-server owns model turns and MCP execution. Give it the same unscoped base +
-            // terminal key as the remote TUI, otherwise its nested `parler mcp` would scope twice
-            // and appear as a third agent.
-            .env("PARLER_HOME", &identity.base_home)
-            .env("PARLER_AGENT_SESSION", &identity.terminal_session)
-            .env("PARLER_HUB", &agent.hub_url)
-            .env("PARLER_NAME", &agent.name)
-            .env("PARLER_PRESENCE_MANAGED", "1")
-            .env("PARLER_ACTIVE_CONVERSATION_MANAGED", "1")
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .kill_on_drop(true);
-        if let Some(role) = &agent.role {
-            command.env("PARLER_ROLE", role);
-        }
+        // The app-server owns model turns and MCP execution. Give it the same unscoped base +
+        // terminal key as the remote TUI, otherwise its nested `parler mcp` would scope twice and
+        // appear as a third agent.
+        configure_host_process(&mut command, identity, agent);
         let mut server = command
             .spawn()
             .context("failed to launch `codex app-server`; update Codex and retry")?;
@@ -416,7 +671,8 @@ impl CodexHost {
             buffered: VecDeque::new(),
             thread_id: None,
             transcript: String::new(),
-            known_turns: HashSet::new(),
+            known_turns: RecentIds::new(CODEX_SEEN_TURNS),
+            initially_active: false,
         };
         host.request(
             "initialize",
@@ -441,12 +697,19 @@ impl CodexHost {
             } else {
                 requested.to_string()
             };
-            let response = host
-                .request("thread/resume", json!({ "threadId": thread_id, "cwd": cwd }))
+            host.request(
+                    "thread/resume",
+                    json!({ "threadId": thread_id, "cwd": cwd, "includeTurns": false }),
+                )
                 .await
                 .with_context(|| format!("could not resume Codex thread '{thread_id}'"))?;
-            host.known_turns.extend(thread_turn_ids(&response["thread"]));
-            host.transcript = transcript_from_thread(&response["thread"]);
+            let thread = host
+                .read_recent_thread(&thread_id)
+                .await?
+                .unwrap_or_else(|| json!({ "turns": [] }));
+            host.known_turns.extend(terminal_thread_ids(&thread));
+            host.transcript = transcript_from_thread(&thread);
+            host.initially_active = thread_has_running_turn(&thread);
             host.thread_id = Some(thread_id);
             // Notifications generated by our own metadata resume predate the visible TUI client.
             host.buffered.clear();
@@ -484,18 +747,10 @@ impl CodexHost {
             configure_parler_mcp(&mut command, identity, agent)?;
             command.args(["--remote", &self.url, "-C"]).arg(cwd);
         }
-        command
-            .arg("--no-alt-screen")
-            .env("PARLER_HOME", &identity.base_home)
-            .env("PARLER_AGENT_SESSION", &identity.terminal_session)
-            // A portable KEY@HUB may intentionally differ from the saved default. Keep the nested
-            // MCP server and any agent-run `parler` command on this exact conversation's hub too.
-            .env("PARLER_HUB", &agent.hub_url)
-            .env("PARLER_NAME", &agent.name)
-            .env("PARLER_ACTIVE_CONVERSATION_MANAGED", "1")
-            // This visible adapter publishes `working`/`waiting`; its nested MCP connection should
-            // refresh liveness without racing that richer lifecycle back to generic `idle`.
-            .env("PARLER_PRESENCE_MANAGED", "1");
+        command.arg("--no-alt-screen");
+        // A portable KEY@HUB may intentionally differ from the saved default. Keep the nested MCP
+        // server and any agent-run `parler` command on this conversation's exact identity and hub.
+        configure_host_process(&mut command, identity, agent);
         command
             .stdin(Stdio::inherit())
             .stdout(Stdio::inherit())
@@ -544,7 +799,7 @@ impl CodexHost {
         self.known_turns.insert(turn_id.clone());
         loop {
             tokio::time::sleep(Duration::from_millis(250)).await;
-            if let Some(thread) = self.read_thread(thread_id).await? {
+            if let Some(thread) = self.read_recent_thread(thread_id).await? {
                 if let Some(turn) = thread["turns"]
                     .as_array()
                     .into_iter()
@@ -563,19 +818,28 @@ impl CodexHost {
         }
     }
 
-    async fn read_thread(&mut self, thread_id: &str) -> Result<Option<Value>> {
+    async fn read_recent_thread(&mut self, thread_id: &str) -> Result<Option<Value>> {
         match self
             .request(
-                "thread/read",
-                json!({ "threadId": thread_id, "includeTurns": true }),
+                "thread/turns/list",
+                codex_turn_page_params(thread_id),
             )
             .await
         {
-            Ok(response) => Ok(Some(response["thread"].clone())),
+            Ok(response) => {
+                let mut turns = response["data"]
+                    .as_array()
+                    .cloned()
+                    .ok_or_else(|| anyhow!("Codex app-server returned a non-array turn page"))?;
+                // The API returns newest-first so the page starts at the stable tail. Downstream
+                // transcript and publication code consumes chronological order.
+                turns.reverse();
+                Ok(Some(json!({ "turns": turns })))
+            }
             // A blank remote TUI has a thread id but no rollout file until its first user turn.
             // That is a normal idle state, not a broken app-server connection.
             Err(error) if error.to_string().contains("not materialized yet") => Ok(None),
-            Err(error) => Err(error).context("Codex app-server could not read the visible conversation thread"),
+            Err(error) => Err(error).context("Codex app-server could not list the visible conversation turns"),
         }
     }
 
@@ -779,11 +1043,21 @@ struct ThreadTurnOutcome {
     error: Option<String>,
 }
 
-fn thread_turn_ids(thread: &Value) -> Vec<String> {
+fn codex_turn_page_params(thread_id: &str) -> Value {
+    json!({
+        "threadId": thread_id,
+        "limit": CODEX_TURN_PAGE_SIZE,
+        "sortDirection": "desc",
+        "itemsView": "full"
+    })
+}
+
+fn terminal_thread_ids(thread: &Value) -> Vec<String> {
     thread["turns"]
         .as_array()
         .into_iter()
         .flatten()
+        .filter(|turn| terminal_thread_outcome(turn).is_some())
         .filter_map(|turn| turn["id"].as_str().map(str::to_string))
         .collect()
 }
@@ -862,7 +1136,7 @@ fn local_conversation_turn(turn: &Value, answer: &str) -> String {
 /// of truth for completed local-human and peer-injected turns alike.
 fn collect_unseen_terminal_turns(
     thread: &Value,
-    terminal_turns: &mut HashSet<String>,
+    terminal_turns: &mut RecentIds,
 ) -> Vec<ThreadTurnOutcome> {
     let mut outcomes = Vec::new();
     for turn in thread["turns"].as_array().into_iter().flatten() {
@@ -882,7 +1156,7 @@ struct PendingStart {
     incoming: Incoming,
 }
 
-async fn coordinate(
+async fn coordinate_codex(
     host: &mut CodexHost,
     tui: &mut Child,
     sender: &mut MeshAgent,
@@ -895,13 +1169,16 @@ async fn coordinate(
     let mut turns: HashMap<String, TurnCapture> = HashMap::new();
     let mut active_turns = HashSet::new();
     let mut injected_turns = HashSet::new();
-    let mut terminal_turns = std::mem::take(&mut host.known_turns);
+    let mut terminal_turns = std::mem::replace(
+        &mut host.known_turns,
+        RecentIds::new(CODEX_SEEN_TURNS),
+    );
     // Human TUI turns do not reliably emit detailed turn notifications to this second app-server
     // client. Thread status + canonical history therefore gate injection and publication. The sync
     // flag also preserves room ordering: finish publishing a local turn before starting queued peer
     // work that arrived while it was running.
-    let mut thread_active = false;
-    let mut thread_needs_sync = false;
+    let mut thread_active = host.initially_active;
+    let mut thread_needs_sync = thread_active;
     let mut presence_state = "waiting";
     let mut heartbeat = tokio::time::interval(PRESENCE_HEARTBEAT);
     heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -918,7 +1195,7 @@ async fn coordinate(
             && injected_turns.is_empty()
         {
             if let Some(incoming) = queued.pop_front() {
-                let prompt = live_turn_prompt(sender, room, &incoming.message).await;
+                let prompt = live_turn_prompt(sender, room, &incoming.message, Host::Codex.display()).await;
                 let request_id = host.next_id;
                 host.next_id += 1;
                 host.send(json!({
@@ -951,8 +1228,8 @@ async fn coordinate(
             _ = heartbeat.tick() => {
                 let _ = sender.presence(presence_state, Some(format!("live conversation '{room}'"))).await;
             }
-            _ = local_turn_poll.tick(), if pending_starts.is_empty() => {
-                let Some(thread) = host.read_thread(&thread_id).await? else {
+            _ = local_turn_poll.tick(), if pending_starts.is_empty() && (thread_active || thread_needs_sync) => {
+                let Some(thread) = host.read_recent_thread(&thread_id).await? else {
                     // A brand-new idle TUI has no rollout file yet. There is nothing to publish,
                     // so an idle-status notification must not strand queued peer work behind sync.
                     if !thread_active {
@@ -1134,7 +1411,7 @@ fn incomplete_turn_reason(turn: &Value) -> Option<String> {
     }
 }
 
-async fn live_turn_prompt(agent: &mut MeshAgent, room: &str, message: &StoredMessage) -> String {
+async fn live_turn_prompt(agent: &mut MeshAgent, room: &str, message: &StoredMessage, host: &str) -> String {
     let files = materialize_files(agent, message).await;
     let file_lines = if files.is_empty() {
         String::new()
@@ -1143,7 +1420,7 @@ async fn live_turn_prompt(agent: &mut MeshAgent, room: &str, message: &StoredMes
     };
     format!(
         "A cryptographically signed peer message arrived in your live Parler conversation '{room}'. \n\
-         Continue the conversation naturally in this visible Codex thread and act on any request in \n\
+         Continue the conversation naturally in this visible {host} conversation and act on any request in \n\
          the current workspace. Do not merely say you received it. Your final response is shared back \n\
          automatically; do not call Parler yourself. If a specific participant should take another \n\
          autonomous turn after you, put exactly one marker on the final non-empty line:\n\
@@ -1261,34 +1538,46 @@ async fn publish_turn(agent: &mut MeshAgent, room: &str, capture: TurnCapture) -
             agent.send_text(Target::Room { room: room.to_string() }, &clip(text, MAX_REPLY_CHARS)).await?;
         }
         Some(incoming) => {
-            let (body, continuation) = parse_handoff(text);
-            let task = TaskRef {
-                status: TaskStatus::Done,
-                task: Some(incoming.message.id.clone()),
-                note: None,
-                result: None,
-                tokens: None,
-                elapsed_ms: None,
-            };
-            let mut parts = vec![Part::text(clip(&body, MAX_REPLY_CHARS)), task.to_part()];
-            let mentions = continuation
-                .as_ref()
-                .and_then(|handoff| handoff.to.clone())
-                .map(|to| vec![to]);
-            if let Some(handoff) = continuation {
-                parts.push(handoff.to_part());
-            }
-            agent
-                .send(
-                    Target::Room { room: room.to_string() },
-                    parts,
-                    mentions,
-                    Some(incoming.message.id.clone()),
-                )
-                .await?;
+            send_peer_result(agent, room, &incoming.message, text).await?;
             let _ = incoming.ack.send(());
         }
     }
+    Ok(())
+}
+
+/// All visible-host adapters publish the same terminal receipt. The TaskRef prevents an automatic
+/// result from waking every peer again; an explicit addressed handoff is the only continuation.
+async fn send_peer_result(
+    agent: &mut MeshAgent,
+    room: &str,
+    incoming: &StoredMessage,
+    text: &str,
+) -> Result<()> {
+    let (body, continuation) = parse_handoff(text);
+    let task = TaskRef {
+        status: TaskStatus::Done,
+        task: Some(incoming.id.clone()),
+        note: None,
+        result: None,
+        tokens: None,
+        elapsed_ms: None,
+    };
+    let mut parts = vec![Part::text(clip(&body, MAX_REPLY_CHARS)), task.to_part()];
+    let mentions = continuation
+        .as_ref()
+        .and_then(|handoff| handoff.to.clone())
+        .map(|to| vec![to]);
+    if let Some(handoff) = continuation {
+        parts.push(handoff.to_part());
+    }
+    agent
+        .send(
+            Target::Room { room: room.to_string() },
+            parts,
+            mentions,
+            Some(incoming.id.clone()),
+        )
+        .await?;
     Ok(())
 }
 
@@ -1381,8 +1670,14 @@ fn clip_tail(text: &str, max_chars: usize) -> String {
     if count <= max_chars {
         return text.to_string();
     }
-    let tail = text.chars().skip(count - max_chars).collect::<String>();
-    format!("… earlier context omitted …\n{tail}")
+    let marker = "… earlier context omitted …\n";
+    let marker_chars = marker.chars().count();
+    if max_chars <= marker_chars {
+        return text.chars().skip(count - max_chars).collect();
+    }
+    let tail_chars = max_chars - marker_chars;
+    let tail = text.chars().skip(count - tail_chars).collect::<String>();
+    format!("{marker}{tail}")
 }
 
 #[cfg(test)]
@@ -1503,7 +1798,8 @@ mod tests {
                 ]}
             ]
         });
-        let mut terminal = HashSet::from(["old".to_string()]);
+        let mut terminal = RecentIds::new(CODEX_SEEN_TURNS);
+        terminal.insert("old".to_string());
 
         let outcomes = collect_unseen_terminal_turns(&thread, &mut terminal);
         assert_eq!(outcomes.len(), 3);
@@ -1522,6 +1818,27 @@ mod tests {
         assert!(thread_has_running_turn(&thread));
 
         assert!(collect_unseen_terminal_turns(&thread, &mut terminal).is_empty());
+    }
+
+    #[test]
+    fn recent_ids_evict_oldest_entries_at_the_configured_bound() {
+        let mut ids = RecentIds::new(2);
+        assert!(ids.insert("one".into()));
+        assert!(ids.insert("two".into()));
+        assert!(!ids.insert("two".into()));
+        assert!(ids.insert("three".into()));
+        assert!(!ids.contains("one"));
+        assert!(ids.contains("two"));
+        assert!(ids.contains("three"));
+    }
+
+    #[test]
+    fn codex_turn_reads_are_bounded_newest_first_full_pages() {
+        let params = codex_turn_page_params("thread-1");
+        assert_eq!(params["threadId"], "thread-1");
+        assert_eq!(params["limit"], CODEX_TURN_PAGE_SIZE);
+        assert_eq!(params["sortDirection"], "desc");
+        assert_eq!(params["itemsView"], "full");
     }
 
     #[test]
@@ -1608,7 +1925,7 @@ mod tests {
             summary: None,
         }
         .to_part()]);
-        let prompt = catchup_prompt("audit", &[message], &[]);
+        let prompt = catchup_prompt("audit", &[message], &[], Host::Codex);
         assert!(prompt.contains("report.pdf"));
         assert!(prompt.contains("parler fetch"));
     }
@@ -1619,9 +1936,34 @@ mod tests {
             "audit",
             &[signed_message(vec![Part::text("read the report")])],
             &["- /tmp/parler/inbox/abc/report.pdf".into()],
+            Host::Codex,
         );
         assert!(prompt.contains("already materialized"));
         assert!(prompt.contains("/tmp/parler/inbox/abc/report.pdf"));
+    }
+
+    #[test]
+    fn claude_catchup_fits_its_native_wake_limit_and_keeps_the_newest_context() {
+        let messages = (0..100)
+            .map(|index| {
+                signed_message(vec![Part::text(format!(
+                    "catchup-{index:03} {}",
+                    "x".repeat(160)
+                ))])
+            })
+            .collect::<Vec<_>>();
+        let prompt = catchup_prompt("audit", &messages, &[], Host::Claude);
+        assert!(prompt.chars().count() <= CLAUDE_WAKE_PROMPT_CHARS);
+        assert!(prompt.contains("catchup-099"));
+        assert!(!prompt.contains("catchup-000"));
+        assert!(prompt.contains("--- END CONTEXT ---"));
+    }
+
+    #[test]
+    fn tail_clipping_includes_its_omission_marker_inside_the_bound() {
+        let clipped = clip_tail(&"x".repeat(1_000), 100);
+        assert_eq!(clipped.chars().count(), 100);
+        assert!(clipped.starts_with("… earlier context omitted …"));
     }
 
     #[test]
@@ -1675,6 +2017,7 @@ mod tests {
             &mut alice,
             &Options {
                 key: None,
+                host: Host::Codex,
                 topic: Some("same-conversation".into()),
                 resume: None,
                 approval: false,
@@ -1682,6 +2025,7 @@ mod tests {
                 max_uses: None,
             },
             "",
+            "Codex",
         )
         .await
         .unwrap();
@@ -1699,6 +2043,7 @@ mod tests {
             &mut bob,
             &Options {
                 key: Some(format!("{}@{hub}", share.code)),
+                host: Host::Codex,
                 topic: None,
                 resume: None,
                 approval: false,
@@ -1706,6 +2051,7 @@ mod tests {
                 max_uses: None,
             },
             "",
+            "Codex",
         )
         .await
         .unwrap();
@@ -1731,6 +2077,7 @@ mod tests {
             &mut alice,
             &Options {
                 key: None,
+                host: Host::Codex,
                 topic: Some("same-conversation".into()),
                 resume: None,
                 approval: false,
@@ -1738,6 +2085,7 @@ mod tests {
                 max_uses: None,
             },
             "",
+            "Codex",
         )
         .await
         .unwrap();
@@ -1746,5 +2094,125 @@ mod tests {
             .initial
             .iter()
             .any(|message| crate::render_message(message).contains("durable context before bob joins")));
+    }
+
+    #[tokio::test]
+    async fn catchup_pages_past_the_hub_default_and_retains_only_the_context_tail() {
+        let (hub, _) = start_hub().await;
+        let alice_cfg = Config::create(hub.clone(), "alice", None).unwrap();
+        let bob_cfg = Config::create(hub, "bob", None).unwrap();
+        let mut alice = MeshAgent::connect(&alice_cfg).await.unwrap();
+        let mut bob = MeshAgent::connect(&bob_cfg).await.unwrap();
+        let invitation = alice
+            .invite(RoomKind::Channel, Some("long-history".into()), None, None)
+            .await
+            .unwrap();
+        bob.join(&invitation.code).await.unwrap();
+        for index in 0..225 {
+            alice
+                .send_text(
+                    Target::Room { room: invitation.room.clone() },
+                    &format!("backlog-{index:03} {}", "x".repeat(160)),
+                )
+                .await
+                .unwrap();
+        }
+
+        let (initial, _) = bob.pull(&invitation.room, None, None).await.unwrap();
+        assert_eq!(initial.len(), 200, "the test must cross the hub's default page");
+        let backlog = prepare_backlog(
+            &mut bob,
+            &invitation.room,
+            &initial,
+            false,
+            Host::Codex,
+        )
+        .await
+        .unwrap();
+        let prompt = backlog.prompt.unwrap();
+        assert!(prompt.contains("backlog-224"));
+        assert!(!prompt.contains("backlog-000"));
+        bob.commit_reads_through(&invitation.room, backlog.commit_cursor.unwrap())
+            .await
+            .unwrap();
+        let (remaining, _) = bob.pull(&invitation.room, None, None).await.unwrap();
+        assert!(remaining.is_empty(), "paged history must not return later as fresh work");
+    }
+
+    #[tokio::test]
+    async fn every_visible_host_result_has_the_same_signed_terminal_receipt() {
+        let (hub, _) = start_hub().await;
+        let alice_cfg = Config::create(hub.clone(), "alice", None).unwrap();
+        let bob_cfg = Config::create(hub.clone(), "bob", None).unwrap();
+        let mut alice = MeshAgent::connect(&alice_cfg).await.unwrap();
+        let mut bob = MeshAgent::connect(&bob_cfg).await.unwrap();
+        let opened = enter_conversation(
+            &mut alice,
+            &Options {
+                key: None,
+                host: Host::Codex,
+                topic: None,
+                resume: None,
+                approval: false,
+                ttl: None,
+                max_uses: None,
+            },
+            "",
+            "Codex",
+        )
+        .await
+        .unwrap();
+        let share = opened.share.unwrap();
+        let joined = enter_conversation(
+            &mut bob,
+            &Options {
+                key: Some(format!("{}@{hub}", share.code)),
+                host: Host::Opencode,
+                topic: None,
+                resume: None,
+                approval: false,
+                ttl: None,
+                max_uses: None,
+            },
+            "",
+            "OpenCode",
+        )
+        .await
+        .unwrap();
+        bob.commit_reads(&joined.room).await.unwrap();
+
+        let (request_id, _, _) = bob
+            .send_text(Target::Room { room: joined.room.clone() }, "review this")
+            .await
+            .unwrap();
+        let (messages, _) = alice.pull(&opened.room, None, Some(100)).await.unwrap();
+        let request = messages
+            .into_iter()
+            .find(|message| message.id == request_id)
+            .expect("the peer request is durable");
+        send_peer_result(
+            &mut alice,
+            &opened.room,
+            &request,
+            "Reviewed.\nPARLER_HANDOFF {\"to\":\"reviewer\",\"next\":\"verify\"}",
+        )
+        .await
+        .unwrap();
+        alice.commit_reads(&opened.room).await.unwrap();
+
+        let (messages, _) = bob.pull(&joined.room, None, Some(100)).await.unwrap();
+        let result = messages
+            .iter()
+            .find(|message| message.reply_to.as_deref() == Some(request_id.as_str()))
+            .expect("the result replies to the durable request");
+        assert_eq!(verify_message(&result.from.id, &result.parts, result.reply_to.as_deref()), SigStatus::Valid);
+        assert!(result.parts.iter().filter_map(TaskRef::from_part).any(|task| {
+            task.status == TaskStatus::Done && task.task.as_deref() == Some(request_id.as_str())
+        }));
+        assert!(result
+            .parts
+            .iter()
+            .filter_map(HandoffRef::from_part)
+            .any(|handoff| handoff.to.as_deref() == Some("reviewer")));
     }
 }

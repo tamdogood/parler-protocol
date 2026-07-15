@@ -566,7 +566,18 @@ impl MeshAgent {
     /// committed.
     pub async fn commit_reads(&mut self, room: &str) -> Result<()> {
         let pending = self.pending_ack.get(room).copied().unwrap_or(0);
-        if pending == 0 || self.committed_ack.get(room).copied().unwrap_or(0) >= pending {
+        self.commit_reads_through(room, pending).await
+    }
+
+    /// Commit a cursor returned by any successful [`MeshAgent::pull`], including a paginated
+    /// `since` read. This is the bounded catch-up primitive: a consumer may inspect several pure
+    /// read pages, hand their retained context to a host, then atomically advance through the last
+    /// page only after that host accepts it.
+    ///
+    /// Callers must pass only a cursor they actually received for this room. The hub applies the ack
+    /// monotonically, so retries and an older duplicate commit cannot move the member backward.
+    pub async fn commit_reads_through(&mut self, room: &str, cursor: i64) -> Result<()> {
+        if cursor <= 0 || self.committed_ack.get(room).copied().unwrap_or(0) >= cursor {
             self.held_reads.remove(room);
             return Ok(());
         }
@@ -576,12 +587,16 @@ impl MeshAgent {
                 since: None,
                 limit: Some(0),
                 wait_secs: None,
-                ack: Some(pending),
+                ack: Some(cursor),
             })
             .await?
         {
             ServerFrame::Pulled { .. } => {
-                self.committed_ack.insert(room.to_string(), pending);
+                self.pending_ack
+                    .entry(room.to_string())
+                    .and_modify(|pending| *pending = (*pending).max(cursor))
+                    .or_insert(cursor);
+                self.committed_ack.insert(room.to_string(), cursor);
                 self.held_reads.remove(room);
                 Ok(())
             }
@@ -1231,5 +1246,52 @@ mod tests {
         // A subsequent pull acks the batch and returns nothing new (no perpetual redelivery).
         let (next, _c) = bob.pull(&room, None, None).await.unwrap();
         assert!(next.is_empty(), "the acked batch is committed on the next pull");
+    }
+
+    #[tokio::test]
+    async fn pure_read_pages_can_commit_their_exact_received_cursor() {
+        let hub = start_hub().await;
+        let mut alice = MeshAgent::connect(&Config {
+            hub_url: hub.clone(),
+            identity: parler_auth::new_identity().unwrap(),
+            name: "alice".into(),
+            role: None,
+            attention: crate::AttentionPolicy::default(),
+        })
+        .await
+        .unwrap();
+        let invitation = alice
+            .invite(parler_protocol::RoomKind::Channel, Some("paged".into()), None, None)
+            .await
+            .unwrap();
+        let mut bob = MeshAgent::connect(&Config {
+            hub_url: hub,
+            identity: parler_auth::new_identity().unwrap(),
+            name: "bob".into(),
+            role: None,
+            attention: crate::AttentionPolicy::default(),
+        })
+        .await
+        .unwrap();
+        bob.join(&invitation.code).await.unwrap();
+        alice
+            .send_text(Target::Room { room: invitation.room.clone() }, "one")
+            .await
+            .unwrap();
+        alice
+            .send_text(Target::Room { room: invitation.room.clone() }, "two")
+            .await
+            .unwrap();
+
+        let (messages, cursor) = bob.pull(&invitation.room, Some(0), Some(1)).await.unwrap();
+        assert_eq!(messages.len(), 1);
+        let (messages, cursor) = bob
+            .pull(&invitation.room, Some(cursor), Some(1))
+            .await
+            .unwrap();
+        assert_eq!(messages.len(), 1);
+        bob.commit_reads_through(&invitation.room, cursor).await.unwrap();
+        let (remaining, _) = bob.pull(&invitation.room, None, None).await.unwrap();
+        assert!(remaining.is_empty());
     }
 }

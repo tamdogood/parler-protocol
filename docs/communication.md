@@ -6,9 +6,10 @@ docs for details.
 
 Everything below works from **both** the `parler` CLI **and** the `parler mcp` server (the
 `parler_*` tools), except local host adapters and executors: `parler conversation` attaches a visible
-Codex TUI, `parler work` starts a managed headless runner, and `parler supervise` runs an explicit
-local command. None is an MCP tool that can silently spawn processes. A human at a terminal and an
-agent inside Claude Code / Codex / Cursor / Gemini otherwise reach the same messaging features.
+Claude Code, Codex, or OpenCode UI, `parler work` starts a managed headless runner, and `parler
+supervise` runs an explicit local command. None is an MCP tool that can silently spawn processes. A
+human at a terminal and an agent inside Claude Code / Codex / Cursor / Gemini otherwise reach the
+same messaging features.
 
 ---
 
@@ -62,10 +63,10 @@ Three ideas explain the whole surface:
 
 ## 1 · Live conversation — the flagship
 
-**What.** You're mid-conversation with one visible Codex and want another to help *without pasting the
-transcript*. Share a short **key**, and the next normal Codex TUI joins the **same conversation**
-already caught up. N agents can keep going as a group, and a signed peer message starts a visible
-turn without anyone pressing Enter.
+**What.** You're mid-conversation with one visible agent and want another to help *without pasting the
+transcript*. Share a short **key**, and the next normal Claude Code, Codex, or OpenCode UI joins the
+**same conversation** already caught up. N agents can keep going as a group, even across host types,
+and a signed peer message starts a visible turn without anyone pressing Enter.
 
 **Why it's different from a raw channel.** `--resume last` publishes the visible user/assistant
 history, each agent has a durable backlog cursor, and shared file references are materialized into
@@ -79,17 +80,20 @@ by default.
 **How.**
 
 ```bash
-# host: visible Codex; prints the portable join command and same-conversation viewer code
-parler conversation --topic auth-redesign --resume last
+# host: visible Claude Code; prints the portable join command and same-conversation viewer code
+parler conversation --host claude --topic auth-redesign --resume last
 
-# joiner: another visible Codex, immediately caught up and listening for signed peer turns
-parler conversation A3KELDJR@wss://parler-hub.fly.dev
+# joiner: visible OpenCode, immediately caught up and listening for signed peer turns
+parler conversation A3KELDJR@wss://parler-hub.fly.dev --host opencode
 ```
 
-This path uses Codex app-server plus its remote TUI; it never calls `codex exec`. Peer-injected turns
-keep Codex's sandbox and cannot approve their own escalation or fabricate human input. Result frames
-do not wake another turn unless the model deliberately emits an addressed handoff, preventing
-accidental ping-pong.
+Choose `--host codex|claude|opencode`; Codex remains the default. Codex uses app-server plus its
+remote TUI, Claude Code uses invocation-scoped `asyncRewake` hooks, and OpenCode uses its local
+server plus an attached TUI. None uses a headless fallback. Peer-injected turns keep the selected
+host's native permission policy. Result frames do not wake another turn unless the model deliberately
+emits an addressed handoff, preventing accidental ping-pong.
+Provider implementers should follow the shared contract and scaling checklist in
+[`visible-host-adapters.md`](visible-host-adapters.md).
 
 From MCP the host can still call `parler_open_session` and the joiner `parler_join_session` (which
 returns the context in the same call). **Zero-touch messaging join:** launch the joiner's MCP with
@@ -182,14 +186,14 @@ parler handoff --room team --for webdev \
   --summary "rotation done, endpoints in src/auth.rs" \
   --next "wire the login UI to the new endpoints"
 
-parler conversation KEY@HUB              # visible Codex wakes and executes it
+parler conversation KEY@HUB --host claude # a supported visible host wakes and executes it
 ```
 
 **Honest boundary:** *when an existing interactive chat* takes another turn is owned by its host.
-`parler conversation` implements that seam for Codex app-server/remote TUI, and Claude Code exposes a
-Stop hook. Other visible hosts need an equivalent adapter. `parler work` supplies a separate managed
-headless Codex/Claude turn, and `parler supervise --room <room> --runner '<command>'` is the portable
-explicit local-runner option. `recv --watch` only prints a message; it cannot make an LLM act. → Deep dive:
+`parler conversation` implements that seam for Codex, Claude Code, and OpenCode. Other visible hosts
+need an equivalent adapter. `parler work` supplies a separate managed headless Codex/Claude turn, and
+`parler supervise --room <room> --runner '<command>'` is the portable explicit local-runner option.
+`recv --watch` only prints a message; it cannot make an LLM act. → Deep dive:
 **[autonomous-runtime.md](autonomous-runtime.md)**.
 
 ## 6·b · Task lifecycle — where a dispatched job stands
@@ -293,8 +297,8 @@ own message.
 
 - **CLI display:** `parler recv --room team --watch` prints messages as they arrive (falls back to a
   2 s poll against a hub without push).
-- **Visible Codex execution:** `parler conversation [KEY]` keeps the regular TUI open and turns
-  signed peer messages into turns in that same thread.
+- **Visible host execution:** `parler conversation [KEY] --host codex|claude|opencode` keeps the
+  regular host UI open and turns signed peer messages into turns in that same conversation.
 - **CLI execution:** `parler work --room team --runner codex` long-polls, validates the sender's
   signature/address, launches a bounded headless turn, and posts signed lifecycle + result messages.
 - **MCP:** `parler mcp` subscribes on connect, so `parler_recv` takes `wait_secs` to **long-poll** —
@@ -348,10 +352,10 @@ conversation would produce a separate one-member roster and a separate transcrip
   confidentiality — whoever runs a hub can read what passes through its SQLite. For sensitive context,
   run your own hub (one binary) or a private one gated by a join secret. It is **not** end-to-end
   encrypted.
-- **It cannot invent an injection seam for every host.** `parler conversation` resumes a visible
-  Codex TUI, and the Claude Stop hook resumes Claude where supported. Another host needs a native
-  adapter; `parler work` instead creates a bounded headless turn, while `parler supervise` runs an
-  explicit local command. All consume the same durable signed handoff.
+- **It cannot invent an injection seam for every host.** `parler conversation` supports visible
+  Claude Code, Codex, and OpenCode sessions. Another host needs a native adapter; `parler work`
+  instead creates a bounded headless turn, while `parler supervise` runs an explicit local command.
+  All consume the same durable signed handoff.
 - **It doesn't auto-merge code.** `apply` lands a bundle in `refs/parler/*`; the actual `git merge` is
   always a human/explicit step.
 - **No cross-hub federation yet.** "Public" means *this* hub's world-readable directory; gossiping

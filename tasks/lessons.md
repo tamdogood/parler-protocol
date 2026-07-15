@@ -361,5 +361,41 @@ Format: `- **<short trigger>:** <the rule>. <why, in a clause>`
 - **App-server detailed turn notifications are connection-routed, not a shared event log:** a second
   bridge connection reliably sees `thread/started` and status changes, but human turn details—and
   sometimes bridge-origin details—may be delivered only to the TUI connection. Treat canonical
-  `thread/read(includeTurns=true)` history as the source of truth, use status to gate concurrent
-  injection, and publish each terminal turn once by id. (2026-07-14.)
+  turn history as the source of truth, use status to trigger a bounded recent `thread/turns/list`
+  page, and publish each terminal turn once by id. (2026-07-14, corrected 2026-07-15.)
+
+- **A bounded JSONL tail can begin inside a UTF-8 code point:** seeking to `len - limit` and then
+  calling `read_to_string` rejects an otherwise valid large transcript when the offset splits a
+  multibyte character. Read bounded bytes, decode lossily, discard the first partial line, and parse
+  every remaining JSONL record normally. (2026-07-15.)
+
+- **Claude Code `SessionStart` also means clear or compact:** an async conversation hook may receive
+  another `SessionStart` while a signed peer turn is still pending. Only startup/resume resets
+  delivery state; `clear` and `compact` must leave the pending id and watcher generation intact.
+  (2026-07-15.)
+
+- **An invocation-local OpenCode server must preserve its auth contract:** when
+  `OPENCODE_SERVER_PASSWORD` is set, both the adapter's HTTP client and the attached TUI need the
+  matching Basic Auth credentials. Never clear the inherited policy to make a loopback API easier to
+  call. (2026-07-15.)
+
+- **Canonical provider state must still be read incrementally:** a canonical transcript endpoint is
+  not permission to fetch the entire growing history on every timer tick. Drive reconciliation from
+  native status/events, use newest-first bounded pages or tails, and retain a dedupe window larger
+  than the read window. Codex `thread/turns/list` and OpenCode `/event` + bounded messages are the
+  concrete patterns. (2026-07-15.)
+
+- **A room catch-up is larger than one default `Pull` batch:** the hub defaults to 200 messages, so
+  treating the first response as the complete backlog makes older history reappear as fresh work.
+  Page with pure `since` reads, retain only a bounded trusted tail, then commit the exact received
+  cursor after the host accepts context. Fail explicitly at a total-history ceiling. (2026-07-15.)
+
+- **Apply native prompt limits while selecting context, not after:** clipping a completed catch-up
+  prompt from the front can acknowledge the newest messages without ever showing them to a
+  size-limited host. Budget fixed instructions and files first, then retain the newest context inside
+  the native envelope; include omission markers inside the stated bound. (2026-07-15.)
+
+- **One native turn may have several assistant records:** OpenCode can persist multiple completed
+  assistant messages with the same parent before the session becomes idle. Mark every record seen,
+  but collapse by parent and publish only the final visible outcome so one peer request receives one
+  terminal result. (2026-07-15.)
