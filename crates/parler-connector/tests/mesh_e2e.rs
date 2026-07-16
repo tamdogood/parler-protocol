@@ -277,6 +277,95 @@ async fn connector_runtime_retries_a_wake_when_the_host_injector_fails() {
 }
 
 #[tokio::test]
+async fn connector_listener_wakes_immediately_and_retries_failed_injection() {
+    let hub = start_hub().await;
+    let mut sender = agent(&hub, "sender", None).await;
+    let mut body = agent(&hub, "body", None).await;
+    let inv = sender.invite(RoomKind::Channel, Some("team".into()), None, None).await.unwrap();
+    body.join(&inv.code).await.unwrap();
+    let mut runtime = ConnectorRuntime::new(body, AttentionPolicy::default());
+
+    // The listener subscribes before its first pull, so a peer send wakes it without a human fetch.
+    let mut rejecting = RejectingInjector;
+    let listen = runtime.listen_until(
+        &mut rejecting,
+        &inv.room,
+        RoomKind::Channel,
+        None,
+        None,
+        Duration::from_secs(2),
+    );
+    let publish = async {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        sender
+            .send_text(Target::Room { room: inv.room.clone() }, "please take this task")
+            .await
+    };
+    let (rejected, sent) = tokio::join!(listen, publish);
+    sent.unwrap();
+    assert!(rejected.is_err(), "a host-native injection failure must surface");
+
+    // The failed injection left the durable cursor untouched, so the next available host can retry.
+    let mut injector = RecordingInjector::default();
+    assert!(runtime
+        .listen_until(
+            &mut injector,
+            &inv.room,
+            RoomKind::Channel,
+            None,
+            None,
+            Duration::ZERO,
+        )
+        .await
+        .unwrap());
+    assert_eq!(injector.wakes.len(), 1);
+    let drained = runtime.receive(&inv.room, RoomKind::Channel, None, None).await.unwrap();
+    assert!(drained.messages.is_empty(), "successful injection commits the durable read");
+}
+
+#[tokio::test]
+async fn connector_listener_timeout_preserves_attention_held_messages() {
+    let hub = start_hub().await;
+    let mut sender = agent(&hub, "sender", None).await;
+    let mut body = agent(&hub, "body", None).await;
+    let inv = sender.invite(RoomKind::Channel, Some("team".into()), None, None).await.unwrap();
+    body.join(&inv.code).await.unwrap();
+    sender.send_text(Target::Room { room: inv.room.clone() }, "ambient update").await.unwrap();
+
+    let policy = AttentionPolicy { mode: Attention::Focus, ..Default::default() };
+    let mut runtime = ConnectorRuntime::new(body, policy);
+    let mut injector = RecordingInjector::default();
+    assert!(!runtime
+        .listen_until(
+            &mut injector,
+            &inv.room,
+            RoomKind::Channel,
+            None,
+            None,
+            Duration::from_millis(50),
+        )
+        .await
+        .unwrap());
+    assert!(injector.wakes.is_empty());
+
+    // Opening attention later replays the same durable message into the native wake boundary.
+    runtime.attention_mut().mode = Attention::Open;
+    assert!(runtime
+        .listen_until(
+            &mut injector,
+            &inv.room,
+            RoomKind::Channel,
+            None,
+            None,
+            Duration::ZERO,
+        )
+        .await
+        .unwrap());
+    assert_eq!(injector.wakes.len(), 1);
+    assert_eq!(texts(&injector.wakes[0].messages), vec!["ambient update"]);
+}
+
+#[tokio::test]
 async fn many_to_one_service_collects() {
     let hub = start_hub().await;
     let mut manager = agent(&hub, "manager", Some("reviewer")).await;

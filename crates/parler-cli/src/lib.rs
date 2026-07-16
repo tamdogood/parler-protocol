@@ -243,9 +243,13 @@ enum SessionCmd {
         /// An optional short name for the session.
         #[arg(long)]
         topic: Option<String>,
-        /// Don't require approval: anyone with the key joins immediately. By default joiners must be
-        /// approved by you before they can read the conversation.
-        #[arg(long)]
+        /// Require owner approval before a key holder joins. By default, possession of the private
+        /// key admits immediately.
+        #[arg(long, conflicts_with = "no_approval")]
+        approval: bool,
+        /// Compatibility alias from when approval was the default. Immediate admission is now the
+        /// default, so this flag is accepted but has no additional effect.
+        #[arg(long, hide = true)]
         no_approval: bool,
         /// How long the key stays valid, in seconds (default 86400).
         #[arg(long)]
@@ -1263,7 +1267,11 @@ async fn cmd_join(code: String) -> Result<()> {
         .await
         .map_err(|e| explain_unknown_code(e, &hub, &bare, "parler join"))?;
     println!("✓ joined {} room '{}'", kind.as_str(), room);
-    println!("  receive with:  parler recv --room {room}");
+    println!("  keep a live display:  parler recv --room {room} --watch");
+    if matches!(kind, RoomKind::Channel | RoomKind::Dm) {
+        println!("  act on signed handoffs: parler work --room {room} --runner codex");
+        println!("  start only one listener for this identity/room; don't wait for another human fetch");
+    }
     Ok(())
 }
 
@@ -1409,8 +1417,8 @@ async fn cmd_session(c: SessionCmd) -> Result<()> {
     };
     let mut ag = connect_with_hub(hub_override.as_deref()).await?;
     match c {
-        SessionCmd::Open { context, topic, no_approval, ttl, max_uses } => {
-            let require_approval = !no_approval;
+        SessionCmd::Open { context, topic, approval, no_approval, ttl, max_uses } => {
+            let require_approval = approval && !no_approval;
             let inv = ag
                 .invite_with_approval(RoomKind::Channel, topic, ttl, max_uses, require_approval)
                 .await?;
@@ -2751,29 +2759,20 @@ async fn wake_hook() -> Result<()> {
             activity: Some(format!("waiting in session {room}")),
         })
         .await?;
-    let pushing = runtime.agent_mut().subscribe().await.unwrap_or(false);
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(wait_secs);
-    loop {
-        // Pull → policy-aware receive → host-native injection. A muted room is acknowledged without
-        // a wake; a held quiet/focus batch remains durable until attention opens.
-        let received = runtime.receive(&room, RoomKind::Channel, None, None).await?;
-        let mut injector = ClaudeStopInjector;
-        if runtime.inject(&mut injector, received).await? {
-            return Ok(());
-        }
-        let now = tokio::time::Instant::now();
-        if now >= deadline {
-            return Ok(());
-        }
-        let remaining = deadline - now;
-        if pushing {
-            // Wake the moment a peer posts (any room), or fall through to re-pull well before the hub's
-            // idle timeout. Never overshoot the deadline.
-            let _ = runtime.agent_mut().next_delivery(remaining.min(Duration::from_secs(25))).await?;
-        } else {
-            tokio::time::sleep(remaining.min(Duration::from_secs(2))).await;
-        }
-    }
+    // Pull → policy-aware receive → host-native injection. Push only lowers latency; a muted room is
+    // acknowledged without a wake, while a quiet/focus hold remains durable until attention opens.
+    let mut injector = ClaudeStopInjector;
+    let _ = runtime
+        .listen_until(
+            &mut injector,
+            &room,
+            RoomKind::Channel,
+            None,
+            None,
+            Duration::from_secs(wait_secs),
+        )
+        .await?;
+    Ok(())
 }
 
 /// Claude Code's documented Stop-hook injection seam. Other hosts need their own adapter for the
@@ -3025,6 +3024,35 @@ mod tests {
             let Cmd::Conversation(args) = cli.cmd else { panic!("conversation command") };
             assert_eq!(args.host, expected);
         }
+    }
+
+    #[test]
+    fn session_open_defaults_to_immediate_admission_with_approval_opt_in() {
+        let cli = Cli::try_parse_from(["parler", "session", "open"]).unwrap();
+        let Cmd::Session(SessionCmd::Open { approval, no_approval, .. }) = cli.cmd else {
+            panic!("session open command")
+        };
+        assert!(!approval && !no_approval, "the empty command must not request a gate");
+
+        let cli = Cli::try_parse_from(["parler", "session", "open", "--approval"]).unwrap();
+        let Cmd::Session(SessionCmd::Open { approval, no_approval, .. }) = cli.cmd else {
+            panic!("session open command")
+        };
+        assert!(approval && !no_approval, "--approval explicitly enables the gate");
+
+        let cli = Cli::try_parse_from(["parler", "session", "open", "--no-approval"]).unwrap();
+        let Cmd::Session(SessionCmd::Open { approval, no_approval, .. }) = cli.cmd else {
+            panic!("session open command")
+        };
+        assert!(!approval && no_approval, "the legacy flag remains accepted as an immediate join");
+        assert!(Cli::try_parse_from([
+            "parler",
+            "session",
+            "open",
+            "--approval",
+            "--no-approval",
+        ])
+        .is_err());
     }
 
     #[test]

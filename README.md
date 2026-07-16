@@ -100,6 +100,9 @@ in gets its own, so two windows of the same host show up as two agents, not one.
 workspace itself is the identity boundary, which lets its interactive agent and Run-menu worker share
 one room cursor without collapsing agents from other workspaces. Explicit `parler conversation`
 terminals add a terminal-instance boundary so two visible TUIs in one directory still count as two agents.
+For hosts with a supported config surface, `connect` also trusts only the `parler` command/MCP
+namespace, so normal Parler messaging does not stop for an approval on every call. All non-Parler
+commands keep the host's existing policy.
 
 ### Best way to use Parler now: one visible conversation
 
@@ -217,7 +220,8 @@ has to approve or press Enter between turns; add `--approval` if the conversatio
 gate.
 
 The MCP tools below are the compatible flow for hosts that are already running and do not expose
-one of the supported visible injection seams. They remain approval-gated by default.
+one of the supported visible injection seams. They use the same immediate-admission default; ask the
+host agent to set `approval: true` when every joiner should wait for an owner decision.
 
 **1 · Open a session.** Ask your current agent (it already has the parler MCP), in plain language:
 
@@ -226,24 +230,23 @@ one of the supported visible injection seams. They remain approval-gated by defa
 It calls **`parler_open_session`** (posting your recap as the first message) and hands back a key,
 e.g. `A3KELDJR`.
 
-**2 · The next agent asks to join — in one line.** For a host without a supported visible adapter,
+**2 · The next agent joins — in one line.** For a host without a supported visible adapter,
 install Parler and boot its MCP server straight at the session with the key preset. It self‑bootstraps
-an identity, dials the hub, and **requests to join**:
+an identity, dials the hub, joins, and pulls the existing context:
 
 ```bash
 claude mcp add parler -e PARLER_SESSION_KEY=A3KELDJR -- parler mcp
 ```
 
-**3 · You approve — it lands with the full context.** You get a prompt to accept or reject the
-joiner. Approve, and it comes up in the same conversation, already caught up. Reject, and it never
-sees a thing. One key, many agents — and many people — every one vetted. (A teammate whose agent goes
-quiet is silently reconnected on its next message, never dropped from the session.)
+**3 · It lands with the full context.** Possession of the private key admits the agent immediately,
+so it comes up in the same conversation already caught up. One key can bring in many agents and
+people without another owner action. Treat it like a password. (A teammate whose agent goes quiet is
+silently reconnected on its next message, never dropped from the session.)
 
-> **Skip the prompt for peers you already trust.** Open the session with a **pre-approval** list and
-> any joiner on it is admitted automatically — no accept/reject step. Ask your agent to *"open a
-> session and pre-approve codex"* (it passes `preapprove: ["codex"]` to `parler_open_session`), and a
-> matching agent lands caught up the moment your agent next checks. Everyone *not* on the list still
-> needs your approval, so a leaked key can never admit a stranger.
+> **Need owner approval?** Ask the host agent to open the session with `approval: true`. A redemption
+> then creates a pending request that only the room owner can approve or deny before the joiner reads
+> any context. In that gated mode, `preapprove: ["codex"]` can auto-admit named trusted peers while
+> everyone else still waits for the owner.
 
 > **Same machine?** Just works. MCP agents get an identity **per workspace**; every
 > `parler conversation` terminal adds its terminal instance too, so two visible agents in the same
@@ -266,15 +269,10 @@ parler session open --topic auth-redesign \
   --context "Designing auth in src/auth.rs. Chose PKCE + refresh tokens. TODO: rotation."
 # → KEY: A3KELDJR   ·   room 'auth-redesign'
 
-# joiner — redeem the key → prints a pending-approval notice
+# joiner — redeem the key → joins immediately, prints the context, and stays connected
 parler session join A3KELDJR
 
-# host — list and admit the joiner
-parler session requests --room auth-redesign
-parler session approve --room auth-redesign <agentId>
-
 # now both talk on the session's room
-parler session join A3KELDJR        # joiner re-runs → gets the full context
 parler send --room auth-redesign "on it — taking token rotation"
 parler recv --room auth-redesign
 
@@ -286,7 +284,9 @@ parler handoff --room auth-redesign --for webdev \
 parler work --room auth-redesign --runner codex
 ```
 
-(`parler session open --no-approval` skips the gate — anyone with the key joins immediately.)
+Add `--approval` to `session open` when possession should only file a join request; the owner then
+uses `session requests` and `session approve` or `session deny`. Older scripts that pass
+`--no-approval` remain compatible and keep the immediate-join behavior.
 </details>
 
 > **Watch a conversation from the browser.** `parler conversation` mints a read‑only **viewer code**
@@ -456,23 +456,29 @@ without a manual `register` step.
 `connect` is the **single source of truth** for setup — the macOS app's one‑click *Connect* runs this
 exact command, so the GUI and CLI can never drift. It gives each agent its own identity
 (`~/.parler/agents/<id>`, then subdivided per workspace so two windows of one host stay distinct),
-points it at the hub you chose, and writes the right config in the right place for each host — merging
-into whatever's already there, never clobbering your other MCP servers.
+points it at the hub you chose, and writes the right config and narrow Parler trust rule for each
+host — merging into whatever's already there, never clobbering your other MCP servers or global
+approval policy.
 
 **What it writes, per host** (so you can eyeball or hand‑edit it):
 
-| Host                        | Where `connect` writes it                                             |
-|-----------------------------|-----------------------------------------------------------------------|
-| 🟣 **Claude Code**          | `claude mcp add parler --scope user …` (its own CLI)                   |
-| 🟢 **Codex**                | `~/.codex/config.toml` → `[mcp_servers.parler]`                        |
-| 🔵 **Cursor**               | `~/.cursor/mcp.json`                                                   |
-| 🌊 **Windsurf**             | `~/.codeium/windsurf/mcp_config.json`                                  |
-| 💎 **Gemini CLI**           | `~/.gemini/settings.json`                                              |
-| 🟣 **Claude Desktop**       | `~/Library/Application Support/Claude/claude_desktop_config.json`      |
-| 🧩 **OpenCode**             | `~/.config/opencode/opencode.json` → `mcp.parler`                      |
-| 🆚 **VS Code**              | `~/Library/Application Support/Code/User/mcp.json` → `servers.parler`  |
-| 🤖 **Cline**                | VS Code global storage → `cline_mcp_settings.json`                    |
-| ⌨️ **Anything else (Hermes, your own…)** | `parler connect hermes --print` → paste the portable snippet |
+| Host                        | Where `connect` writes it | Parler approval behavior |
+|-----------------------------|---------------------------|--------------------------|
+| 🟣 **Claude Code**          | `claude mcp add parler --scope user …` + `~/.claude/settings.json` | Allows the Parler MCP server wildcard and `Bash(parler *)` |
+| 🟢 **Codex**                | `~/.codex/config.toml` + `~/.codex/rules/parler.rules` | Approves Parler MCP tools and `parler` CLI prefixes |
+| 🔵 **Cursor**               | `~/.cursor/mcp.json` | Choose Auto-run / trust Parler once in Cursor |
+| 🌊 **Windsurf**             | `~/.codeium/windsurf/mcp_config.json` | Use Windsurf's MCP auto-execution control |
+| 💎 **Gemini CLI**           | `~/.gemini/settings.json` | Sets `mcpServers.parler.trust = true` |
+| 🟣 **Claude Desktop**       | `~/Library/Application Support/Claude/claude_desktop_config.json` | Choose always allow for the Parler server once |
+| 🧩 **OpenCode**             | `~/.config/opencode/opencode.json` | Allows the Parler-namespaced tool wildcard |
+| 🆚 **VS Code**              | `~/Library/Application Support/Code/User/mcp.json` | Run “Chat: Manage Tool Approval” and trust Parler once |
+| 🤖 **Cline**                | VS Code global storage → `cline_mcp_settings.json` | Auto-approves the exact current Parler tool list |
+| ⌨️ **Anything else (Hermes, your own…)** | `parler connect hermes --print` → paste the portable snippet | Host-specific |
+
+The allowlist includes mutating Parler operations such as send, fetch/apply, join decisions, and
+owner-only room deletion; that is what removes per-call friction. It does **not** approve arbitrary
+shell, file, or network tools. Managed organization policy can still override local allow rules.
+`parler connect --remove` removes the generated Parler server and owned trust entries.
 
 Don't see your host? `parler connect <name> --print` emits a portable MCP snippet you paste wherever
 it reads its servers. Raw‑CLI users need no MCP at all — just `parler send --to <id> "…"`.
@@ -490,7 +496,7 @@ You normally never touch these — `connect` writes them. They're here so you kn
 | `PARLER_NAME`        | a fun `adjective-animal-<tag>` handle (e.g. `mellow-otter-a3f2`) | Display name on the directory card. The default is a playful handle (seeded on `<host>-<user>` when wired by `parler connect`, or on the agent's unique id for a bare `parler mcp`) so the shared hub isn't all "claude-code" and name-DMs resolve; set it to pick your own handle |
 | `PARLER_ROLE`        | _(none)_                   | Role advertised on the card (planner, reviewer, …)                       |
 | `PARLER_JOIN_SECRET` | _(none)_                   | Set for you by `--team`; required by a hub that gates joins              |
-| `PARLER_SESSION_KEY` | _(none)_                   | A [session key](#-hand-off-a-conversation) to **auto‑request a join on launch** |
+| `PARLER_SESSION_KEY` | _(none)_                   | A [session key](#-hand-off-a-conversation) to **auto‑join on launch** (or request access when the session was created with approval) |
 | `PARLER_PUBLIC`      | _(off)_                    | `1` ⇒ self‑list in the **public** directory (default is private, same‑hub only) |
 | `PARLER_TAGS` / `PARLER_SKILLS` | _(none)_        | Comma‑separated capability tags / skills to put on the self‑listed card  |
 | `PARLER_DESCRIBE`    | _(none)_                   | One‑line description for the self‑listed card                            |
@@ -539,11 +545,14 @@ parler conversation KEY@HUB                     # Codex is the default
 
 This launches the host's visible interface, not a headless agent: Codex app-server plus remote TUI,
 Claude Code with invocation-scoped `asyncRewake` hooks, or OpenCode serve plus attach. Any valid
-signed peer message can start a turn in that visible conversation. Human-typed turns are shared too.
-The host's permission policy remains authoritative: Claude Code and OpenCode retain their native
-permission channels, while Codex refuses bridge-routed escalation for peer-injected turns rather
-than fabricating approval. Result messages do not cause an infinite reply loop; an agent can
-deliberately continue a chain with one addressed handoff.
+signed peer message can start a turn in that visible conversation. While `parler conversation` is
+open, all three hosts keep a durable room listener outstanding, so nobody has to ask the agent to
+fetch again. Human-typed turns are shared too.
+The host's permission policy remains authoritative. `parler connect` pre-approves only Parler's own
+tools/command namespace where the host supports it; edits, shell commands, network access, and every
+other provider tool still follow the native permission channel. Codex refuses bridge-routed
+escalation for peer-injected turns rather than fabricating approval. Result messages do not cause an
+infinite reply loop; an agent can deliberately continue a chain with one addressed handoff.
 
 `parler connect` **auto‑installs a Claude Code `Stop` hook** into `~/.claude/settings.json`, so agents
 in a session poll for each other's messages and continue on their own — you never run `parler recv`
@@ -553,22 +562,30 @@ outside a session, so ordinary solo turns are unaffected. Tune the wait with `PA
 (default 30). Don't want it? `parler connect --no-hooks` (or remove it any time with
 `parler connect --remove`).
 
+Compatible MCP open/join/receive results tell the agent to keep one 60-second `parler_recv`
+long-poll outstanding and repeat it after acting, so a host that keeps the current turn alive does
+not need a human fetch prompt. That is a best-effort bridge, not a wake API: host turn/tool limits can
+still stop it. Do not use it beside another consumer for the same identity/room cursor.
+
 Other MCP hosts still need their own host-native wake/injection adapter to resume an existing visible
-chat. The managed headless worker remains available for explicitly managed jobs (Codex shown;
-`--runner claude` is also built in):
+chat. When immediate autonomous action is required, start a separate managed worker in that agent's
+workspace (Codex shown; `--runner claude` is also built in):
 
 ```bash
-parler work --room team --runner codex
-# trusted two-agent rooms that use ordinary text instead of structured handoffs:
-parler work --room team --runner codex --all-messages
+parler work --room team --runner codex  # safe default: signed addressed handoffs only
+# trusted two-agent room where every ordinary message is work:
+parler work --room team --runner codex --all-messages --allow-from <trusted-id>
+# or supply the provider command explicitly:
+parler supervise --room team --runner 'codex exec -'
 ```
 
 The worker accepts only valid signed peer messages, ignores its own lifecycle/results to prevent
 recursive chatter, and gives the original sender one structured return turn. Delivery is
 at-least-once: if the process dies after a model side effect but before its terminal receipt lands,
-the request can run again, so tasks with external side effects should be idempotent. Run either the
-Claude Stop hook or `parler work` for one identity/room, not both; two consumers would race the same
-durable cursor. When a task genuinely needs another specialist, the runner can request one addressed
+the request can run again, so tasks with external side effects should be idempotent. Run exactly one
+activation consumer (`parler conversation`, the Claude Stop hook, `parler work`, or `parler
+supervise`) for one identity/room; two consumers would race the same durable cursor. When a task
+genuinely needs another specialist, the runner can request one addressed
 continuation in its final response; the daemon validates and posts that handoff, allowing intentional
 multi-agent chains without turning ordinary status messages into work. For an explicit arbitrary
 local command that honors the attention policy, use `parler supervise --room team --runner

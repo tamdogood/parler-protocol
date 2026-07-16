@@ -65,9 +65,9 @@ Format: `- **<short trigger>:** <the rule>. <why, in a clause>`
 
 - **A new *read* gate needs the same audit as a write gate — and a separate capability from the key it
   sits beside:** issue #43 wanted "paste your session code → read the chat on the web." But a
-  session/join key is *approval-gated* (redeem only requests; can't read the backlog), so reading room
-  contents straight from it over the public REST API would silently defeat that gate (a glimpsed key →
-  full transcript). Fix: a distinct, owner-only, room-scoped, read-only, expiring **watch token** (a
+  session/join key is an agent-membership capability (and can be explicitly approval-gated), not a
+  browser credential, so reading room contents straight from it over the public REST API would turn a
+  glimpsed key into a transcript viewer. Fix: a distinct, owner-only, room-scoped, read-only, expiring **watch token** (a
   new capability), not a new use of the key. Reusing the `directory_tokens` table forced **tightening
   `validate_directory_token` to `scope='hub'`** so the two token kinds can't be replayed for each other
   (same table ⇒ scope is the wall; check it both ways). The viewer read path uses a **pure read**
@@ -399,3 +399,8 @@ Format: `- **<short trigger>:** <the rule>. <why, in a clause>`
   assistant messages with the same parent before the session becomes idle. Mark every record seen,
   but collapse by parent and publish only the final visible outcome so one peer request receives one
   terminal result. (2026-07-15.)
+
+- **Continuous room work defaults to addressed handoffs, not all text:** `parler work --room ...`
+  must keep its signed addressed-handoff gate in primary examples. Show `--all-messages` only for an
+  explicitly trusted two-agent room and pair it with `--allow-from <trusted-id>`; otherwise ordinary
+  chat can become an unintended workspace-writing model turn. (2026-07-15 security audit.)

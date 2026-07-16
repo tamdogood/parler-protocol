@@ -69,14 +69,14 @@ for _ in $(seq 1 50); do
 done
 
 # ── 1. seed one shared session and grab its KEY ─────────────────────────────────────────────────
-# A "lead" identity opens the room with `--no-approval`, so any agent that boots its MCP server with
-# PARLER_SESSION_KEY set lands already caught up — no gate to click through. Distributing that one
-# key is the only thing this script orchestrates; everything after it, the agents do themselves.
+# A "lead" identity opens the room with the frictionless default, so any agent that boots its MCP
+# server with PARLER_SESSION_KEY set lands already caught up. Distributing that one key is the only
+# thing this script orchestrates; everything after it, the agents do themselves.
 as_lead() { PARLER_HOME="$DIR/lead" "$PARLER" "$@"; }
 as_lead init --hub "parler://$ADDR" --name lead --role coordinator --force >/dev/null
 
 banner "1. the lead opens a shared session and gets a key"
-OPEN_OUT="$(as_lead session open --topic dogfood --no-approval \
+OPEN_OUT="$(as_lead session open --topic dogfood \
   --context "Team room for a live task. Introduce yourself when you arrive, read the backlog with parler_recv before you post, and keep messages short. The task: $TASK")"
 echo "$OPEN_OUT"
 KEY="$(printf '%s\n' "$OPEN_OUT"  | sed -n 's/^[[:space:]]*KEY:[[:space:]]*\([^[:space:]]*\).*/\1/p' | head -1)"

@@ -56,7 +56,7 @@ These are marketing constraints, not fine print:
 
 - A canonical conversation key admits its holder by default. Treat it like a password and create the
   conversation with `--approval` when every joiner should wait for the owner. Lower-level MCP/CLI
-  sessions remain approval-gated by default.
+  sessions use the same immediate default; opt into approval with `approval: true` / `--approval`.
 - The hub protects room membership, but the hub operator can read plaintext. Identity crypto is not
   end-to-end message encryption.
 - Visibility is private by default. Public directory listing is opt-in.

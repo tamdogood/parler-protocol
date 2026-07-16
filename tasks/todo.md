@@ -42,8 +42,8 @@
 
 ## Review
 - The README, maintained guides, articles, examples, registry/marketing copy, and website now lead
-  with `parler connect` plus `parler conversation`, while keeping the low-level approval-gated session
-  flow clearly labeled as a compatible alternative.
+  with `parler connect` plus `parler conversation`, while keeping the low-level session flow clearly
+  labeled as a compatible alternative (and its approval gate explicit when used).
 - Support matrices separate continuous visible adapters (Claude Code, Codex, OpenCode), MCP tool
   hosts, bounded managed workers, and arbitrary supervised runners. Admission, permission, viewer
   lifetime, and conversation-scoped file-download boundaries match the implementation.
@@ -441,3 +441,101 @@ the two concrete DoS vectors (writer contention, disk fill) with minimal surface
   now contains the canonical troubleshooting source to publish there.
 - Verified with `npm test`, `npm run typecheck`, `npm run build`, `git diff --check`, targeted MCP
   documentation-reference coverage, and `make ci`. Self-review found no remaining findings.
+
+---
+
+# Trust Parler commands during connect
+
+## Plan
+- [x] Extend each supported provider config with its native Parler-only approval rule: Codex MCP +
+      command rules, Claude Code permissions, Gemini trust, OpenCode permissions, and Cline tools.
+- [x] Keep config merges idempotent, preserve unrelated user settings, and remove Parler-owned
+      permission entries with `parler connect --remove`.
+- [x] Add fresh-file, merge, idempotency, and cleanup regression tests for every written dialect.
+- [x] Update setup/troubleshooting docs with the scoped trust behavior and the UI-only hosts.
+- [x] Run targeted tests, `make ci`, and self-review the diff against the repository checklist.
+
+## Risks
+- Auto-approval includes Parler's mutating tools (send, fetch/apply, join decisions, and room
+  deletion), so rules must match only the `parler` executable/MCP namespace and never weaken a
+  provider's global approval policy.
+- Provider config formats differ and user-owned settings must survive both connect and remove.
+
+## Review
+- `parler connect` now installs provider-native, Parler-scoped trust for Codex, Claude Code,
+  Gemini CLI, OpenCode, and Cline. Cursor, Windsurf, VS Code, and Claude Desktop keep their one-time
+  trust choice in the provider UI; no global approval policy is disabled.
+- Connect/remove preserve unrelated config, Cline's allowlist derives from the real MCP tool list,
+  and Codex's CLI rule file is narrow, owned, and never overwrites an unmanaged file.
+- Regression tests cover fresh/merged config, idempotency, exact tool names, cleanup, and refusal to
+  clobber user-owned policy. Full workspace CI and the documentation tool-reference guard pass.
+
+---
+
+# Frictionless live rooms
+
+## Plan
+- [x] Keep every active conversation on a durable push/long-poll receive loop and inject or run the
+      next agent turn immediately through the host's supported activation seam.
+- [x] Make possession of a valid room join key the default admission path across canonical, MCP, and
+      low-level session flows, while retaining explicit owner approval for sensitive rooms.
+- [x] Teach MCP-hosted agents to keep a receive long-poll outstanding while a session is active, so
+      they do not wait for a human to ask them to fetch.
+- [x] Replace stale approval-by-default prompts/options in CLI, MCP, desktop, scripts, and docs while
+      retaining the explicit gate, protocol compatibility, and legacy `--no-approval` parsing.
+- [x] Add focused runtime, admission, MCP, and end-to-end regressions; run full CI and self-review.
+
+## Risks
+- An MCP server cannot itself schedule a stopped model turn. Use provider-native visible adapters or
+  the managed worker for actual wake/activation, and make the compatible MCP path keep listening
+  inside its current turn instead of pretending notifications can wake every host.
+- A join key becomes a bearer capability for room membership. Expiry, max-use limits, private-room
+  membership authorization, signed identity, and the separate read-only viewer token must remain
+  enforced.
+- Continuous consumers share a durable cursor. Never start two activation loops for the same
+  identity and room, or one can acknowledge work intended for the other.
+
+## Review
+- Added `ConnectorRuntime::listen_until`: push is a low-latency doorbell, durable Pull remains the
+  source of truth, signature/attention policy runs before injection, and failed injection never
+  advances the cursor. Claude's Stop hook now uses the shared bounded listener.
+- Visible Codex, Claude Code, and OpenCode conversations continue through their native adapters.
+  Compatible MCP hosts receive concise instructions to keep one 60-second receive outstanding and
+  repeat after acting; this is honestly documented as active-turn best effort, not a fake wake API.
+- Durable fallback remains one explicit `parler work` or `parler supervise` process. Safe examples
+  execute signed addressed handoffs; ordinary-text execution is limited to a trusted two-agent room
+  with `--all-messages --allow-from <trusted-id>`.
+- MCP and low-level session creation now admit valid key holders immediately by default. Explicit
+  `approval: true` / `--approval` still uses the unchanged owner-only gate, and old
+  `--no-approval` scripts remain compatible. The desktop no longer offers a gate on new rooms but
+  preserves controls for previously gated records.
+- Full workspace CI passes (build, Clippy with warnings denied, 181 CLI tests, 45 mesh tests, docs,
+  and cargo-deny). Desktop tests, TypeScript checks, and production build also pass.
+
+---
+
+# Continuous room listener contract
+
+## Plan
+- [x] Add a reusable `ConnectorRuntime` listener that continuously re-pulls durable room state,
+      applies attention/signature policy, and invokes a supplied host-native injector immediately.
+- [x] Preserve push as a latency hint, recover missed pushes through Pull, and keep failed injections
+      unacknowledged for retry.
+- [x] Use the bounded listener in Claude Code's Stop-hook injection path and add focused runtime tests.
+- [x] Update the host-contract docs, run targeted tests, and self-review the diff.
+
+## Risks
+- The listener must not imply that arbitrary MCP hosts can wake a stopped model; they still need a
+  native injection seam or an explicit `conversation`, `work`, or `supervise` process.
+- A timeout or failed injector must never consume durable work, and attention-held traffic must stay
+  behind the cursor.
+
+## Review
+- `ConnectorRuntime::listen_until` subscribes before its first Pull, waits on push when available,
+  and periodically re-pulls so push loss cannot lose work. It returns after one accepted injection,
+  preserving native host turn serialization.
+- Claude Code's bounded Stop-hook listener now uses the shared contract instead of duplicating the
+  polling loop. Hosts without an injection seam remain on the explicit worker/supervisor boundary.
+- Real-hub tests cover immediate wake, failed-injector retry without cursor advance, and focus-held
+  replay after attention opens. Full connector tests and targeted all-target Clippy pass.
+- Self-review against `docs/code-review-guidelines.md`: no remaining findings in this slice.

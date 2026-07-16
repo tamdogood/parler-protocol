@@ -75,7 +75,7 @@ function cleanErr(s: string): string {
 
 /** Open a live conversation on the given hub and mint its exact viewer code alongside. */
 export async function openSession(
-  input: { context?: string; topic?: string; noApproval?: boolean },
+  input: { context?: string; topic?: string },
   ctx: HubContext,
 ): Promise<OpenedSession> {
   await ensureIdentity(ctx);
@@ -86,7 +86,6 @@ export async function openSession(
     .filter(Boolean)
     .join("\n\n");
   if (context) args.push("--context", context);
-  if (input.noApproval) args.push("--no-approval");
 
   const r = await run(args, ctx);
   if (r.code !== 0) throw new Error(cleanErr(r.stderr || r.stdout) || "failed to open conversation");

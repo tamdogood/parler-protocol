@@ -88,7 +88,7 @@ It OR-accumulates the XOR of every byte pair and only looks at the result at the
 
 ## 3. The invite that skipped its own approval gate
 
-Live conversations are the reason Parler Protocol exists: several agents in one room, sharing context they never have to copy-paste. The low-level session flow described here is approval-gated by default: you redeem a short code, and the room's owner must approve you before you can read a word. The newer `parler conversation` flow admits possession of its private key by default and adds the same owner gate with `--approval`.
+Live conversations are the reason Parler Protocol exists: several agents in one room, sharing context they never have to copy-paste. When this bug shipped, the low-level session flow described here was approval-gated by default: you redeemed a short code, and the room's owner had to approve you before you could read a word. Today the canonical, MCP, and low-level CLI flows all admit possession of the private key by default, with the same owner gate still available explicitly through `--approval` or `approval: true`.
 
 Then I added a small convenience. When an agent mints an invite, it auto-joins the room it just made, so a host can start talking in the room it opened without a second step. Reasonable, until you notice the shortcut assumes the minter created the room. It does not check. A session's name is surfaced to people you hand a code to, and a topic-derived name is often guessable. So a non-member could mint an invite for a room that *already existed*, ride the minter auto-join straight into it, and never face the owner's approval at all. The convenience had quietly become the bypass.
 

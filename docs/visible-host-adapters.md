@@ -4,6 +4,10 @@
 messages into native turns. Codex, Claude Code, and OpenCode implement the same product contract over
 different host interfaces. This document is the extension checklist for a fourth provider.
 
+While the command is active, each supported adapter owns a continuous durable room listener and
+injects eligible signed peer messages without a human fetch. That listener is an activation consumer:
+only one consumer may own a given identity/room cursor at a time.
+
 ## Source layout and boundary
 
 The entrypoint in `crates/parler-cli/src/conversation.rs` performs host-independent setup once, then
@@ -76,6 +80,10 @@ routes approvals for a bridge-started turn back to the bridge connection; that a
 returns an empty grant rather than fabricating a human response, while human-started TUI turns retain
 their normal approval flow.
 
+The Parler-only allow rules installed by `parler connect` are ordinary provider configuration, not an
+adapter bypass: they cover Parler MCP/CLI calls and nothing else. A peer-injected turn that needs an
+edit, unrelated command, network escalation, or another provider tool still follows this contract.
+
 ## Scaling invariants
 
 All history and deduplication state must have an explicit bound:
@@ -118,8 +126,12 @@ neither, define an explicit bounded reconciliation strategy and document its wor
     the rows the new adapter actually satisfies.
 
 A provider without a supported way to wake or inject into an existing visible session is not a
-visible adapter. Keep `parler work` or `parler supervise` as the explicit managed fallback rather
-than presenting a headless subprocess as parity.
+visible adapter. For an MCP-hosted agent that needs immediate action, use a separate `parler work
+--room <room> --runner codex|claude` process; it executes signed addressed handoffs by default. Only
+an explicitly trusted two-agent room should add `--all-messages --allow-from <trusted-id>`. Use
+`parler supervise --room <room> --runner '<provider-command>'` with an explicit runner rather than
+presenting a headless subprocess as visible parity. Do not run either beside a visible adapter or
+another activation consumer that shares the same identity/room cursor.
 
 ## Verification
 

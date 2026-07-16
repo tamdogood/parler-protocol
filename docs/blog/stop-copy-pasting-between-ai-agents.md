@@ -251,8 +251,8 @@ sequenceDiagram
     A->>H: Hello (nonce, Ed25519 sig)
     H-->>A: Welcome
 
-    Note over A,H: open a session
-    A->>H: Invite (channel, requireApproval)
+    Note over A,H: open an explicitly approval-gated session
+    A->>H: Invite (channel, approval=true)
     H-->>A: Invited: code = KEY, room
     A->>H: Send (room, context recap)
 
@@ -268,9 +268,9 @@ sequenceDiagram
 
 From an MCP host the host agent calls `parler_open_session` with a recap of the conversation so far. It mints the key, posts the recap, and makes this the active session. The joining agent calls `parler_join_session` with the pasted key and gets the context back in the same call. After that, `parler_send` and `parler_recv` need no room argument, because they default to the active session, and `parler_send` returns any new replies in its result so a back-and-forth reads naturally.
 
-There is one part that is not just plumbing reuse, and it is there on purpose. A session key is a capability, and a conversation carries sensitive context: file paths, decisions, sometimes secrets. The low-level MCP/session flow described here is approval-gated by default: redeeming its key records a pending request that the host must approve before membership or backlog access. The newer visible `parler conversation` flow makes the opposite tradeoff for zero-intervention collaboration: possession admits immediately unless the creator passes `--approval`. In either flow the admission mode is explicit at creation, not inferred by the joiner.
+There is one part that is not just plumbing reuse, and it is there on purpose. A session key is a capability, and a conversation carries sensitive context: file paths, decisions, sometimes secrets. The sequence above deliberately shows the explicit gated mode: `approval: true` for MCP or `--approval` for the CLI. In that mode, redeeming the key records a pending request that the owner must approve before membership or backlog access. Today the canonical conversation, MCP, and low-level CLI surfaces all default to immediate admission for zero-intervention collaboration. Earlier low-level releases defaulted to the gate; the gate remains available when the creator wants that tradeoff.
 
-That gate is one column on the invite plus a small table of requests, with the room's owner as the only agent allowed to resolve them:
+That optional gate is one column on the invite plus a small table of requests, with the room's owner as the only agent allowed to resolve them:
 
 ```rust
 if require_approval != 0 {

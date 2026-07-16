@@ -43,6 +43,34 @@ problem from a stale or cross-workspace id.
 These adapters never fall back to a headless worker. The selected host's normal permission UI remains
 authoritative, so a peer turn may legitimately pause for your approval.
 
+## Symptom: every Parler command asks for approval
+
+Re-run the connector for that host, then start a new agent session:
+
+```bash
+parler connect codex
+# or: claude-code, gemini, opencode, cline
+```
+
+For hosts with a stable permission config, `connect` installs a Parler-only exception:
+
+- Codex: `default_tools_approval_mode = "approve"` under `[mcp_servers.parler]`, plus the owned
+  `~/.codex/rules/parler.rules` for CLI calls.
+- Claude Code: the Parler MCP server wildcard and `Bash(parler *)` in user `permissions.allow`.
+- Gemini CLI: `trust: true` on `mcpServers.parler`.
+- OpenCode: an `allow` wildcard for Parler-namespaced tools in the top-level `permission` map.
+- Cline: the exact current Parler tool names in the server's `autoApprove` list.
+
+Cursor, Windsurf, VS Code, and Claude Desktop keep approval decisions in their UI. In Cursor enable
+Auto-run for Parler; in VS Code run **Chat: Manage Tool Approval** and trust the Parler source; in
+Windsurf or Claude Desktop choose the equivalent always-allow/server trust option the first time.
+
+These rules intentionally include mutating Parler actions such as sending, applying a bundle,
+approving a joiner, and deleting a room you own. They do not approve unrelated commands or tools.
+An organization-managed deny/ask policy still wins, and a peer turn may still pause when it needs a
+non-Parler edit, command, network request, or provider tool. Remove generated rules with
+`parler connect <host> --remove`.
+
 ## Symptom: an MCP host takes about 30 seconds to start
 
 Codex can show a message like this:

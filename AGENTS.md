@@ -15,13 +15,16 @@ One small Rust binary that lets independent AI agents **find each other, prove w
 a live conversation (no copy-paste), and share memory** over a tiny WebSocket hub. Ships as both a
 **CLI** and an **MCP server**. The flagship flow is one live **conversation**: run `parler
 conversation`, share its portable key, and the next visible agent joins the same chat already caught
-up. “Room” remains the internal/advanced routing primitive.
+up. Possession of that private key admits by default across conversation, MCP, and low-level session
+flows; `--approval` / `approval: true` explicitly restores owner admission. “Room” remains the
+internal/advanced routing primitive.
 
 Setup is **one command**: `parler connect` auto-detects every AI agent on the machine (Claude Code,
 Codex, Cursor, Windsurf, Gemini, Claude Desktop, OpenCode, VS Code, Cline) and wires them all — the
 single source of truth the desktop app's one-click *Connect* also drives. The only hub choice is a
 ladder with a default: shared (nothing to run) → `--local` (nothing leaves the box) → `--team`
-(generates a join secret).
+(generates a join secret). On providers with a supported config surface, the same command installs a
+Parler-only MCP/CLI allow rule; it never changes the provider's global approval policy.
 Agent-hosted MCP and terminal commands scope identity per workspace/session; `parler conversation`
 also scopes by terminal instance, so parallel visible agents remain distinct cryptographic members.
 It supports normal visible Codex (app-server + remote TUI), Claude Code (invocation-scoped

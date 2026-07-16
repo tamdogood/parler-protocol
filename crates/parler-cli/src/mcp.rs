@@ -17,6 +17,8 @@ use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 const MCP_PROTOCOL_VERSION: &str = "2024-11-05";
+const MCP_LISTEN_INSTRUCTIONS: &str = "When a Parler session is active and no visible conversation adapter or separate worker owns its cursor, keep one parler_recv call outstanding with wait_secs=60. After acting on new messages, call it again without waiting for the user. Stop only after parler_close_session; never run two listeners for the same identity and room.";
+const ACTIVE_LISTEN_HINT: &str = "🔁 Stay live: call parler_recv with wait_secs=60 now; act, then repeat until parler_close_session. Use only one listener for this identity/room.";
 
 /// The always-on, world-readable hub a fresh agent joins by default (override with `PARLER_HUB`).
 /// Shared with [`crate::connect`] so both the bootstrap and the wiring command agree on one URL.
@@ -608,7 +610,12 @@ async fn handle(state: &mut McpState, method: &str, params: Value) -> Result<Val
                 "resources": {},
                 "prompts": {}
             },
-            "serverInfo": { "name": "parler", "version": env!("CARGO_PKG_VERSION") }
+            "serverInfo": { "name": "parler", "version": env!("CARGO_PKG_VERSION") },
+            "instructions": if state.active_conversation_managed_externally {
+                "A visible Parler conversation adapter owns receive and wake injection. Use Parler tools normally, but do not start another listener for its room."
+            } else {
+                MCP_LISTEN_INSTRUCTIONS
+            }
         })),
         "tools/list" => Ok(json!({ "tools": tool_specs() })),
         "tools/call" => {
@@ -1239,9 +1246,9 @@ async fn call_session_tool(state: &mut McpState, name: &str, args: &Value) -> Re
         }
         "parler_open_session" => {
             let context = s("context");
-            // Approval defaults ON: a session is a live conversation, so the host vets each joiner
-            // before they can read it. Pass approval=false to revert to open (paste-and-join) keys.
-            let approval = args.get("approval").and_then(Value::as_bool).unwrap_or(true);
+            // Possession of the private key admits by default, matching `parler conversation` and
+            // removing a human round trip. Sensitive sessions can still opt into host approval.
+            let approval = args.get("approval").and_then(Value::as_bool).unwrap_or(false);
             let preapprove = parse_name_list(args.get("preapprove"));
             let mut out = open_session(
                 state,
@@ -1266,6 +1273,9 @@ async fn call_session_tool(state: &mut McpState, name: &str, args: &Value) -> Re
                     ));
                     state.preapprovals.insert(room, listed);
                 }
+            }
+            if let Some(room) = state.active_session.clone() {
+                append_active_listen_hint(state, &room, &mut out);
             }
             Ok(out)
         }
@@ -1449,6 +1459,7 @@ async fn call_session_tool(state: &mut McpState, name: &str, args: &Value) -> Re
             if let Some(notice) = pending_join_notice(state, &room).await {
                 out.push_str(&notice);
             }
+            append_active_listen_hint(state, &room, &mut out);
             Ok(out)
         }
         "parler_handoff" => {
@@ -1562,6 +1573,7 @@ async fn call_session_tool(state: &mut McpState, name: &str, args: &Value) -> Re
             if let Some(notice) = pending_join_notice(state, &room).await {
                 out.push_str(&notice);
             }
+            append_active_listen_hint(state, &room, &mut out);
             Ok(out)
         }
         "parler_fetch" => {
@@ -1687,10 +1699,9 @@ async fn bring_second_opinion(state: &mut McpState, args: &Value) -> Result<Stri
 }
 
 /// Open a shared session: mint a multi-use channel invite (the key), seed it with the caller's
-/// context snapshot so late joiners get caught up, and adopt it as the active session. With
-/// `require_approval` (the default), the key only lets an agent *ask* to join — this host must
-/// approve each one before it can read the conversation, so a leaked key can't quietly pull the
-/// context.
+/// context snapshot so late joiners get caught up, and adopt it as the active session. With explicit
+/// `require_approval`, the key only lets an agent *ask* to join — this host must approve each one
+/// before it can read the conversation.
 async fn open_session(
     state: &mut McpState,
     context: Option<&str>,
@@ -1722,7 +1733,8 @@ async fn open_session(
     // A ready-to-paste one-liner the host can drop straight into Slack/Discord: it adds the Parler Protocol
     // MCP server already pointed at this session, so a teammate joins with a single command and no
     // prior setup. Carries the hub + join secret when they aren't the defaults, so it also works on a
-    // private/team hub. (The joiner still lands pending your approval — the gate is unchanged.)
+    // private/team hub. An explicitly approval-gated session still lands pending; the default key
+    // joins immediately.
     let oneliner = {
         let mut env = format!("-e PARLER_SESSION_KEY={}", inv.code);
         if state.agent.hub_url != DEFAULT_PUBLIC_HUB {
@@ -2008,10 +2020,12 @@ async fn enter_session(state: &mut McpState, room: String, backlog: Backlog) -> 
         Ok(entries) => format!("\n— {} agent(s) in the room —", entries.len()),
         Err(_) => String::new(),
     };
-    Ok(format!(
+    let mut out = format!(
         "joined session — room '{room}', now your active session.\n\
          {digest_line}--- context so far ---\n{body}\n--- end context ---{roster_line}"
-    ))
+    );
+    append_active_listen_hint(state, &room, &mut out);
+    Ok(out)
 }
 
 /// The success-in-progress result for an approval-gated redeem the host hasn't decided yet. NOT an
@@ -2215,6 +2229,20 @@ fn handoff_banner(state: &McpState, msgs: &[&StoredMessage]) -> Option<String> {
     ))
 }
 
+/// Keep a compatible MCP-hosted agent inside the active turn so it long-polls without a human
+/// asking it to fetch. A visible conversation adapter owns its own durable receive loop, so emitting
+/// the same instruction there would create two consumers for one room cursor.
+fn append_active_listen_hint(state: &McpState, room: &str, out: &mut String) {
+    if state.active_conversation_managed_externally
+        || state.active_session.as_deref() != Some(room)
+        || out.contains(ACTIVE_LISTEN_HINT)
+    {
+        return;
+    }
+    out.push_str("\n\n");
+    out.push_str(ACTIVE_LISTEN_HINT);
+}
+
 /// Leave the active session: announce departure, go idle, and forget the session locally. The room
 /// itself stays alive for the others; hub-side cleanup happens via the idle timeout / disconnect.
 async fn close_session(state: &mut McpState) -> Result<String> {
@@ -2256,12 +2284,12 @@ fn tool_specs() -> Vec<Value> {
     vec![
         tool(
             "parler_open_session",
-            "Open a live session. Give its KEY to an agent to join caught up; WATCH is read-only for a human viewer. Context posts first. Approval is on by default. Becomes active for send/recv.",
+            "Open a live session. Give its KEY to an agent to join caught up; WATCH is read-only for a human viewer. Context posts first. Key holders join by default. Becomes active; keep parler_recv wait_secs=60 outstanding while this MCP turn remains live.",
             json!({
                 "context": { "type": "string", "description": "recap of the conversation/state to catch up joiners" },
                 "topic": { "type": "string", "description": "short session name" },
-                "approval": { "type": "boolean", "description": "require approval before a joiner is admitted (default true; false = open paste-and-join)" },
-                "preapprove": { "type": "array", "items": { "type": "string" }, "description": "trusted names/ids to auto-admit with no prompt (e.g. [\"codex\"]); others still need approval, so a leaked key can't admit off-list" },
+                "approval": { "type": "boolean", "description": "opt into host approval before admission (default false)" },
+                "preapprove": { "type": "array", "items": { "type": "string" }, "description": "with approval:true, trusted names/ids to auto-admit; others remain gated" },
                 "ttl_secs": { "type": "integer", "description": "key validity (default 24h)" },
                 "max_uses": { "type": "integer", "description": "max joiners (default 50)" }
             }),
@@ -2269,7 +2297,7 @@ fn tool_specs() -> Vec<Value> {
         ),
         tool(
             "parler_join_session",
-            "Join with a KEY. Approval-gated joins can wait in this call. Returns a context digest; backlog:full replays all. Becomes active for send/recv.",
+            "Join with a KEY. Approval-gated joins can wait in this call. Returns a context digest; backlog:full replays all. Becomes active; keep parler_recv wait_secs=60 outstanding while this MCP turn remains live.",
             json!({
                 "key": { "type": "string", "description": "the session key or link you were handed" },
                 "backlog": { "type": "string", "enum": ["recent", "full"], "description": "recent (default): seed + recent tail; full: whole backlog" },
@@ -2370,7 +2398,7 @@ fn tool_specs() -> Vec<Value> {
         ),
         tool(
             "parler_recv",
-            "Pull new messages since your cursor (advances it). Defaults to active session; or pass room. wait_secs long-polls that many seconds for a pushed reply (cheaper than re-calling). Long bodies truncate with a refetch hint; `since` re-reads a range in FULL. Batch is bounded — 'more waiting' means call again.",
+            "Pull new messages since your cursor (advances it). Defaults to active session; or pass room. wait_secs long-polls that many seconds for a pushed reply. While the MCP session is active, act on messages and call again without waiting for the user. Long bodies truncate with a refetch hint; `since` re-reads a range in FULL.",
             json!({
                 "room": { "type": "string" },
                 "since": { "type": "integer", "description": "read-only full replay from seq (no cursor advance)" },
@@ -2537,6 +2565,15 @@ fn tool_specs() -> Vec<Value> {
             &["id"],
         ),
     ]
+}
+
+/// Exact MCP tool names exposed by this server. Provider installers that support per-tool trust
+/// (Cline) use this list, so a newly added Parler tool cannot silently fall back to prompting.
+pub(crate) fn tool_names() -> Vec<String> {
+    tool_specs()
+        .into_iter()
+        .filter_map(|tool| tool.get("name").and_then(Value::as_str).map(str::to_string))
+        .collect()
 }
 
 #[cfg(test)]
@@ -2746,8 +2783,10 @@ mod tests {
     /// bloating back up. Auto-minting the read-only WATCH code up front (so the host never pastes the
     /// join KEY into the viewer — that 401s) adds the 32-char token + a one-line label, ~200 B → ~815;
     /// ceiling → 900. Surfacing the agent's own name ("you are '<name>' here …") so the host can relay
-    /// who's in the room adds ~70 B → ~885; ceiling → 960 to restore headroom.
-    const OPEN_RESULT_BUDGET: usize = 960;
+    /// who's in the room adds ~70 B. The active-session receive-loop steering makes the actual tool
+    /// result ~1,050 B; 1,120 keeps a small guardrail without testing a lower-level helper that omits
+    /// host-visible steering.
+    const OPEN_RESULT_BUDGET: usize = 1_120;
 
     /// A body of exactly `len` ASCII chars (deterministic sizing for budget assertions).
     fn body_of(len: usize) -> String {
@@ -3345,9 +3384,16 @@ mod tests {
         let mut alice = state(&hub, "alice").await;
         let mut bob = state(&hub, "bob").await;
 
-        let opened = open_session(&mut alice, Some("designing the auth flow; see src/auth.rs"), Some("design".into()), None, None, false)
-            .await
-            .unwrap();
+        let opened = call_session_tool(
+            &mut alice,
+            "parler_open_session",
+            &json!({
+                "context": "designing the auth flow; see src/auth.rs",
+                "topic": "design"
+            }),
+        )
+        .await
+        .unwrap();
         assert!(opened.contains("KEY: "));
         // The output carries a ready-to-paste teammate one-liner with the session key preset.
         assert!(opened.contains("claude mcp add parler"), "shareable one-liner present:\n{opened}");
@@ -3683,16 +3729,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn open_session_defaults_to_immediate_key_admission() {
+        let hub = start_hub().await;
+        let mut alice = state(&hub, "alice").await;
+        let mut bob = state(&hub, "bob").await;
+
+        let opened = call_session_tool(
+            &mut alice,
+            "parler_open_session",
+            &json!({ "context": "shared plan: ship friday", "topic": "plan" }),
+        )
+        .await
+        .unwrap();
+        assert!(opened.contains("joins immediately"), "default admission is explicit: {opened}");
+        assert!(opened.contains(ACTIVE_LISTEN_HINT), "the opener starts listening without a human fetch: {opened}");
+
+        let joined = join_session(&mut bob, &key_of(&opened), Backlog::Recent, None).await.unwrap();
+        assert!(joined.contains("shared plan: ship friday"), "the key catches bob up immediately: {joined}");
+        assert!(joined.contains(ACTIVE_LISTEN_HINT), "the joiner is told to keep a receive outstanding: {joined}");
+        assert_eq!(bob.active_session, alice.active_session);
+        assert!(alice.agent.join_requests(alice.active_session.as_ref().unwrap()).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
     async fn approval_session_gates_joiner_until_host_approves() {
         let hub = start_hub().await;
         let mut alice = state(&hub, "alice").await;
         let mut bob = state(&hub, "bob").await;
 
-        // Alice opens an approval-gated session (the default for parler_open_session).
-        let opened =
-            open_session(&mut alice, Some("secret plan: ship friday"), Some("plan".into()), None, None, true)
-                .await
-                .unwrap();
+        // Sensitive rooms can still opt into the original owner-approval gate.
+        let opened = call_session_tool(
+            &mut alice,
+            "parler_open_session",
+            &json!({ "context": "secret plan: ship friday", "topic": "plan", "approval": true }),
+        )
+        .await
+        .unwrap();
         assert!(opened.contains("approve"), "the host is told joiners need approval: {opened}");
         let key = key_of(&opened);
 
@@ -3734,7 +3806,12 @@ mod tests {
         let opened = call_session_tool(
             &mut alice,
             "parler_open_session",
-            &json!({ "context": "secret plan: ship friday", "topic": "plan", "preapprove": ["bob"] }),
+            &json!({
+                "context": "secret plan: ship friday",
+                "topic": "plan",
+                "approval": true,
+                "preapprove": ["bob"]
+            }),
         )
         .await
         .unwrap();
@@ -3767,7 +3844,12 @@ mod tests {
         let opened = call_session_tool(
             &mut alice,
             "parler_open_session",
-            &json!({ "context": "secret plan", "topic": "plan", "preapprove": ["bob"] }),
+            &json!({
+                "context": "secret plan",
+                "topic": "plan",
+                "approval": true,
+                "preapprove": ["bob"]
+            }),
         )
         .await
         .unwrap();
@@ -4047,6 +4129,7 @@ mod tests {
 
         // initialize advertised the server; tools/list registered the new session tools.
         assert!(out.contains("\"protocolVersion\""));
+        assert!(out.contains("keep one parler_recv call outstanding"), "initialize steers the active-turn listener: {out}");
         assert!(out.contains("parler_open_session"));
         assert!(out.contains("parler_join_session"));
         assert!(out.contains("parler_close_session"));
@@ -4054,6 +4137,23 @@ mod tests {
         // the open_session call ran and returned a key, and set the active session.
         assert!(out.contains("KEY: "));
         assert!(alice.active_session.is_some());
+    }
+
+    #[tokio::test]
+    async fn visible_conversation_suppresses_mcp_listener_steering() {
+        let hub = start_hub().await;
+        let mut alice = state(&hub, "alice").await;
+        alice.active_session = Some("room.visible".into());
+        alice.active_conversation_managed_externally = true;
+
+        let mut out = "joined".to_string();
+        append_active_listen_hint(&alice, "room.visible", &mut out);
+        assert_eq!(out, "joined", "the visible adapter remains the only cursor owner");
+
+        let initialized = handle(&mut alice, "initialize", Value::Null).await.unwrap();
+        let instructions = initialized["instructions"].as_str().unwrap();
+        assert!(instructions.contains("visible Parler conversation adapter owns"));
+        assert!(!instructions.contains("keep one parler_recv"));
     }
 
     #[tokio::test]

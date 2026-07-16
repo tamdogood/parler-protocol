@@ -77,7 +77,7 @@ in [`../../docs/visible-host-adapters.md`](../../docs/visible-host-adapters.md).
 For scripts or a host without a visible adapter, use the older room/session controls:
 
 ```bash
-parler session open --topic review --context "Current decision and files"  # approval-gated default
+parler session open --topic review --context "Current decision and files"  # key admits immediately
 parler session join KEY@HUB
 parler send --room <room> "review this"
 parler recv --room <room>

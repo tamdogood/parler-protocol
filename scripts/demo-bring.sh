@@ -68,7 +68,7 @@ banner "1. you're mid-chat — open a session for this piece of work"
 CONTEXT="Reviewing a change to src/auth.rs: the login handler compares the submitted password hash to the stored one with '==', and unwrap()s the u32 parse of a 'max_attempts' form field. Want a second opinion before I ship."
 say "what you want a second opinion on:"
 say "\"$CONTEXT\""
-OPEN_OUT="$(as session open --topic auth-review --no-approval --context "$CONTEXT")"
+OPEN_OUT="$(as session open --topic auth-review --context "$CONTEXT")"
 ROOM="$(printf '%s\n' "$OPEN_OUT" | sed -n "s/^✓ session open — room '\\([^']*\\)'.*/\\1/p" | head -1)"
 [[ -n "$ROOM" ]] || { echo "!! couldn't parse ROOM from 'session open'"; exit 1; }
 say "session room: $ROOM"

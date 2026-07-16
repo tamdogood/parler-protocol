@@ -10,6 +10,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use parler_protocol::{Part, RoomKind, StoredMessage, Target};
 use std::collections::{HashSet, VecDeque};
+use std::time::Duration;
 
 /// A host lifecycle transition mirrored into Parler presence. `offline` is intentionally absent:
 /// observers derive it from a stale heartbeat rather than trusting a process to announce its death.
@@ -92,6 +93,8 @@ pub struct ConnectorRuntime {
 }
 
 const SEEN_CAP: usize = 1_024;
+const PUSH_RECHECK: Duration = Duration::from_secs(25);
+const POLL_RECHECK: Duration = Duration::from_secs(2);
 
 impl ConnectorRuntime {
     pub fn new(agent: MeshAgent, attention: AttentionPolicy) -> ConnectorRuntime {
@@ -211,6 +214,47 @@ impl ConnectorRuntime {
             }
         }
         Ok(true)
+    }
+
+    /// Continuously listen for one policy-approved wake until `max_wait` expires. Push lowers the
+    /// latency, while every wake is recovered and authorized through the durable Pull path before it
+    /// reaches the supplied host-native injector. The method returns after the first accepted
+    /// injection so the host can serialize the resulting model turn; call it again when that host is
+    /// idle and ready for another turn.
+    ///
+    /// A timeout returns `false` without consuming held traffic. An injector failure is returned and
+    /// leaves the message unacknowledged so a later listener can retry it. A host without an injection
+    /// seam must not fabricate one here; it should use an explicit local supervisor instead.
+    pub async fn listen_until<I: HostWakeInjector>(
+        &mut self,
+        injector: &mut I,
+        room: &str,
+        kind: RoomKind,
+        worker_role: Option<&str>,
+        limit: Option<u32>,
+        max_wait: Duration,
+    ) -> Result<bool> {
+        let deadline = tokio::time::Instant::now() + max_wait;
+        let _ = self.agent.resubscribe_if_needed().await;
+        loop {
+            let received = self.receive(room, kind, worker_role, limit).await?;
+            if self.inject(injector, received).await? {
+                return Ok(true);
+            }
+
+            let now = tokio::time::Instant::now();
+            if now >= deadline {
+                return Ok(false);
+            }
+            let remaining = deadline - now;
+            if self.agent.resubscribe_if_needed().await {
+                // Delivery is only a doorbell. Re-pull at the top of the loop even when this wake
+                // names another room, and periodically re-pull if a best-effort push was missed.
+                let _ = self.agent.next_delivery(remaining.min(PUSH_RECHECK)).await?;
+            } else {
+                tokio::time::sleep(remaining.min(POLL_RECHECK)).await;
+            }
+        }
     }
 
     fn remember_wake(&mut self, id: &str) -> bool {

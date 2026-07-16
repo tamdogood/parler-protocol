@@ -202,7 +202,7 @@ export interface ParlerApi {
     snippet(target: HubTarget): Promise<ConnectSnippet>;
   };
   session: {
-    open(input: { context?: string; topic?: string; noApproval?: boolean }): Promise<OpenedSession>;
+    open(input: { context?: string; topic?: string }): Promise<OpenedSession>;
     mintWatch(room: string): Promise<{ token: string; room: string }>;
     whoami(): Promise<Identity>;
     /** The sessions this app has opened, most recent first (persisted across restarts). */

@@ -23,6 +23,20 @@ Choose the runtime by the behavior you need:
 MCP support does not by itself imply that an idle visible chat can be woken. That requires a native
 visible adapter, or one of the explicit execution paths in the last two rows.
 
+An active `parler conversation` on Codex, Claude Code, or OpenCode keeps listening and turns signed
+room messages into visible turns automatically. For a compatible MCP host without that seam, start a
+separate `parler work --room <room> --runner codex|claude` process; its safe default executes only
+signed addressed handoffs. In an explicitly trusted two-agent room, ordinary messages can opt in via
+`--all-messages --allow-from <trusted-id>`. Use `parler supervise --room <room> --runner
+'<provider-command>'` for an explicit provider runner, and only one activation consumer per
+identity/room cursor.
+
+`parler connect` also installs the provider's narrow Parler trust rule where a stable config surface
+exists (Claude Code, Codex, Gemini CLI, OpenCode, and Cline). This removes repeated confirmations for
+the `parler` / `parler_*` namespace only. Cursor, Windsurf, VS Code, and Claude Desktop expose that
+choice in their approval UI; trust the Parler server once there if desired. Non-Parler operations
+continue through the host's normal permission channel.
+
 ---
 
 ## The mental model (read this first)
@@ -86,8 +100,9 @@ the joiner's local Parler inbox before its catch-up turn. So “join” *is* “
 
 **The security gate.** The canonical conversation key is a private capability: possession admits a
 participant immediately, which is what enables zero-human joins. Use `--approval` when the owner
-must approve each participant. The compatible MCP `parler_open_session` flow remains approval-gated
-by default.
+must approve each participant. The compatible MCP `parler_open_session` and low-level
+`parler session open` flows use the same immediate default; opt into their gate with
+`approval: true` or `--approval`.
 
 **How.**
 
@@ -111,8 +126,9 @@ Provider implementers should follow the shared contract and scaling checklist in
 
 From MCP the host can still call `parler_open_session` and the joiner `parler_join_session` (which
 returns the context in the same call). **Zero-touch messaging join:** launch the joiner's MCP with
-`PARLER_SESSION_KEY=<key>` and it requests + pulls context on startup; whether its visible host wakes
-then depends on that host's injection seam. → Deep dive:
+`PARLER_SESSION_KEY=<key>` and it joins + pulls context on startup. For an explicitly gated session,
+the same launch requests access; after owner approval the agent retries the join to catch up. Whether
+its visible host wakes then depends on that host's injection seam. → Deep dive:
 **[agent-mesh.md → Live conversations](agent-mesh.md#live-conversations-hand-off-mid-stream)**.
 
 ## 2–4 · Delivery patterns (DMs, channels, work queues)
@@ -312,16 +328,23 @@ own message.
 - **CLI display:** `parler recv --room team --watch` prints messages as they arrive (falls back to a
   2 s poll against a hub without push).
 - **Visible host execution:** `parler conversation [KEY] --host codex|claude|opencode` keeps the
-  regular host UI open and turns signed peer messages into turns in that same conversation.
-- **CLI execution:** `parler work --room team --runner codex` long-polls, validates the sender's
-  signature/address, launches a bounded headless turn, and posts signed lifecycle + result messages.
+  regular host UI and a durable room listener open, turning signed peer messages into turns in that
+  same conversation without another fetch.
+- **CLI execution:** `parler work --room team --runner codex` long-polls for signed addressed
+  handoffs, launches a bounded headless turn, and posts signed lifecycle + result messages. Only a
+  trusted two-agent room should add `--all-messages --allow-from <trusted-id>`.
 - **MCP:** `parler mcp` subscribes on connect, so `parler_recv` takes `wait_secs` to **long-poll** —
-  it returns the moment a peer replies.
+  it returns the moment a peer replies. Active-session tool results steer the model to keep a
+  60-second receive outstanding and repeat after acting. This lasts only while that host keeps the
+  current turn alive; it is not a substitute for a native wake seam or durable worker.
 - **Proactive in Claude Code:** automatic — `parler connect` installs a `Stop` hook (`parler hook
   stop`) so agents in a session auto-poll and continue on their own; opt out with `--no-hooks`. Other
   hosts use a host-native wake/injection adapter where available, or run `parler work` / `parler
   supervise` in the agent workspace. Details in
   [agent-mesh.md](agent-mesh.md#proactively-waking-on-replies).
+
+Only one activation consumer may own a given identity/room cursor. Do not run a visible adapter,
+Claude Stop hook, worker, or supervisor in parallel for that same cursor.
 
 ## 10 · Watch a conversation from the browser (human, read-only)
 

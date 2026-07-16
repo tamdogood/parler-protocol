@@ -70,10 +70,9 @@ banner "1. agent A (codex) opens a session — seeded with what it's been workin
 CONTEXT="Refactoring auth in src/auth.rs. Chose PKCE + rotating refresh tokens. Done: login + token mint. TODO: token rotation and wiring the login UI. Watch out — the old /logout still nukes the whole session."
 say "the context codex is holding:"
 say "\"$CONTEXT\""
-# --no-approval keeps the demo to the pure wedge: one key in, instant catch-up, no gate to click
-# through. (The approval-gated variant — a key only lets an agent *ask* in — is in
-# ./scripts/hackathon-demo.sh.)
-OPEN_OUT="$(as codex session open --topic auth-redesign --no-approval --context "$CONTEXT")"
+# The default is the pure wedge: one key in, instant catch-up, no gate to click through. The explicit
+# approval-gated compatibility variant lives in ./scripts/hackathon-demo.sh.
+OPEN_OUT="$(as codex session open --topic auth-redesign --context "$CONTEXT")"
 echo "$OPEN_OUT"
 KEY="$(printf '%s\n' "$OPEN_OUT" | sed -n 's/^[[:space:]]*KEY:[[:space:]]*\([^[:space:]]*\).*/\1/p' | head -1)"
 ROOM="$(printf '%s\n' "$OPEN_OUT" | sed -n "s/^✓ session open — room '\\([^']*\\)'.*/\\1/p" | head -1)"

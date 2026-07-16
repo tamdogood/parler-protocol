@@ -131,6 +131,10 @@ pub(crate) enum Wiring {
 pub(crate) enum JsonShape {
     /// `{ "command": bin, "args": ["mcp"], "env": {…} }` — the `mcpServers` standard.
     Standard,
+    /// The standard shape plus `trust: true`, Gemini CLI's server-scoped confirmation bypass.
+    Gemini,
+    /// The standard shape plus Cline's exact per-tool `autoApprove` list.
+    Cline,
     /// `{ "type": "local", "command": [bin, "mcp"], "enabled": true, "environment": {…} }` — OpenCode.
     OpenCode,
     /// `{ "type": "stdio", "command": bin, "args": ["mcp"], "env": {…} }` — VS Code's `servers`.
@@ -143,7 +147,7 @@ impl JsonShape {
     fn env_field(self) -> &'static str {
         match self {
             JsonShape::OpenCode => "environment",
-            JsonShape::Standard | JsonShape::VsCode => "env",
+            JsonShape::Standard | JsonShape::Gemini | JsonShape::Cline | JsonShape::VsCode => "env",
         }
     }
 }
@@ -207,7 +211,7 @@ pub(crate) fn registry() -> Vec<HostDef> {
         HostDef {
             id: "gemini",
             name: "Gemini CLI",
-            wiring: json_host(home.join(".gemini/settings.json"), "mcpServers", JsonShape::Standard),
+            wiring: json_host(home.join(".gemini/settings.json"), "mcpServers", JsonShape::Gemini),
             hints: vec![home.join(".gemini")],
         },
         HostDef {
@@ -231,7 +235,7 @@ pub(crate) fn registry() -> Vec<HostDef> {
         HostDef {
             id: "cline",
             name: "Cline",
-            wiring: json_host(cline_settings.clone(), "mcpServers", JsonShape::Standard),
+            wiring: json_host(cline_settings.clone(), "mcpServers", JsonShape::Cline),
             hints: vec![cline_settings.parent().map(Path::to_path_buf).unwrap_or(cline_settings)],
         },
     ]
@@ -395,6 +399,7 @@ fn write_json(path: &Path, key: &str, shape: JsonShape, env: &[(String, String)]
         .as_object_mut()
         .ok_or_else(|| anyhow!("{} has a non-object \"{key}\" — fix it and re-run", path.display()))?;
     servers.insert(SERVER_NAME.to_string(), server_entry(shape, env, binpath));
+    install_json_trust(obj, shape, path)?;
     write_secure(path, &(serde_json::to_string_pretty(&root)? + "\n"))
 }
 
@@ -428,6 +433,7 @@ fn parler_toml_item(env: &[(String, String)], binpath: &str) -> toml_edit::Item 
     let mut t = Table::new();
     t["command"] = value(binpath);
     t["args"] = value(args);
+    t["default_tools_approval_mode"] = value("approve");
     let mut env_tbl = Table::new();
     for (k, v) in env {
         env_tbl[k.as_str()] = value(v.as_str());
@@ -446,8 +452,7 @@ fn read_json(path: &Path) -> Result<Value> {
 }
 
 /// Render our server entry in the host's `shape`. The env map is identical everywhere; only the
-/// wrapping keys differ (OpenCode wants `command` as an array + `environment`; VS Code stamps a
-/// `type: "stdio"`).
+/// wrapping keys differ. Gemini and Cline also carry their native server-scoped trust metadata.
 fn server_entry(shape: JsonShape, env: &[(String, String)], binpath: &str) -> Value {
     let mut e = serde_json::Map::new();
     for (k, v) in env {
@@ -456,11 +461,50 @@ fn server_entry(shape: JsonShape, env: &[(String, String)], binpath: &str) -> Va
     let env_val = Value::Object(e);
     match shape {
         JsonShape::Standard => json!({ "command": binpath, "args": ["mcp"], "env": env_val }),
+        JsonShape::Gemini => {
+            json!({ "command": binpath, "args": ["mcp"], "env": env_val, "trust": true })
+        }
+        JsonShape::Cline => json!({
+            "command": binpath,
+            "args": ["mcp"],
+            "env": env_val,
+            "autoApprove": crate::mcp::tool_names()
+        }),
         JsonShape::OpenCode => {
             json!({ "type": "local", "command": [binpath, "mcp"], "enabled": true, "environment": env_val })
         }
         JsonShape::VsCode => json!({ "type": "stdio", "command": binpath, "args": ["mcp"], "env": env_val }),
     }
+}
+
+/// Add trust metadata that lives outside the server entry. OpenCode permission keys match the
+/// underlying MCP tool name, so `parler_*` is the narrow server namespace. A scalar global policy
+/// is preserved as the `*` fallback before the Parler-specific exception.
+fn install_json_trust(
+    root: &mut serde_json::Map<String, Value>,
+    shape: JsonShape,
+    path: &Path,
+) -> Result<()> {
+    if shape != JsonShape::OpenCode {
+        return Ok(());
+    }
+    let previous = root.remove("permission");
+    let mut permissions = match previous {
+        None => serde_json::Map::new(),
+        Some(Value::Object(map)) => map,
+        Some(Value::String(action)) if matches!(action.as_str(), "allow" | "ask" | "deny") => {
+            let mut map = serde_json::Map::new();
+            map.insert("*".into(), Value::String(action));
+            map
+        }
+        Some(other) => {
+            root.insert("permission".into(), other);
+            bail!("{} has an invalid OpenCode \"permission\" value — fix it and re-run", path.display());
+        }
+    };
+    permissions.insert("parler_*".into(), Value::String("allow".into()));
+    root.insert("permission".into(), Value::Object(permissions));
+    Ok(())
 }
 
 /// Create parents, write, and lock to `0600` — configs we author can carry a join secret (team mode),
@@ -486,6 +530,77 @@ fn write_secure(path: &Path, contents: &str) -> Result<()> {
 /// the MCP server in, so the two travel together).
 fn claude_settings_path() -> PathBuf {
     user_home().join(".claude/settings.json")
+}
+
+const CLAUDE_PARLER_PERMISSIONS: [&str; 2] = ["mcp__parler__*", "Bash(parler *)"];
+
+/// Trust only Parler's MCP namespace and bare CLI command in Claude Code. Deny/ask rules in any
+/// scope still win according to Claude's normal policy order; this never enables global bypass mode.
+fn install_claude_permissions() -> Result<()> {
+    install_claude_permissions_at(&claude_settings_path())
+}
+
+fn install_claude_permissions_at(path: &Path) -> Result<()> {
+    let mut root = if path.exists() { read_json(path)? } else { json!({}) };
+    let obj = root
+        .as_object_mut()
+        .ok_or_else(|| anyhow!("{} is not a JSON object — move it aside and re-run", path.display()))?;
+    let permissions = obj
+        .entry("permissions")
+        .or_insert_with(|| json!({}))
+        .as_object_mut()
+        .ok_or_else(|| anyhow!("{} has a non-object \"permissions\" — fix it and re-run", path.display()))?;
+    let allow = permissions
+        .entry("allow")
+        .or_insert_with(|| json!([]))
+        .as_array_mut()
+        .ok_or_else(|| anyhow!("{} has a non-array \"permissions.allow\" — fix it and re-run", path.display()))?;
+    for rule in CLAUDE_PARLER_PERMISSIONS {
+        if !allow.iter().any(|entry| entry.as_str() == Some(rule)) {
+            allow.push(Value::String(rule.into()));
+        }
+    }
+    write_config(path, &(serde_json::to_string_pretty(&root)? + "\n"))
+}
+
+fn remove_claude_permissions() -> Result<bool> {
+    remove_claude_permissions_at(&claude_settings_path())
+}
+
+fn remove_claude_permissions_at(path: &Path) -> Result<bool> {
+    if !path.exists() {
+        return Ok(false);
+    }
+    let mut root = read_json(path)?;
+    let removed = root
+        .get_mut("permissions")
+        .and_then(|permissions| permissions.get_mut("allow"))
+        .and_then(Value::as_array_mut)
+        .map(|allow| {
+            let before = allow.len();
+            allow.retain(|entry| {
+                !entry
+                    .as_str()
+                    .is_some_and(|rule| CLAUDE_PARLER_PERMISSIONS.contains(&rule))
+            });
+            before != allow.len()
+        })
+        .unwrap_or(false);
+    if !removed {
+        return Ok(false);
+    }
+    if let Some(permissions) = root.get_mut("permissions").and_then(Value::as_object_mut) {
+        if permissions.get("allow").and_then(Value::as_array).is_some_and(Vec::is_empty) {
+            permissions.remove("allow");
+        }
+        if permissions.is_empty() {
+            if let Some(obj) = root.as_object_mut() {
+                obj.remove("permissions");
+            }
+        }
+    }
+    write_config(path, &(serde_json::to_string_pretty(&root)? + "\n"))?;
+    Ok(true)
 }
 
 /// The shell command Claude Code runs on `Stop`. It carries the *same* identity env the MCP server
@@ -603,6 +718,57 @@ fn write_config(path: &Path, contents: &str) -> Result<()> {
     std::fs::write(path, contents).with_context(|| format!("writing {}", path.display()))
 }
 
+const CODEX_RULES_MARKER: &str = "# Managed by `parler connect`; remove with `parler connect codex --remove`.";
+
+fn codex_rules_path() -> PathBuf {
+    user_home().join(".codex/rules/parler.rules")
+}
+
+/// Codex's MCP approval mode covers native `parler_*` tools. This owned rule file covers the same
+/// executable when an agent chooses the CLI instead, without widening approval for other commands.
+fn install_codex_rules(binpath: &str) -> Result<()> {
+    install_codex_rules_at(&codex_rules_path(), binpath)
+}
+
+fn install_codex_rules_at(path: &Path, binpath: &str) -> Result<()> {
+    if path.exists() {
+        let current = std::fs::read_to_string(path)
+            .with_context(|| format!("reading {}", path.display()))?;
+        if !current.starts_with(CODEX_RULES_MARKER) {
+            bail!("{} already exists and is not managed by Parler — move it aside and re-run", path.display());
+        }
+    }
+    let mut commands = vec!["parler"];
+    if binpath != "parler" {
+        commands.push(binpath);
+    }
+    let mut text = format!("{CODEX_RULES_MARKER}\n");
+    for command in commands {
+        let command = serde_json::to_string(command)?;
+        text.push_str(&format!(
+            "prefix_rule(pattern=[{command}], decision=\"allow\", justification=\"Parler-only command trusted by parler connect\")\n"
+        ));
+    }
+    write_config(path, &text)
+}
+
+fn remove_codex_rules() -> Result<bool> {
+    remove_codex_rules_at(&codex_rules_path())
+}
+
+fn remove_codex_rules_at(path: &Path) -> Result<bool> {
+    if !path.exists() {
+        return Ok(false);
+    }
+    let current = std::fs::read_to_string(path)
+        .with_context(|| format!("reading {}", path.display()))?;
+    if !current.starts_with(CODEX_RULES_MARKER) {
+        return Ok(false);
+    }
+    std::fs::remove_file(path).with_context(|| format!("removing {}", path.display()))?;
+    Ok(true)
+}
+
 /// Wire a known host in place. Returns a short human description of where it landed.
 fn wire(def: &HostDef, env: &[(String, String)], binpath: &str) -> Result<String> {
     match &def.wiring {
@@ -625,15 +791,22 @@ fn wire(def: &HostDef, env: &[(String, String)], binpath: &str) -> Result<String
                 let err = String::from_utf8_lossy(&out.stderr);
                 bail!("claude mcp add failed: {}", err.lines().next().unwrap_or("unknown error").trim());
             }
-            Ok("claude mcp add (user scope)".to_string())
+            install_claude_permissions()?;
+            Ok("claude mcp add (user scope) + trusted Parler tools".to_string())
         }
         Wiring::Json { path, key, shape } => {
             write_json(path, key, *shape, env, binpath)?;
-            Ok(display_path(path))
+            let where_ = display_path(path);
+            if matches!(shape, JsonShape::Gemini | JsonShape::Cline | JsonShape::OpenCode) {
+                Ok(format!("{where_} + trusted Parler tools"))
+            } else {
+                Ok(where_)
+            }
         }
         Wiring::Toml(path) => {
             write_toml(path, env, binpath)?;
-            Ok(display_path(path))
+            install_codex_rules(binpath)?;
+            Ok(format!("{} + trusted Parler tools/commands", display_path(path)))
         }
     }
 }
@@ -651,29 +824,49 @@ fn unwire(def: &HostDef) -> Result<bool> {
                 .args(["mcp", "remove", SERVER_NAME, "--scope", "user"])
                 .output()
                 .context("running claude mcp remove")?;
-            Ok(out.status.success())
+            let permissions_removed = remove_claude_permissions()?;
+            Ok(out.status.success() || permissions_removed)
         }
-        Wiring::Json { path, key, .. } => remove_json(path, key),
-        Wiring::Toml(path) => remove_toml(path),
+        Wiring::Json { path, key, shape } => remove_json(path, key, *shape),
+        Wiring::Toml(path) => {
+            let server_removed = remove_toml(path)?;
+            let rules_removed = remove_codex_rules()?;
+            Ok(server_removed || rules_removed)
+        }
     }
 }
 
 /// Drop our entry from a JSON config's servers object (under `key`), preserving everything else.
 /// `Ok(false)` if absent.
-fn remove_json(path: &Path, key: &str) -> Result<bool> {
+fn remove_json(path: &Path, key: &str, shape: JsonShape) -> Result<bool> {
     if !path.exists() {
         return Ok(false);
     }
     let mut root = read_json(path)?;
-    let removed = root
+    let server_removed = root
         .get_mut(key)
         .and_then(|s| s.as_object_mut())
         .map(|servers| servers.remove(SERVER_NAME).is_some())
         .unwrap_or(false);
-    if removed {
+    let trust_removed = if shape == JsonShape::OpenCode {
+        let removed = root
+            .get_mut("permission")
+            .and_then(Value::as_object_mut)
+            .map(|permissions| permissions.remove("parler_*").is_some())
+            .unwrap_or(false);
+        if root.get("permission").and_then(Value::as_object).is_some_and(serde_json::Map::is_empty) {
+            if let Some(obj) = root.as_object_mut() {
+                obj.remove("permission");
+            }
+        }
+        removed
+    } else {
+        false
+    };
+    if server_removed || trust_removed {
         write_secure(path, &(serde_json::to_string_pretty(&root)? + "\n"))?;
     }
-    Ok(removed)
+    Ok(server_removed || trust_removed)
 }
 
 /// Drop `[mcp_servers.parler]` from a TOML config, preserving comments + other tables. `Ok(false)`
@@ -704,11 +897,21 @@ fn remove_toml(path: &Path) -> Result<bool> {
 
 fn render_shell_add(env: &[(String, String)], binpath: &str) -> String {
     let flags: String = env.iter().map(|(k, v)| format!(" --env {k}={v}")).collect();
-    format!("claude mcp add {SERVER_NAME} --scope user{flags} -- {binpath} mcp")
+    format!(
+        "claude mcp add {SERVER_NAME} --scope user{flags} -- {binpath} mcp\n\n\
+         Also merge into ~/.claude/settings.json:\n{}",
+        serde_json::to_string_pretty(&json!({
+            "permissions": { "allow": CLAUDE_PARLER_PERMISSIONS }
+        }))
+        .unwrap_or_default()
+    )
 }
 
 fn render_json_block(key: &str, shape: JsonShape, env: &[(String, String)], binpath: &str) -> String {
-    let block = json!({ key: { SERVER_NAME: server_entry(shape, env, binpath) } });
+    let mut block = json!({ key: { SERVER_NAME: server_entry(shape, env, binpath) } });
+    if shape == JsonShape::OpenCode {
+        block["permission"] = json!({ "parler_*": "allow" });
+    }
     serde_json::to_string_pretty(&block).unwrap_or_default()
 }
 
@@ -1398,6 +1601,8 @@ mod tests {
         assert_eq!(parler["command"], "/usr/local/bin/parler");
         assert_eq!(parler["args"][0], "mcp");
         assert_eq!(parler["env"]["PARLER_HUB"], "wss://parler-hub.fly.dev");
+        assert!(parler.get("trust").is_none(), "Cursor must not receive Gemini-only keys");
+        assert!(parler.get("autoApprove").is_none(), "Cursor must not receive Cline-only keys");
         // Exactly one parler entry (no duplication across runs).
         assert_eq!(servers.keys().filter(|k| *k == "parler").count(), 1);
 
@@ -1410,7 +1615,11 @@ mod tests {
         // plus `type`/`enabled`. Prove the whole round-trip so we never corrupt an opencode.json.
         let path = tmp("opencode").join("opencode.json");
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, r#"{"mcp":{"other":{"type":"local","command":["foo"]}}}"#).unwrap();
+        std::fs::write(
+            &path,
+            r#"{"permission":{"bash":"ask","parler_*":"ask"},"mcp":{"other":{"type":"local","command":["foo"]}}}"#,
+        )
+        .unwrap();
         let mut e = env();
         e.push(("PARLER_JOIN_SECRET".into(), "shh".into()));
 
@@ -1428,15 +1637,53 @@ mod tests {
         assert_eq!(parler["environment"]["PARLER_HUB"], "wss://parler-hub.fly.dev", "env lives under `environment`");
         assert!(parler.get("env").is_none() && parler.get("args").is_none(), "no standard-shape keys leak in");
         assert_eq!(servers.keys().filter(|k| *k == "parler").count(), 1, "idempotent across runs");
+        assert_eq!(v["permission"]["parler_*"], "allow", "only Parler MCP tools skip prompts");
+        assert_eq!(v["permission"]["bash"], "ask", "the user's other permission survives");
 
         // configured_env reads the hub + secret back out of the `environment` field.
         let def = HostDef { id: "opencode", name: "OpenCode", wiring: Wiring::Json { path: path.clone(), key: "mcp", shape: JsonShape::OpenCode }, hints: vec![] };
         assert_eq!(configured_env(&def), Some(("wss://parler-hub.fly.dev".to_string(), Some("shh".to_string()))));
 
-        assert!(remove_json(&path, "mcp").unwrap());
+        assert!(remove_json(&path, "mcp", JsonShape::OpenCode).unwrap());
         let v = read_json(&path).unwrap();
         assert!(!v["mcp"].as_object().unwrap().contains_key("parler"), "our entry is gone");
         assert!(v["mcp"].as_object().unwrap().contains_key("other"), "the user's server survives removal");
+        assert!(v["permission"].get("parler_*").is_none(), "our trust rule is gone");
+        assert_eq!(v["permission"]["bash"], "ask", "the user's permission survives removal");
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn gemini_trusts_only_the_parler_server() {
+        let path = tmp("gemini").join("settings.json");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, r#"{"mcpServers":{"other":{"command":"foo","trust":false}}}"#).unwrap();
+
+        write_json(&path, "mcpServers", JsonShape::Gemini, &env(), "/bin/parler").unwrap();
+
+        let v = read_json(&path).unwrap();
+        assert_eq!(v["mcpServers"]["parler"]["trust"], true);
+        assert_eq!(v["mcpServers"]["other"]["trust"], false, "other servers keep their policy");
+        assert!(v.get("permission").is_none(), "OpenCode-only permission does not leak in");
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn cline_auto_approves_every_real_parler_tool() {
+        let path = tmp("cline").join("cline_mcp_settings.json");
+        write_json(&path, "mcpServers", JsonShape::Cline, &env(), "/bin/parler").unwrap();
+
+        let v = read_json(&path).unwrap();
+        let approved: Vec<String> = v["mcpServers"]["parler"]["autoApprove"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::to_string)
+            .collect();
+        assert_eq!(approved, crate::mcp::tool_names(), "the approval list cannot drift from tools/list");
+        assert!(approved.contains(&"parler_delete_room".to_string()), "mutating tools are included by explicit design");
+        assert!(v["mcpServers"]["parler"].get("trust").is_none(), "Gemini-only trust does not leak in");
         std::fs::remove_dir_all(path.parent().unwrap()).ok();
     }
 
@@ -1476,6 +1723,7 @@ mod tests {
         // Our entry parses back correctly and appears once.
         let doc: toml_edit::DocumentMut = txt.parse().unwrap();
         assert_eq!(doc["mcp_servers"]["parler"]["command"].as_str(), Some("/usr/local/bin/parler"));
+        assert_eq!(doc["mcp_servers"]["parler"]["default_tools_approval_mode"].as_str(), Some("approve"));
         assert_eq!(doc["mcp_servers"]["parler"]["env"]["PARLER_HUB"].as_str(), Some("wss://parler-hub.fly.dev"));
         assert_eq!(txt.matches("[mcp_servers.parler]").count(), 1);
 
@@ -1491,6 +1739,7 @@ mod tests {
         let txt = std::fs::read_to_string(&path).unwrap();
         let doc: toml_edit::DocumentMut = txt.parse().unwrap();
         assert_eq!(doc["mcp_servers"]["parler"]["command"].as_str(), Some("/usr/local/bin/parler"));
+        assert_eq!(doc["mcp_servers"]["parler"]["default_tools_approval_mode"].as_str(), Some("approve"));
         assert_eq!(doc["mcp_servers"]["parler"]["env"]["PARLER_HUB"].as_str(), Some("wss://parler-hub.fly.dev"));
         assert!(txt.contains("[mcp_servers.parler]"), "must render as a real table header");
         std::fs::remove_dir_all(path.parent().unwrap()).ok();
@@ -1503,8 +1752,8 @@ mod tests {
         std::fs::write(&path, r#"{"mcpServers":{"other":{"command":"foo"}}}"#).unwrap();
         write_json(&path, "mcpServers", JsonShape::Standard, &env(), "/usr/local/bin/parler").unwrap();
 
-        assert!(remove_json(&path, "mcpServers").unwrap(), "first remove reports it removed something");
-        assert!(!remove_json(&path, "mcpServers").unwrap(), "second remove is a no-op");
+        assert!(remove_json(&path, "mcpServers", JsonShape::Standard).unwrap(), "first remove reports it removed something");
+        assert!(!remove_json(&path, "mcpServers", JsonShape::Standard).unwrap(), "second remove is a no-op");
 
         let v = read_json(&path).unwrap();
         let servers = v.get("mcpServers").unwrap().as_object().unwrap();
@@ -1533,7 +1782,67 @@ mod tests {
     #[test]
     fn remove_json_on_missing_file_is_a_noop() {
         let path = tmp("rm-missing").join("mcp.json");
-        assert!(!remove_json(&path, "mcpServers").unwrap());
+        assert!(!remove_json(&path, "mcpServers", JsonShape::Standard).unwrap());
+    }
+
+    #[test]
+    fn codex_rules_are_owned_idempotent_and_narrow() {
+        let path = tmp("codex-rules").join("parler.rules");
+        install_codex_rules_at(&path, "/Applications/Parler.app/Contents/MacOS/parler").unwrap();
+        let once = std::fs::read_to_string(&path).unwrap();
+        install_codex_rules_at(&path, "/Applications/Parler.app/Contents/MacOS/parler").unwrap();
+        let twice = std::fs::read_to_string(&path).unwrap();
+
+        assert_eq!(once, twice, "re-running connect rewrites one stable owned file");
+        assert!(once.starts_with(CODEX_RULES_MARKER));
+        assert!(once.contains("pattern=[\"parler\"]"), "bare CLI calls are trusted");
+        assert!(once.contains("pattern=[\"/Applications/Parler.app/Contents/MacOS/parler\"]"));
+        assert!(!once.contains("pattern=[\"*\"]"), "never trust every command");
+        assert!(remove_codex_rules_at(&path).unwrap());
+        assert!(!path.exists());
+        assert!(!remove_codex_rules_at(&path).unwrap());
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn codex_rules_refuse_to_clobber_a_user_file() {
+        let path = tmp("codex-user-rules").join("parler.rules");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "# mine\nprefix_rule(pattern=[\"parler\"], decision=\"prompt\")\n").unwrap();
+
+        assert!(install_codex_rules_at(&path, "/bin/parler").is_err());
+        assert!(!remove_codex_rules_at(&path).unwrap());
+        assert!(std::fs::read_to_string(&path).unwrap().starts_with("# mine"));
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn claude_permissions_merge_idempotently_and_remove_only_parler() {
+        let path = tmp("claude-permissions").join("settings.json");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            r#"{"model":"opus","permissions":{"allow":["Bash(git status)"],"deny":["Bash(rm *)"]}}"#,
+        )
+        .unwrap();
+
+        install_claude_permissions_at(&path).unwrap();
+        install_claude_permissions_at(&path).unwrap();
+        let v = read_json(&path).unwrap();
+        let allow = v["permissions"]["allow"].as_array().unwrap();
+        for rule in CLAUDE_PARLER_PERMISSIONS {
+            assert_eq!(allow.iter().filter(|entry| entry.as_str() == Some(rule)).count(), 1);
+        }
+        assert!(allow.iter().any(|entry| entry == "Bash(git status)"));
+        assert_eq!(v["permissions"]["deny"][0], "Bash(rm *)");
+        assert_eq!(v["model"], "opus");
+
+        assert!(remove_claude_permissions_at(&path).unwrap());
+        assert!(!remove_claude_permissions_at(&path).unwrap());
+        let v = read_json(&path).unwrap();
+        assert_eq!(v["permissions"]["allow"][0], "Bash(git status)");
+        assert_eq!(v["permissions"]["deny"][0], "Bash(rm *)");
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
     }
 
     #[test]

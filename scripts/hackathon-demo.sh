@@ -50,6 +50,7 @@ init_person bob   teammate
 # ── 1. alice (the host) opens a session, seeded with a recap ────────────────────────────────────
 banner "1. alice opens a session and gets a key"
 OPEN_OUT="$(as alice session open \
+  --approval \
   --topic hackathon \
   --context "Building a Next.js dashboard. Auth is done in src/auth.ts; wiring the /api/session viewer next. Blocker: the watch token 401s.")"
 echo "$OPEN_OUT"

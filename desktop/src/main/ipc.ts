@@ -155,13 +155,14 @@ export function registerIpc(supervisor: HubSupervisor): void {
   ipcMain.handle(CH.sessionOpen, async (_e, input) => {
     const ctx = hubContext();
     const opened = await cli.openSession(input, ctx);
-    // Remember it so the Conversations screen can re-copy, watch, or approve joiners later.
+    // New conversations are frictionless: the private key is the membership capability. Keep the
+    // persisted approval bit for older explicitly-gated records so their pending controls survive.
     saveSession({
       room: opened.room,
       key: opened.key,
       watch: opened.watch,
       topic: input?.topic?.trim() || null,
-      approval: !input?.noApproval,
+      approval: false,
       hub: ctx.url,
       createdAt: Date.now(),
     });

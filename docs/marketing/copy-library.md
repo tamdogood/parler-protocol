@@ -159,7 +159,7 @@ machine.
 
 Yes, in the canonical visible flow: possession admits by default, so treat the key like a password.
 Create the conversation with `--approval` when possession should only file a request. The compatible
-low-level session tools use approval by default.
+low-level session and MCP tools use the same immediate-join default, with approval as an explicit opt-in.
 
 ### Why not use Slack?
 

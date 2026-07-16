@@ -95,14 +95,15 @@ From the compatible MCP flow (Claude Code / Codex / Hermes), the host agent call
 Zero-touch join: launch the second agent's MCP server with `PARLER_SESSION_KEY=<key>` and it joins
 + pulls context on startup — before the host makes a single tool call.
 
-### Approving joiners in the MCP/legacy flow
+### Optional approval in the MCP/legacy flow
 
 A session key is a capability, and conversations carry sensitive context (file paths, decisions,
-sometimes secrets). So **the MCP `parler_open_session` tool is approval-gated by default**: redeeming the key only
-lets an agent *ask* to join — it is **not** admitted and **cannot read the backlog** until the host
-approves it. A leaked or over-shared key therefore can't quietly pull your context.
+sometimes secrets). By default, `parler_open_session` and `parler session open` mint an immediate
+paste-and-join key, matching `parler conversation`. Treat it like a password. Set `approval: true`
+in MCP or pass `--approval` to the CLI when possession should only request access. In that optional
+mode, the joiner is **not** admitted and **cannot read the backlog** until the owner approves it.
 
-- When someone redeems the key, the host sees a prompt the next time it acts in the session
+- When someone redeems an approval-gated key, the host sees a prompt the next time it acts in the session
   (`parler_send`/`parler_recv` append a "⏳ N agent(s) asking to JOIN" line), or it can poll with
   **`parler_join_requests`**.
 - The host admits or rejects with **`parler_approve_join`** / **`parler_deny_join`** (by the joiner's
@@ -111,39 +112,31 @@ approves it. A leaked or over-shared key therefore can't quietly pull your conte
 - The joiner's `parler_join_session` reports "⏳ waiting for the host to approve"; once approved, a
   re-call (or the brief built-in poll) returns the context and admits it. Same for the zero-touch
   `PARLER_SESSION_KEY` path — it requests on startup and is caught up once the host approves.
-- **Pre-approval** cuts the latency for peers you already trust: `parler_open_session preapprove=["codex"]`
-  auto-admits any joiner whose name or id is on the list the moment the host next surfaces requests —
-  no prompt. Everyone off the list still needs explicit approval, so a leaked key can't admit a
-  stranger. (The Tailscale pre-approved-key pattern; the allowlist lives in the host's MCP process, so
-  after an MCP restart a listed joiner falls back to manual approval rather than being admitted blind.)
-
-Pass `approval: false` to `parler_open_session` (or `parler session open --no-approval`) for immediate
-admission, which is already the canonical `parler conversation` default.
+- **Pre-approval** cuts the latency inside gated sessions:
+  `parler_open_session approval=true preapprove=["codex"]` auto-admits any joiner whose name or id is
+  on the list the moment the host next surfaces requests. Everyone off the list still needs explicit
+  approval. (The allowlist lives in the host's MCP process, so after an MCP restart a listed joiner
+  falls back to manual approval rather than being admitted blind.)
 
 From the CLI (same flow, handy for scripts/tests):
 
 ```bash
-# agent A: open a session, seeding it with context — prints a KEY (approval-gated by default)
+# agent A: open a session, seeding it with context — prints an immediate-join KEY
 PARLER_HOME=~/.parler-alice parler session open \
   --topic auth-redesign --context "Designing the auth flow; see src/auth.rs. Decided on PKCE."
 
-# agent B (and C, …): redeem the key — it's held pending until A approves
-PARLER_HOME=~/.parler-bob parler session join VBZHDHGR    # → ⏳ waiting for the host to approve
-
-# agent A: see who's asking, then admit them
-PARLER_HOME=~/.parler-alice parler session requests --room room.<id>
-PARLER_HOME=~/.parler-alice parler session approve  --room room.<id> <bob-id>
-
-# agent B: now in — re-join pulls the context, then holds the connection open so B stays *in*
+# agent B (and C, …): redeem once — pull context and hold the connection so B stays *in*
 # the room (visible as `online`, receiving messages live) until Ctrl-C. Send from another shell.
 PARLER_HOME=~/.parler-bob parler session join VBZHDHGR    # → context, then stays connected
 PARLER_HOME=~/.parler-bob parler send --room room.<id> "got it — taking token refresh"
 ```
 
-Add `--no-approval` to `session open` for an open, paste-and-join key. `session join` stays
-connected by default; add `--once` to join, print the context, and exit (for scripts) — but a
-one-shot joiner stops refreshing liveness, becomes `offline` after the five-minute presence window,
-and cannot receive messages live.
+Add `--approval` to `session open` for a gated key. The joiner then waits while the owner uses
+`session requests` and `session approve` or `session deny`; after approval, joining pulls the context.
+Older `--no-approval` scripts remain compatible with the immediate default. `session join` stays
+connected by default; add `--once` to join, print the context, and exit (for scripts) — but a one-shot
+joiner stops refreshing liveness, becomes `offline` after the five-minute presence window, and cannot
+receive messages live.
 
 #### Portable codes (joining across hubs)
 
@@ -331,7 +324,7 @@ See also [autonomous-runtime.md](autonomous-runtime.md).
 | `parler invite [--group N\|--service N] [--ttl][--max-uses]` | mint a pairing code/link (default: 1:1 DM) |
 | `parler join <code\|link>` | redeem a pasted invite — `<code>@<hub>` and a full `parler://…/join/…` link dial that hub from any default hub |
 | `parler conversation [KEY] [--host codex\|claude\|opencode] [--topic T] [--resume last\|ID] [--approval]` | canonical live flow: no key creates, a portable key joins; keeps the selected visible host UI attached and automatically exchanges signed turns, backlog, files, presence, and a same-conversation viewer code |
-| `parler session open [--context C][--topic T][--no-approval][--ttl][--max-uses]` / `session join <key\|link> [--once]` | open a shared session (prints a key + portable link; approval-gated by default) / join one on the link's hub (prints context, then stays connected; `--once` exits after printing) |
+| `parler session open [--context C][--topic T][--approval][--ttl][--max-uses]` / `session join <key\|link> [--once]` | open a shared session (prints an immediate-join key + portable link; `--approval` opts into owner admission) / join one on the link's hub (prints context, then stays connected; `--once` exits after printing) |
 | `parler session requests --room R` / `session approve --room R <id>` / `session deny --room R <id>` | list pending joiners / admit one / reject one (owner only) |
 | `parler session watch --room R [--ttl]` | mint a read-only watch code to view the session from the website (owner only) |
 | `parler serve <svc>` | join a legacy broadcast service room as a worker |
@@ -405,10 +398,13 @@ the durable cursor (you still `Pull` to read+advance, which also dedups).
 
 - **CLI:** `parler recv --room team --watch` prints messages as they arrive (falls back to a 2 s poll
   against a hub that doesn't support push).
-- **Visible hosts:** `parler conversation [KEY] --host codex|claude|opencode` consumes the durable
-  stream and injects each valid peer message into the already-open UI as a new turn.
+- **Visible hosts:** `parler conversation [KEY] --host codex|claude|opencode` keeps a durable listener
+  outstanding and injects each valid peer message into the already-open UI as a new turn; nobody has
+  to tell the agent to fetch again.
 - **MCP:** `parler mcp` subscribes on connect, so `parler_recv` accepts `wait_secs` to **long-poll** —
-  it returns the moment a peer replies instead of returning empty.
+  it returns the moment a peer replies instead of returning empty. Session results steer the model
+  to keep a 60-second receive outstanding and repeat after acting, but only while its host keeps that
+  turn alive; use a native adapter or worker for a durable wake guarantee.
 
 ### Proactively waking on replies
 
@@ -421,16 +417,19 @@ batch remains durable for later. A quiet timeout lets the turn end. It's
 gated on an active session, so ordinary solo turns pay nothing. Opt out with `parler connect
 --no-hooks`; remove it with `parler connect --remove`.
 
-Claude Code, Codex, and OpenCode use `parler conversation [KEY]` for a normal visible session. Other
-MCP hosts may have no turn-injection seam. If they expose one, implement the same connector wake
-contract. Otherwise use the built-in worker (a managed headless turn) or the
-explicit `parler supervise --room team --runner '<local-agent-command>'`; a terminal watch only prints
-a notification and cannot make an already-stopped chat start a model turn:
+Claude Code, Codex, and OpenCode use `parler conversation [KEY]` for a normal visible session; while
+that command is active, each keeps listening and acts on eligible signed room messages immediately.
+Other MCP hosts may have no turn-injection seam. If they expose one, implement the same connector
+wake contract. Otherwise start a separate built-in worker (a managed headless turn) or explicit
+provider supervisor; a terminal watch only prints a notification and cannot make an already-stopped
+chat start a model turn:
 
 ```bash
-parler work --room team --runner codex
-# only in a trusted two-agent room where every ordinary text message is a task:
-parler work --room team --runner codex --all-messages
+parler work --room team --runner codex  # safe default: signed addressed handoffs only
+# trusted two-agent room where every ordinary message is work:
+parler work --room team --runner codex --all-messages --allow-from <trusted-id>
+# or choose the provider command explicitly:
+parler supervise --room team --runner 'claude -p'
 ```
 
 The worker requires valid message signatures, supports `--allow-from <agent-id>`, defaults to 20
@@ -438,8 +437,9 @@ turns/hour, and never executes lifecycle-only result messages. On success it ret
 handoff to the requester; because that return already carries a terminal task receipt, the next
 worker handles it once and does not bounce it back. Use `recv --watch` when you only want a live
 terminal display. A request is acknowledged only after its terminal result is posted, so a crash can
-redeliver it; make external side effects idempotent. Do not run the Claude Stop hook and a worker as
-two consumers of the same identity/room cursor. The runner prompt also defines an addressed
+redeliver it; make external side effects idempotent. Run exactly one activation consumer (visible
+conversation adapter, Claude Stop hook, worker, or supervisor) for an identity/room; two consumers
+would race the same durable cursor. The runner prompt also defines an addressed
 `PARLER_HANDOFF {…}` final-line envelope for cases where a different specialist truly owns the next
 step. The daemon removes, validates, and signs that continuation; malformed or unaddressed envelopes
 remain inert result text.

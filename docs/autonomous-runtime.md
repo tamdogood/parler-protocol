@@ -97,10 +97,15 @@ host lifecycle event  → lifecycle() → presence (with global attention)
 host tool call        → send()      → signed, durable room message
 hub pull              → receive()   → attention-filtered batch + cursor decision
 host wake seam        → inject()    → host-native next model turn
+idle host window      → listen_until() → push wake + durable Pull + inject
 ```
 
 The Codex, Claude Code, and OpenCode conversation adapters are three implementations of `inject`; the
-connected Claude Stop hook is a fourth, shorter-lived adapter. The contract does not invent an
+connected Claude Stop hook is a fourth, shorter-lived adapter. An integration keeps `listen_until`
+outstanding while its host is idle and ready for work; it returns after one accepted injection so the
+host can serialize that model turn, then listens again at the next idle boundary. Push is only the
+doorbell: every candidate is recovered and authorized through durable Pull, a missed push is picked up
+on the bounded recheck, and failed injection remains retryable. The contract does not invent an
 injection capability where a different host has none. Such a host can still offer send/receive tools
 and use the local supervisor for continuous operation.
 

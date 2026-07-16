@@ -104,7 +104,6 @@ export function SessionsScreen({
 function OpenSessionPanel({ openOnLocal, onOpened }: { openOnLocal: boolean; onOpened: (room: string) => void }) {
   const [context, setContext] = useState("");
   const [topic, setTopic] = useState("");
-  const [requireApproval, setRequireApproval] = useState(false);
   const [showOptions, setShowOptions] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -116,7 +115,6 @@ function OpenSessionPanel({ openOnLocal, onOpened }: { openOnLocal: boolean; onO
       const r = await parler.session.open({
         context: context.trim() || undefined,
         topic: topic.trim() || undefined,
-        noApproval: !requireApproval,
       });
       setContext("");
       setTopic("");
@@ -152,14 +150,10 @@ function OpenSessionPanel({ openOnLocal, onOpened }: { openOnLocal: boolean; onO
         <ChevronDown className={cn("size-3.5 transition-transform", showOptions && "rotate-180")} /> Options
       </button>
       {showOptions && (
-        <div className="mt-3 flex flex-col gap-3 sm:flex-row sm:items-end">
+        <div className="mt-3">
           <label className="block flex-1">
             <span className="mb-1.5 block text-[11px] uppercase tracking-wide text-steel">Topic</span>
             <Input value={topic} onChange={(e) => setTopic(e.target.value)} placeholder="e.g. payments-refactor" />
-          </label>
-          <label className="no-drag flex cursor-pointer items-center gap-2 pb-2.5 text-[13px] text-fog">
-            <input type="checkbox" checked={requireApproval} onChange={(e) => setRequireApproval(e.target.checked)} className="accent-electric-blue" />
-            Require owner approval
           </label>
         </div>
       )}

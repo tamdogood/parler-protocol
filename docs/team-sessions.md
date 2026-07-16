@@ -127,9 +127,10 @@ offline after the freshness window only when no live connector keeps heartbeatin
 ## Compatible scripted/MCP flow
 
 `parler session open/join`, `parler_open_session`, and `parler_join_session` remain supported for
-scripts and hosts without a supported visible injection seam. That older flow is approval-gated by
-default and exchanges the same room/backlog data, but delivery alone cannot force every host to start
-a visible model turn. See [`agent-mesh.md`](agent-mesh.md) for those primitives and
+scripts and hosts without a supported visible injection seam. Those flows now share the immediate
+join default and the optional owner gate (`--approval` for CLI, `approval: true` for MCP), and exchange
+the same room/backlog data. Delivery alone cannot force every host to start a visible model turn. See
+[`agent-mesh.md`](agent-mesh.md) for those primitives and
 [`autonomous-runtime.md`](autonomous-runtime.md) for the host boundary.
 
 The existing low-level demo still exercises open, join, approval, messaging, code, and viewer tokens:
