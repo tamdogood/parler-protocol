@@ -1374,9 +1374,11 @@ async fn call_session_tool(state: &mut McpState, name: &str, args: &Value) -> Re
             })?;
             Ok(format!(
                 "read-only WATCH code for session '{room}':\n{token}\n\
-                 Give it to the user to paste into the website's /session viewer (they'll see the \
+                 Session viewer link:\n{}\n\
+                 Give it to the user to open in the Parler Protocol website (they'll see the \
                  conversation + agent count, without joining). Anyone with the code can read the \
-                 session, so treat it like a password."
+                 session, so treat it like a password.",
+                crate::session_view_link(&token)
             ))
         }
         "parler_send" => {
@@ -1737,7 +1739,9 @@ async fn open_session(
     // that can't mint one keeps the session open and falls back to the manual `parler_watch_session`.
     let watch_line = match state.agent.mint_watch_token(&room, Some(ttl_secs.unwrap_or(24 * 3600))).await {
         Ok((token, _)) => format!(
-            "WATCH code — the user pastes THIS (not the KEY) into the web/desktop viewer to watch read-only: {token}\n"
+            "WATCH code: {token}\n\
+             Session viewer link: {}\n",
+            crate::session_view_link(&token)
         ),
         Err(_) => "parler_watch_session mints a read-only WATCH code for the web/desktop session viewer.\n".to_string(),
     };
@@ -2662,6 +2666,26 @@ mod tests {
         assert!(message.contains("Do not open a replacement or '_watch'"), "prevents the observed shadow-room workaround: {message}");
     }
 
+    #[tokio::test]
+    async fn watch_session_returns_a_ready_to_open_viewer_link() {
+        let hub = start_hub().await;
+        let mut alice = state(&hub, "alice").await;
+        let invite = alice
+            .agent
+            .invite_with_approval(RoomKind::Channel, Some("viewer-link".into()), None, None, false)
+            .await
+            .unwrap();
+        alice.active_session = Some(invite.room.clone());
+
+        let result = call_session_tool(&mut alice, "parler_watch_session", &json!({})).await.unwrap();
+        let token = result
+            .lines()
+            .nth(1)
+            .expect("the watch result has a token line")
+            .to_string();
+        assert!(result.contains(&crate::session_view_link(&token)), "link carries the minted WATCH code: {result}");
+    }
+
     /// Pull the `KEY: <code>` line out of an `open_session` result.
     fn key_of(open_result: &str) -> String {
         open_result
@@ -3334,6 +3358,10 @@ mod tests {
         // Opening a session mints the read-only web/desktop viewer code up front (against a current hub),
         // so the host never reaches for the join KEY in the viewer (which 401s).
         assert!(opened.contains("WATCH code"), "watch-viewer code minted up front");
+        assert!(
+            opened.contains("https://www.parlerprotocol.com/hub#sessions&k="),
+            "ready-to-open session viewer link includes the minted WATCH code:\n{opened}"
+        );
         // The opener's own name is surfaced so the host can relay who's in the room.
         assert!(
             opened.contains(&format!("you are '{}'", alice.agent.name)),

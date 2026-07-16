@@ -93,6 +93,9 @@ The compatible low-level command for re-minting is:
 parler session watch --room <internal-room-name>
 ```
 
+The command prints the WATCH code and a ready-to-open link in the form
+`https://www.parlerprotocol.com/hub#sessions&k=<WATCH>`, which opens the exact session in the website.
+
 The viewer capability is separate from the join key and stays read-only:
 
 - `GET /api/session?token=<watch>` returns the exact conversation's roster, messages, and metrics.

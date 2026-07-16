@@ -1,3 +1,22 @@
+# Session viewer deep links
+
+## Plan
+- [x] Add one canonical `https://www.parlerprotocol.com/hub#sessions&k=<WATCH>` formatter and use it for CLI/MCP session-view output.
+- [x] Add regression coverage for the exact deep-link shape and update the maintained viewer docs.
+- [x] Run targeted tests, the full Rust gate, and self-review the focused diff.
+
+## Risks
+- The WATCH code is a bearer capability; keep the raw code and link behavior unchanged in scope, and do not put the seed or join key in the URL.
+- The web viewer URL is a frontend fragment contract, so the exact `#sessions&k=` spelling must remain stable.
+
+## Review
+- Added one `session_view_link` formatter used by low-level `session open`/`session watch`, flagship `conversation`, and MCP watch/open results. The existing raw WATCH code remains available for compatibility.
+- Added exact-format and real MCP hub-path regression tests; trimmed the MCP open-session output to keep its 960-byte context budget.
+- Updated the README and maintained session/communication guides with the ready-to-open deep-link shape. No protocol or hub behavior changed.
+- `scripts/verify.sh --rust-only` and `make ci` pass, including build, Clippy, all workspace tests, docs, smoke, advisories, sources, licenses, and bans. Self-review found no remaining findings.
+
+---
+
 # Current usage documentation refresh
 
 ## Plan

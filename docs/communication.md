@@ -340,7 +340,7 @@ can download only blobs referenced by that exact conversation through the separa
 endpoint.
 
 ```bash
-parler session watch --room design    # → a 32-char WATCH CODE to paste into the site
+parler session watch --room design    # → a WATCH CODE + ready-to-open session viewer link
 ```
 
 From MCP it's `parler_watch_session`. → Deep dive:

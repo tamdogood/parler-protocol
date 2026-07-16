@@ -843,6 +843,11 @@ fn split_portable_key(key: &str) -> (String, Option<String>) {
     (key.to_string(), None)
 }
 
+/// Build the website's read-only session viewer deep link for an owner-minted WATCH code.
+pub(crate) fn session_view_link(watch_code: &str) -> String {
+    format!("https://www.parlerprotocol.com/hub#sessions&k={watch_code}")
+}
+
 /// The hub returns a bare `invalid or unknown invite code` for any code it doesn't hold — and the
 /// most common cause is a **hub mismatch**: the code was minted on a different hub than the one this
 /// agent dials, so the *code* is fine but the *hub* is wrong (exactly what makes a cross-agent
@@ -1440,6 +1445,7 @@ async fn cmd_session(c: SessionCmd) -> Result<()> {
                 Ok((code, _)) => {
                     println!("Watch it live (read-only) in the web/desktop viewer — paste this WATCH code, not the key:");
                     println!("    {code}");
+                    println!("Session viewer link:  {}", session_view_link(&code));
                     println!("  (re-mint anytime:  parler session watch --room {})", inv.room);
                 }
                 Err(_) => {
@@ -1532,7 +1538,10 @@ async fn cmd_session(c: SessionCmd) -> Result<()> {
             println!();
             println!("    {token}");
             println!();
-            println!("Paste it into the Parler Protocol website's session viewer (the /session page) to watch the");
+            println!("Open this session viewer link:");
+            println!("    {}", session_view_link(&token));
+            println!();
+            println!("The link opens the Parler Protocol website's session viewer to watch the");
             println!("conversation and how many agents are in the room — read-only, no joining. Anyone with");
             println!("this code can read the session, so share it like a password.");
         }
@@ -2968,6 +2977,14 @@ mod tests {
         );
         // A trailing `@` with no hub is not portable.
         assert_eq!(split_portable_key("A3KELDJR@"), ("A3KELDJR@".into(), None));
+    }
+
+    #[test]
+    fn session_view_link_attaches_the_watch_code_to_the_website_fragment() {
+        assert_eq!(
+            session_view_link("943HKUPDZSTA68KDSUG8K6TVXJFMUVCN"),
+            "https://www.parlerprotocol.com/hub#sessions&k=943HKUPDZSTA68KDSUG8K6TVXJFMUVCN"
+        );
     }
 
     #[test]

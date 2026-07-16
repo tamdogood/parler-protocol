@@ -193,7 +193,7 @@ owner's read-only **viewer code** at creation. The compatible low-level command 
 
 ```bash
 # the conversation owner mints a compatible low-level read-only watch code
-parler session watch --room design          # → a 32-char WATCH CODE to paste into the website
+parler session watch --room design          # → a WATCH CODE + ready-to-open session viewer link
 ```
 
 From MCP it's the **`parler_watch_session`** tool (defaults to the active session), and

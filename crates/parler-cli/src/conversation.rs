@@ -554,6 +554,7 @@ fn print_connected(agent: &MeshAgent, host: Host, share: Option<ShareDetails>) {
         eprintln!("   Share:  parler conversation {}@{}", share.code, agent.hub_url);
         if let Some(watch) = share.watch {
             eprintln!("   Viewer: {watch}  (this exact conversation)");
+            eprintln!("   Viewer link: {}", crate::session_view_link(&watch));
         }
     }
 }
@@ -584,6 +585,8 @@ async fn print_created(
         Ok((watch, _)) => {
             println!("Read-only viewer code for this same conversation:");
             println!("  {watch}");
+            println!("Session viewer link:");
+            println!("  {}", crate::session_view_link(&watch));
             println!();
             Some(watch)
         }
