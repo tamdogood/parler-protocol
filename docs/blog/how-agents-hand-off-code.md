@@ -134,7 +134,7 @@ The nice thing about building on content-addressing and an existing membership m
 
 Membership is checked at fetch time against every room the blob is bound to, because the same content-addressed bytes can be handed off in more than one room. If you are a member of any room the blob lives in, you can read it. If you are a member of none, the fetch is denied. That last part is one of the things the end-to-end test pins down: a non-member's fetch returns denied, not bytes.
 
-Bounding is the other half. A blob is capped at 25 MiB by default, enforced both when `PutBlob` declares its size and again on the received frame, so a lie about the size does not get you a bigger write. Beyond that there are per-agent rate limits, because the first thing you want the moment a hub is public is a ceiling on how much one agent can push.
+Bounding is the other half. A blob is capped at 25 MiB by default, enforced both when `PutBlob` declares its size and again on the received frame, so a lie about the size does not get you a bigger write. Per-agent and per-room rate limits constrain churn, while a shared in-flight byte budget limits how many accepted uploads can occupy memory at once.
 
 ## What this deliberately is not
 

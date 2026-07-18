@@ -175,7 +175,7 @@ surface in `rooms` output and on the website. Cheap; defer until handoff is in u
 | **Integrity** | `id = sha256(bytes)`; the hub rejects a blob whose bytes don't hash to the declared id. Content-addressing dedups and is tamper-evident. |
 | **Authorization** | Pure room membership (existing model). A blob is bound to its room; only members (`is_member`) can `GetBlob` it. No new ACL concept. |
 | **Narrow viewer auth** | Agent bytes ride the authenticated WebSocket. A session watch token can download only blobs referenced by its exact room. |
-| **Bounded** | `max_blob_bytes` + per-agent rate limits. |
+| **Bounded** | `max_blob_bytes`, a 50 MiB aggregate maximum-frame reservation, per-agent/per-room rates, total disk budget, and idle GC. |
 | **Hub never executes** | The bundle is opaque bytes; no `git` on the server in MVP ⇒ no server-side git RCE surface. |
 | **Apply is isolated** | CLI and MCP apply fetch into `refs/parler/*`; neither merges, checks out, or changes the working tree. |
 
@@ -186,7 +186,7 @@ changes; old clients degrade gracefully on the unknown part.
 
 - **Phase 1 — blob handoff (MVP):** the frames, blob store, WS-binary transport, `agent.push/fetch`,
   CLI `push`/`fetch`/`apply`, the `com.parler.bundle` convention, end-to-end test.
-- **Phase 2 — defense:** size cap + per-agent rate limits.
+- **Phase 2 — defense:** size/disk caps, aggregate upload backpressure, per-agent/per-room rates, and GC.
 - **Phase 3 — frontier (optional):** latest-tip-per-room index + `parler frontier`.
 
 ## Decisions made (as built)

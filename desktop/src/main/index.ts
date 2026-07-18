@@ -8,6 +8,7 @@ import { loadSettings, syncLoginItem } from "./settings";
 import { appIcon } from "./paths";
 import { EV } from "../shared/channels";
 import type { HubStatus } from "../shared/types";
+import { safeExternalUrl } from "./external-url";
 
 app.setName("Parler Protocol");
 
@@ -46,7 +47,7 @@ function createWindow(): void {
     title: "Parler Protocol",
     webPreferences: {
       preload: join(__dirname, "../preload/index.js"),
-      sandbox: false,
+      sandbox: true,
       contextIsolation: true,
       nodeIntegration: false,
     },
@@ -79,8 +80,14 @@ function createWindow(): void {
 
   // Open external links (docs, github) in the user's browser, never in-app.
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    void shell.openExternal(url);
+    const external = safeExternalUrl(url);
+    if (external) void shell.openExternal(external);
     return { action: "deny" };
+  });
+  mainWindow.webContents.on("will-navigate", (event, url) => {
+    event.preventDefault();
+    const external = safeExternalUrl(url);
+    if (external) void shell.openExternal(external);
   });
 
   // On macOS, closing the window hides the app to the tray instead of quitting.
@@ -132,7 +139,9 @@ app.whenReady().then(() => {
           ...details.responseHeaders,
           "Content-Security-Policy": [
             "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; " +
-              "img-src 'self' data:; font-src 'self' data:; connect-src *",
+              "img-src 'self' data:; font-src 'self' data:; " +
+              "connect-src 'self' https://parler-hub.fly.dev http://127.0.0.1:* http://localhost:* http://[::1]:*; " +
+              "object-src 'none'; base-uri 'none'; frame-src 'none'",
           ],
         },
       });

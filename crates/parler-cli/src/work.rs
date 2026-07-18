@@ -6,7 +6,7 @@
 //! contract without granting Parler permission to spawn anything.
 
 use anyhow::Result;
-use parler_connector::{verify_message, ConnectorRuntime, Lifecycle, SigStatus, ToolSend};
+use parler_connector::{ConnectorRuntime, Lifecycle, ToolSend};
 use parler_protocol::{DispatchRef, Part, RoomKind, StoredMessage, Target, TaskRef, TaskStatus};
 use std::process::Stdio;
 use std::time::Duration;
@@ -69,7 +69,7 @@ pub async fn supervise(runtime: &mut ConnectorRuntime, options: WorkOptions) -> 
                 // The role queue is hub-addressed, but executing the task is still a local security
                 // decision. Claim and close an unsigned/invalid entry so it cannot pin the queue's
                 // head forever, without ever passing its content to the child runner.
-                if !is_authentic(&message) {
+                if !runtime.admit_autonomous(&message)? {
                     reject_untrusted_claim(runtime, &options.room, &message).await?;
                     continue;
                 }
@@ -125,10 +125,6 @@ pub async fn supervise(runtime: &mut ConnectorRuntime, options: WorkOptions) -> 
     }
 }
 
-fn is_authentic(message: &StoredMessage) -> bool {
-    verify_message(&message.from.id, &message.parts, message.reply_to.as_deref()) == SigStatus::Valid
-}
-
 async fn reject_untrusted_claim(
     runtime: &mut ConnectorRuntime,
     room: &str,
@@ -139,7 +135,7 @@ async fn reject_untrusted_claim(
         room,
         message,
         TaskStatus::Failed,
-        "local supervisor refused an unsigned or invalid task",
+        "local supervisor refused an unsigned, invalid, misrouted, or replayed task",
         None,
     )
     .await?;
@@ -193,6 +189,10 @@ async fn run_one(
     post_status(runtime, &options.room, message, TaskStatus::Working, "local runner is working", None).await?;
 
     let outcome = run_runner(runtime, options, message).await?;
+    // The child has now observed and acted on the peer's instruction. Persist the signed UID before
+    // committing the hub cursor or posting further receipts, so a relay-assigned id change cannot
+    // make the same autonomous action run again after a restart.
+    runtime.complete_autonomous(std::slice::from_ref(message))?;
     if outcome.lease_lost {
         eprintln!("parler supervise: lease for {} was lost; leaving its result to the current worker", short_id(&task));
         runtime
@@ -527,7 +527,8 @@ mod tests {
             reply_to: None,
             ts: 1,
         };
-        assert!(!is_authentic(&message));
+        let mut replay = parler_connector::AutonomousReplayGuard::ephemeral();
+        assert!(!replay.admit(&message, "Uself").unwrap());
     }
 
     #[test]

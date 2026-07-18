@@ -10,7 +10,9 @@ mod opencode;
 use anyhow::{anyhow, bail, Context, Result};
 use clap::ValueEnum;
 use futures::{SinkExt, StreamExt};
-use parler_connector::{verify_message, JoinOutcome, MeshAgent, SigStatus};
+use parler_connector::{
+    verify_message, AutonomousReplayGuard, JoinOutcome, MeshAgent, SigStatus,
+};
 use parler_protocol::{FileRef, HandoffRef, MessageSig, Part, RoomKind, StoredMessage, Target, TaskRef, TaskStatus};
 use serde_json::{json, Map, Value};
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -970,6 +972,7 @@ struct Incoming {
 
 async fn receive_loop(mut agent: MeshAgent, room: String, tx: mpsc::Sender<Incoming>) -> Result<()> {
     let _ = agent.subscribe().await;
+    let mut replay = AutonomousReplayGuard::persistent(&agent.id);
     loop {
         let (messages, _, _) = agent.pull_wait(&room, Some(1), RECEIVE_WAIT_SECS).await?;
         for message in messages {
@@ -983,6 +986,11 @@ async fn receive_loop(mut agent: MeshAgent, room: String, tx: mpsc::Sender<Incom
                 agent.commit_reads(&room).await?;
                 continue;
             }
+            if !replay.admit(&message, &agent.id)? {
+                agent.commit_reads(&room).await?;
+                continue;
+            }
+            let admitted = message.clone();
             let (ack_tx, ack_rx) = oneshot::channel();
             if tx.send(Incoming { message, ack: ack_tx }).await.is_err() {
                 return Ok(());
@@ -990,6 +998,9 @@ async fn receive_loop(mut agent: MeshAgent, room: String, tx: mpsc::Sender<Incom
             if ack_rx.await.is_err() {
                 return Ok(()); // no ack: leave the durable cursor for a later run
             }
+            // The native host accepted and completed the peer-triggered turn before sending this
+            // ack. Persist the author's UID before advancing the relay cursor.
+            replay.complete(std::slice::from_ref(&admitted))?;
             agent.commit_reads(&room).await?;
         }
     }

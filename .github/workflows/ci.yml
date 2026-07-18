@@ -27,14 +27,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - name: Selftest (test the test system)
         run: ./scripts/ci/selftest.sh
       - name: ShellCheck the CI scripts
         # severity=warning fails on real bugs (bad quoting, unchecked cd, …) but not style nits.
         run: shellcheck -x --severity=warning scripts/ci/*.sh
       - name: actionlint (lint the workflows)
-        uses: reviewdog/action-actionlint@v1
+        uses: reviewdog/action-actionlint@e0207a28405ecad11953ba625a95d92f7889572a # v1
         with:
           reporter: local # no checks/PR-write permissions needed; fails the step on findings
           filter_mode: nofilter # lint every workflow line; push-to-main has no diff base
@@ -45,13 +45,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - name: Install Rust toolchain (stable + clippy)
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
         with:
           components: clippy
       - name: Cache cargo registry + build
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
       - name: Build · clippy · test · doc
         run: ./scripts/ci/rust.sh
       # Prove the *real* compiled binary boots and serves the HTTP contract (reuses the artifact
@@ -64,11 +64,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
       - name: Install cargo-deny
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@07b4745e0c39a41822af610387492e3e53aa222b # v2
         with:
           tool: cargo-deny
       - name: Audit dependencies (vulnerabilities + sources block)
@@ -79,21 +79,36 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       # Catches genuinely-broken Dockerfiles before the (slow) real build in deploy.yml. Only
       # error-level findings fail, so it never flaps the pipeline on style nits.
       - name: hadolint
-        uses: hadolint/hadolint-action@v3.1.0
+        uses: hadolint/hadolint-action@54c9adbab1582c2ef04b2016b760714a4bfde3cf # v3.1.0
         with:
           dockerfile: deploy/Dockerfile
           failure-threshold: error
+
+  desktop:
+    name: Desktop · typecheck · test · build · audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Set up Node 22
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - name: Verify desktop
+        run: ./scripts/ci/desktop.sh
 
   # One check to rule them all: branch protection requires just "CI passed", and this fails if any
   # gate above failed or was cancelled. Adding a gate never means reconfiguring branch protection.
   ci-passed:
     name: CI passed
     if: always()
-    needs: [pipeline, rust, supply-chain, dockerfile]
+    needs: [pipeline, rust, supply-chain, dockerfile, desktop]
     runs-on: ubuntu-latest
     steps:
       - name: Verify all gates succeeded

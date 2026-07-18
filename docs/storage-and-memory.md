@@ -41,8 +41,8 @@ for context but no longer describes the current defaults.*
      *resource* side. No per-room sandbox is needed — agent code runs client-side, never on the hub.
 * **Big code transfers: architected right, two efficiency ceilings.** Code rides **content-addressed
   blobs on disk** (git bundles), not the message log — exactly correct. But uploads are **fully
-  buffered in RAM** (no streaming/resume), and blob GC (see above) bounds idle growth but not a burst
-  of concurrent large uploads.
+  buffered in RAM** (no streaming/resume). A shared reservation pool bounds accepted concurrent
+  uploads to 50 MiB by default, while blob GC bounds idle disk growth.
 * **Vector database: don't build a separate one — and this is shipped, not a proposal.** FTS5/BM25 was
   already the right default; **`sqlite-vec` is now integrated in the *same* file** (`vec_facts`, a
   `vec0` virtual table) and `recall` does **hybrid BM25 + vector search fused with RRF** whenever a
@@ -157,10 +157,16 @@ path** — code does **not** go through the message log:
 * **Content-addressing dedups**: identical bytes → one disk file + one `blobs` row, bound to N rooms.
 * **I/O is off the async runtime**: hashing + file write (`finish_blob_upload`) and the download read
   both run on `spawn_blocking`, so a 25 MiB transfer never stalls a tokio worker.
-* **Text is capped at 1 MiB** (`max_message_bytes`) precisely to force code onto the blob path. Defense
-  is in place: 25 MiB/blob cap, 1 GiB total disk budget, a **per-agent** 120 blobs/hour and a
-  **per-room** 600 blobs/hour ceiling (`--max-room-blobs-per-hour`, so one room can't drain the shared
-  disk budget for everyone), sha256 + size verified on receipt.
+* **Structured input is bounded twice:** a JSON WebSocket frame is capped at 2 MiB and message parts
+  at 1 MiB (`max_message_bytes`), forcing code onto the blob path. Control strings and memory/card
+  payloads have field/serialized bounds before tokenization, signature verification, or SQLite.
+* **Concurrent uploads reserve their maximum possible frame size** from a 50 MiB aggregate semaphore
+  before `BlobReady`; two default-size uploads may proceed, and a third gets `at_capacity`. A client
+  cannot bypass the reservation by under-declaring its size, and an unexpected binary frame closes
+  the connection after the error.
+* Defense also includes a 25 MiB/blob cap, 1 GiB disk budget, per-agent and per-room blob rates,
+  600 authenticated operations/minute, and durable per-identity quotas for owned rooms, active
+  directory/watch tokens, and keyed facts. SHA-256 and exact size are verified on receipt.
 
 Architecturally this is the right call (keep big BLOBs out of SQLite; let git pack the delta). The
 efficiency ceilings are in §2.3.
@@ -242,7 +248,7 @@ The path is correct (§1.4); these are the ceilings for "**efficiently** transmi
 
 | # | Finding | Severity | Detail | Fix (→ section) |
 |---|---|---|---|---|
-| B1 | **Uploads fully buffered in RAM** | **High (at scale)** | A blob arrives as **one** WS binary frame; tungstenite buffers the whole frame, then `finish_blob_upload` holds the entire `Vec<u8>` again. Peak RAM ≈ (concurrent uploads × up to ~26 MiB). No streaming, no **resume** on a dropped 25 MiB transfer | Chunked/streaming upload (§3.6) — not yet done |
+| B1 | **Uploads are still single-frame, but aggregate concurrency is bounded** | **Medium** | Tungstenite buffers each accepted blob frame and a dropped transfer cannot resume. The shipped 50 MiB maximum-frame reservation bounds well-formed concurrent uploads and rejects under-declared/unexpected binary traffic, but true streaming would lower the per-transfer peak further | Chunked/streaming upload (§3.6) — not yet done |
 | B2 | ~~Blobs never garbage-collected~~ **RESOLVED** | ~~High (at scale)~~ | Was: `total_blob_bytes` only grows; at 1 GiB the hub hard-rejects *all* new handoffs ("storage is full") | **Shipped:** LRU/TTL GC via `last_fetched`, 14-day idle default, hourly janitor (§3.4) |
 | B3 | **`SUM(size)` full scan of `blobs` on every `PutBlob`** | Low | The pre-upload budget check aggregates the whole table under the global mutex; grows with #blobs | Maintain a running byte counter (§3.6) |
 | B4 | **Orphan files possible** | Low | If `put_blob_meta` fails *after* `std::fs::write`, a disk file exists with no row (and isn't GC'd); a `PutBlob` that never sends bytes leaves no trace (fine) | Periodic disk↔table reconcile (§3.6) |

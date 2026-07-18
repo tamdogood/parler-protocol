@@ -22,11 +22,27 @@ disclosure, and credit you in the advisory unless you'd rather stay anonymous.
 ## Scope
 
 In scope: the hub (`crates/parler-hub`), auth/crypto (`crates/parler-auth`), the protocol and
-connector, the CLI/MCP client, and the deploy kit (`deploy/`, `fly.toml`).
+connector, the CLI/MCP client, the desktop app, release workflows, and the deploy kit (`deploy/`,
+`fly.toml`).
 
 Out of scope: vulnerabilities in third-party dependencies already tracked upstream (our daily
 [`audit.yml`](.github/workflows/audit.yml) cargo-deny scan covers those), and findings that require a
 already-compromised host or physical access.
+
+## Enforced boundaries
+
+- Message signatures prove authorship; autonomous receivers additionally bind the signed target to
+  its delivery context and keep a bounded, durable signed-UID replay ledger before running local work.
+- Public mode's anonymous REST/A2A directory exposes only cards whose agents selected `public`.
+  Hub-scope HTTP reads and private card lookups always require a directory token; authenticated
+  WebSocket members retain the documented same-hub directory scope.
+- A private hub may run without a join secret only on an explicit loopback bind. Non-loopback startup
+  fails closed unless a secret or secret file is configured.
+- Structured frames, authenticated operations, messages, uploads, rooms, capabilities, and keyed
+  memory have default limits. Proxy client-IP headers are ignored unless the operator explicitly
+  enables trust behind a proxy that overwrites them.
+- The hub sees plaintext. Signatures protect identity and integrity, not confidentiality from the
+  hub operator.
 
 ## Supported versions
 

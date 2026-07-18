@@ -34,7 +34,7 @@ use parking_lot::Mutex;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{mpsc, Notify};
+use tokio::sync::{mpsc, Notify, OwnedSemaphorePermit, Semaphore};
 use tower_http::cors::{Any, CorsLayer};
 
 /// How many undelivered pushes a single subscribed connection may queue before the hub starts
@@ -53,8 +53,24 @@ pub const DEFAULT_MAX_BLOB_DIR_BYTES: u64 = 1024 * 1024 * 1024;
 /// so chat/text payloads never need to be large — this bounds per-message DB growth.
 pub const DEFAULT_MAX_MESSAGE_BYTES: usize = 1024 * 1024;
 
+/// Default cap on a JSON WebSocket frame. Binary blob frames retain their separate blob cap; every
+/// structured operation fits comfortably below this bound, preventing card/memory/control frames
+/// from borrowing the much larger binary allowance.
+pub const DEFAULT_MAX_TEXT_FRAME_BYTES: usize = 2 * 1024 * 1024;
+
+/// Aggregate bytes reserved by concurrent blob uploads. The current wire format sends one complete
+/// binary frame, so this backpressure bounds the blocking/hash/write work even before blobs become
+/// streamable in a future additive protocol version.
+pub const DEFAULT_MAX_INFLIGHT_BLOB_BYTES: usize = 50 * 1024 * 1024;
+
 /// Default ceiling on concurrent WebSocket connections to one hub.
 pub const DEFAULT_MAX_CONNECTIONS: usize = 1024;
+
+/// Durable object quotas per authenticated identity. They bound slow storage exhaustion that stays
+/// below a short fixed-window rate limit.
+pub const DEFAULT_MAX_OWNED_ROOMS: u64 = 1_000;
+pub const DEFAULT_MAX_ACTIVE_TOKENS: u64 = 1_000;
+pub const DEFAULT_MAX_KEYED_FACTS: u64 = 10_000;
 
 /// Default per-client-IP HTTP request budget over a fixed 60s window, spanning the whole public front
 /// door: the REST/A2A directory + session-viewer endpoints *and* the `/ws` upgrade. Unlike the
@@ -108,6 +124,9 @@ const MAX_WAIT_SECS: u64 = 60;
 /// for a low-ops bus.
 #[derive(Debug, Clone, Copy)]
 pub struct RateLimits {
+    /// Total authenticated operations per agent per minute, including read/control frames. This
+    /// closes the post-upgrade gap where HTTP rate limiting no longer sees WebSocket traffic.
+    pub max_ops_per_min: u32,
     pub max_sends_per_min: u32,
     pub max_blobs_per_hour: u32,
     /// Per-room send ceiling (aggregate over all members) per 60s window. `0` disables.
@@ -119,6 +138,7 @@ pub struct RateLimits {
 impl Default for RateLimits {
     fn default() -> Self {
         RateLimits {
+            max_ops_per_min: 600,
             max_sends_per_min: 240,
             max_blobs_per_hour: 120,
             max_room_sends_per_min: DEFAULT_MAX_ROOM_SENDS_PER_MIN,
@@ -164,6 +184,7 @@ impl Default for Retention {
 
 #[derive(Clone, Copy)]
 enum RateKind {
+    Operation,
     Send,
     Blob,
 }
@@ -198,6 +219,7 @@ fn charge_window(window: &mut Window, limit: u32, window_ms: i64, now: i64) -> b
 /// (per-room limits). Reused by both limiters; the key type is the only difference between them.
 #[derive(Default)]
 struct RateWindows {
+    operations: Window,
     sends: Window,
     blobs: Window,
 }
@@ -251,8 +273,20 @@ pub struct HubState {
     pub max_blob_dir_bytes: u64,
     /// Largest JSON-serialized `parts` payload accepted on a single `Send`.
     pub max_message_bytes: usize,
+    /// Largest structured JSON frame accepted after WebSocket reassembly.
+    pub max_text_frame_bytes: usize,
     /// Ceiling on concurrent connections; once reached, new sockets are refused.
     pub max_connections: usize,
+    /// Aggregate reservation pool for simultaneous binary uploads.
+    inflight_blob_bytes: Arc<Semaphore>,
+    /// Durable per-identity quotas for attacker-controlled rows that otherwise survive rate-window
+    /// resets indefinitely.
+    pub max_owned_rooms: u64,
+    pub max_active_tokens: u64,
+    pub max_keyed_facts: u64,
+    /// Serializes each durable quota's check-and-write section. The hub is a single process, so this
+    /// closes concurrent-request races without adding protocol-visible database transactions.
+    durable_quota: Mutex<()>,
     /// How long an authenticated connection may stay silent before the hub drops it. `None` keeps
     /// connections open indefinitely. Defaults to [`DEFAULT_IDLE_TIMEOUT_SECS`].
     pub idle_timeout: Option<Duration>,
@@ -264,6 +298,9 @@ pub struct HubState {
     /// Per-client-IP HTTP request budget per 60s window across the public front door (REST + `/ws`
     /// upgrade). `0` disables. Defaults to [`DEFAULT_MAX_HTTP_PER_MIN`].
     pub max_http_per_min: u32,
+    /// Trust edge-provided client-IP headers. Disabled by default so a directly exposed hub cannot
+    /// have its per-IP limiter bypassed with spoofed `X-Forwarded-For` values.
+    pub trust_proxy_headers: bool,
     /// How the background janitor bounds append-only growth (defaults to keep-everything).
     pub retention: Retention,
     /// In-memory rate-limit counters, keyed by agent id (resets on restart).
@@ -322,11 +359,18 @@ impl HubState {
             max_blob_bytes: DEFAULT_MAX_BLOB_BYTES,
             max_blob_dir_bytes: DEFAULT_MAX_BLOB_DIR_BYTES,
             max_message_bytes: DEFAULT_MAX_MESSAGE_BYTES,
+            max_text_frame_bytes: DEFAULT_MAX_TEXT_FRAME_BYTES,
             max_connections: DEFAULT_MAX_CONNECTIONS,
+            inflight_blob_bytes: Arc::new(Semaphore::new(DEFAULT_MAX_INFLIGHT_BLOB_BYTES)),
+            max_owned_rooms: DEFAULT_MAX_OWNED_ROOMS,
+            max_active_tokens: DEFAULT_MAX_ACTIVE_TOKENS,
+            max_keyed_facts: DEFAULT_MAX_KEYED_FACTS,
+            durable_quota: Mutex::new(()),
             idle_timeout: Some(Duration::from_secs(DEFAULT_IDLE_TIMEOUT_SECS)),
             join_secret: None,
             limits: RateLimits::default(),
             max_http_per_min: DEFAULT_MAX_HTTP_PER_MIN,
+            trust_proxy_headers: false,
             retention: Retention::default(),
             rate: Mutex::new(HashMap::new()),
             room_rate: Mutex::new(HashMap::new()),
@@ -338,6 +382,11 @@ impl HubState {
             next_conn: AtomicU64::new(1),
             metrics: Metrics::default(),
         }
+    }
+
+    /// Replace the aggregate upload reservation budget before the state is shared by the server.
+    pub fn set_max_inflight_blob_bytes(&mut self, bytes: usize) {
+        self.inflight_blob_bytes = Arc::new(Semaphore::new(bytes.max(1)));
     }
 
     /// A fresh per-connection id.
@@ -423,6 +472,7 @@ impl HubState {
     /// Charge one event of `kind` against `agent`'s fixed window; `true` if it is within the limit.
     fn rate_allows(&self, agent: &str, kind: RateKind, now: i64) -> bool {
         let (limit, window_ms) = match kind {
+            RateKind::Operation => (self.limits.max_ops_per_min, 60_000),
             RateKind::Send => (self.limits.max_sends_per_min, 60_000),
             RateKind::Blob => (self.limits.max_blobs_per_hour, 3_600_000),
         };
@@ -432,6 +482,7 @@ impl HubState {
         let mut map = self.rate.lock();
         let ar = map.entry(agent.to_string()).or_default();
         let w = match kind {
+            RateKind::Operation => &mut ar.operations,
             RateKind::Send => &mut ar.sends,
             RateKind::Blob => &mut ar.blobs,
         };
@@ -444,6 +495,7 @@ impl HubState {
     /// blob disk budget (blobs) — the noisy-neighbor bound on a multi-tenant hub. `0` disables.
     fn room_rate_allows(&self, room: &str, kind: RateKind, now: i64) -> bool {
         let (limit, window_ms) = match kind {
+            RateKind::Operation => return true,
             RateKind::Send => (self.limits.max_room_sends_per_min, 60_000),
             RateKind::Blob => (self.limits.max_room_blobs_per_hour, 3_600_000),
         };
@@ -453,6 +505,7 @@ impl HubState {
         let mut map = self.room_rate.lock();
         let ar = map.entry(room.to_string()).or_default();
         let w = match kind {
+            RateKind::Operation => unreachable!("operation limits are per-agent only"),
             RateKind::Send => &mut ar.sends,
             RateKind::Blob => &mut ar.blobs,
         };
@@ -498,27 +551,26 @@ impl HubState {
     }
 }
 
-/// Resolve the client IP to rate-limit a request by. Behind the reference Fly deployment the edge sets
-/// `Fly-Client-IP` to the real client (not spoofable *through* Fly); behind a self-hosted proxy
-/// (Caddy/nginx) the leftmost `X-Forwarded-For` hop carries it; a direct connection has neither, so we
-/// fall back to the socket peer. This mirrors the existing proxy-trust posture — `request_base_url`
-/// already trusts `X-Forwarded-Proto` — so a forwarded IP is only as trustworthy as the proxy in
-/// front; the socket-peer fallback guarantees there is always *some* stable key to bound a flood by.
-fn client_ip(headers: &HeaderMap, peer: Option<IpAddr>) -> Option<IpAddr> {
-    if let Some(ip) = headers
-        .get("fly-client-ip")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|s| s.trim().parse().ok())
-    {
-        return Some(ip);
-    }
-    if let Some(ip) = headers
-        .get("x-forwarded-for")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|s| s.split(',').next())
-        .and_then(|s| s.trim().parse().ok())
-    {
-        return Some(ip);
+/// Resolve the client IP to rate-limit a request by. Forwarded headers are considered only when the
+/// operator explicitly enables proxy trust; otherwise a directly exposed client could choose a new
+/// header value for every request and bypass the limiter. The socket peer is always the fallback.
+fn client_ip(headers: &HeaderMap, peer: Option<IpAddr>, trust_proxy_headers: bool) -> Option<IpAddr> {
+    if trust_proxy_headers {
+        if let Some(ip) = headers
+            .get("fly-client-ip")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.trim().parse().ok())
+        {
+            return Some(ip);
+        }
+        if let Some(ip) = headers
+            .get("x-forwarded-for")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.split(',').next())
+            .and_then(|s| s.trim().parse().ok())
+        {
+            return Some(ip);
+        }
     }
     peer
 }
@@ -533,7 +585,7 @@ async fn rate_limit(State(state): State<Arc<HubState>>, req: Request, next: Next
         return next.run(req).await;
     }
     let peer = req.extensions().get::<ConnectInfo<SocketAddr>>().map(|ci| ci.0.ip());
-    if let Some(ip) = client_ip(req.headers(), peer) {
+    if let Some(ip) = client_ip(req.headers(), peer, state.trust_proxy_headers) {
         if !state.http_rate_allows(ip, now_ms()) {
             return (
                 StatusCode::TOO_MANY_REQUESTS,
@@ -643,7 +695,11 @@ fn prune_rate_windows(state: &HubState, now: i64) {
     const MAX_WINDOW_MS: i64 = 3_600_000; // the blob window (the longer of the two)
     {
         let mut map = state.rate.lock();
-        map.retain(|_, ar| now - ar.sends.start < MAX_WINDOW_MS || now - ar.blobs.start < MAX_WINDOW_MS);
+        map.retain(|_, ar| {
+            now - ar.operations.start < MAX_WINDOW_MS
+                || now - ar.sends.start < MAX_WINDOW_MS
+                || now - ar.blobs.start < MAX_WINDOW_MS
+        });
     }
     // Per-room windows share the same shape and bound (the 60-minute blob window is the longer of the
     // two); drop any room idle past it so the map stays sized to recently-active rooms.
@@ -1325,7 +1381,7 @@ async fn api_waitlist(
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     Json(body): Json<WaitlistBody>,
 ) -> impl IntoResponse {
-    if let Some(ip) = client_ip(&headers, Some(peer.ip())) {
+    if let Some(ip) = client_ip(&headers, Some(peer.ip()), state.trust_proxy_headers) {
         if !state.waitlist_rate_allows(ip, now_ms()) {
             return (
                 StatusCode::TOO_MANY_REQUESTS,
@@ -1354,12 +1410,10 @@ async fn api_waitlist(
     }
 }
 
-/// Hub-scope reads (private directory) are allowed when the hub mode is `public`, or the request
-/// carries a valid `Authorization: Bearer <directory-token>`.
+/// Hub-scope reads include private cards and therefore always require a valid
+/// `Authorization: Bearer <directory-token>`. Public hub mode makes the *public scope*
+/// world-readable; it never silently widens an agent's explicit private visibility choice.
 fn hub_scope_authorized(state: &HubState, headers: &HeaderMap) -> bool {
-    if state.mode == HubMode::Public {
-        return true;
-    }
     match bearer_token(headers) {
         Some(tok) => state.store.validate_directory_token(&tok, now_ms()).unwrap_or(false),
         None => false,
@@ -1591,6 +1645,8 @@ struct ConnState {
     conn_id: u64,
     /// The push channel's sender, handed to the subscriber registry when the client `Subscribe`s.
     push_tx: Option<mpsc::Sender<Arc<ServerFrame>>>,
+    /// Bound challenge/signature retries and forbid using one upgraded socket as an identity factory.
+    hello_frames: u8,
 }
 
 #[derive(Clone)]
@@ -1607,6 +1663,9 @@ struct PendingUpload {
     author: String,
     size: u64,
     media_type: Option<String>,
+    /// Releases this upload's aggregate byte reservation on success, rejection, disconnect, or when
+    /// a replacement `PutBlob` drops the pending reservation.
+    _permit: OwnedSemaphorePermit,
 }
 
 /// What the connection should send back: a single frame, or a frame followed by blob bytes read
@@ -1670,6 +1729,20 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<HubState>) {
                 let Some(Ok(msg)) = msg else { break };
                 match msg {
                     WsMessage::Text(txt) => {
+                        if txt.len() > state.max_text_frame_bytes {
+                            let _ = send_frame(
+                                &mut socket,
+                                &ServerFrame::error_coded(
+                                    error_code::TOO_LARGE,
+                                    format!(
+                                        "structured frame too large: {} bytes > limit {}",
+                                        txt.len(), state.max_text_frame_bytes
+                                    ),
+                                ),
+                            )
+                            .await;
+                            break;
+                        }
                         let reply = match serde_json::from_str::<ClientFrame>(&txt) {
                             // A `Pull { wait_secs }` on an authenticated connection is a **long-poll**:
                             // park it (in-memory, no store lock held across the await) until a message
@@ -1696,23 +1769,28 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<HubState>) {
                         // Hashing + writing a (potentially 25 MiB) blob is blocking work; run it on
                         // the blocking pool so it never stalls the async runtime. `pending` is
                         // consumed here.
-                        let reply = match conn.pending.take() {
-                            None => ServerFrame::error_coded(
-                                error_code::PROTOCOL,
-                                "unexpected binary frame (no PutBlob in flight)",
-                            ),
-                            Some(p) => {
-                                let st = state.clone();
-                                tokio::task::spawn_blocking(move || finish_blob_upload(&st, p, data))
-                                    .await
-                                    .unwrap_or_else(|_| {
-                                        ServerFrame::error_coded(
-                                            error_code::INTERNAL,
-                                            "blob upload task failed",
-                                        )
-                                    })
-                            }
+                        let Some(pending) = conn.pending.take() else {
+                            let _ = send_frame(
+                                &mut socket,
+                                &ServerFrame::error_coded(
+                                    error_code::PROTOCOL,
+                                    "unexpected binary frame (no PutBlob in flight)",
+                                ),
+                            )
+                            .await;
+                            break;
                         };
+                        let st = state.clone();
+                        let reply = tokio::task::spawn_blocking(move || {
+                            finish_blob_upload(&st, pending, data)
+                        })
+                        .await
+                        .unwrap_or_else(|_| {
+                            ServerFrame::error_coded(
+                                error_code::INTERNAL,
+                                "blob upload task failed",
+                            )
+                        });
                         if !send_reply(&mut socket, Reply::Frame(reply)).await {
                             break;
                         }
@@ -1806,6 +1884,19 @@ fn error_frame(e: &anyhow::Error) -> ServerFrame {
 /// Route one client frame to its reply. Synchronous (the store never blocks across an await).
 fn dispatch(state: &HubState, conn: &mut ConnState, frame: ClientFrame) -> Reply {
     if let ClientFrame::Hello { id, name, role, sig, secret, .. } = frame {
+        if conn.authed.is_some() {
+            return Reply::Frame(ServerFrame::error_coded(
+                error_code::PROTOCOL,
+                "connection is already authenticated",
+            ));
+        }
+        conn.hello_frames = conn.hello_frames.saturating_add(1);
+        if conn.hello_frames > 4 {
+            return Reply::Frame(ServerFrame::error_coded(
+                error_code::RATE_LIMITED,
+                "too many authentication attempts on this connection",
+            ));
+        }
         return Reply::Frame(handle_hello(state, conn, id, name, role, sig, secret));
     }
     let Some(authed) = conn.authed.clone() else {
@@ -1814,6 +1905,15 @@ fn dispatch(state: &HubState, conn: &mut ConnState, frame: ClientFrame) -> Reply
             "not authenticated — send `hello` first",
         ));
     };
+    if !state.rate_allows(&authed.id, RateKind::Operation, now_ms()) {
+        return Reply::Frame(ServerFrame::error_coded(
+            error_code::RATE_LIMITED,
+            "rate limit: too many operations — slow down",
+        ));
+    }
+    if let Err(error) = validate_frame_bounds(state, &frame) {
+        return Reply::Frame(error_frame(&error));
+    }
     // The blob ops need the connection (to stash a pending upload) or a two-part reply, and
     // `Subscribe` needs the connection's push sender — so those are handled here; everything else is
     // a plain one-frame request/reply.
@@ -1833,6 +1933,137 @@ fn dispatch(state: &HubState, conn: &mut ConnState, frame: ClientFrame) -> Reply
         other => handle_authed(state, &authed, other).map(Reply::Frame),
     };
     result.unwrap_or_else(|e| Reply::Frame(error_frame(&e)))
+}
+
+const MAX_CONTROL_STRING_BYTES: usize = 4 * 1024;
+const MAX_QUERY_BYTES: usize = 64 * 1024;
+
+fn bounded_string(value: &str, label: &str, max: usize) -> anyhow::Result<()> {
+    if value.len() > max {
+        return Err(coded(
+            error_code::TOO_LARGE,
+            format!("{label} too large: {} bytes > limit {max}", value.len()),
+        ));
+    }
+    Ok(())
+}
+
+fn bounded_target(target: &Target) -> anyhow::Result<()> {
+    match target {
+        Target::Room { room } => bounded_string(room, "room", MAX_CONTROL_STRING_BYTES),
+        Target::Dm { agent } => bounded_string(agent, "agent id", MAX_CONTROL_STRING_BYTES),
+        Target::Service { service } => bounded_string(service, "service", MAX_CONTROL_STRING_BYTES),
+    }
+}
+
+/// Bound every hostile field before it reaches tokenization, signature verification, SQLite, or a
+/// search query. The outer text-frame cap is necessary but not sufficient: a compact frame can still
+/// place nearly all of its bytes into one control identifier or embedding.
+fn validate_frame_bounds(state: &HubState, frame: &ClientFrame) -> anyhow::Result<()> {
+    let serialized_len = |value: &ClientFrame| serde_json::to_vec(value).map(|v| v.len()).unwrap_or(usize::MAX);
+    match frame {
+        ClientFrame::Hello { .. } => Ok(()),
+        ClientFrame::Invite { room, .. } => {
+            if let Some(room) = room { bounded_string(room, "room", MAX_CONTROL_STRING_BYTES)?; }
+            Ok(())
+        }
+        ClientFrame::Redeem { code } => bounded_string(code, "invite code", MAX_CONTROL_STRING_BYTES),
+        ClientFrame::JoinRequests { room }
+        | ClientFrame::DeleteRoom { room }
+        | ClientFrame::Roster { room } => bounded_string(room, "room", MAX_CONTROL_STRING_BYTES),
+        ClientFrame::ResolveJoin { room, agent, .. } => {
+            bounded_string(room, "room", MAX_CONTROL_STRING_BYTES)?;
+            bounded_string(agent, "agent id", MAX_CONTROL_STRING_BYTES)
+        }
+        ClientFrame::Serve { service } => bounded_string(service, "service", MAX_CONTROL_STRING_BYTES),
+        ClientFrame::Claim { room, message, .. }
+        | ClientFrame::Complete { room, message, .. } => {
+            bounded_string(room, "room", MAX_CONTROL_STRING_BYTES)?;
+            bounded_string(message, "message id", MAX_CONTROL_STRING_BYTES)
+        }
+        ClientFrame::Queue { room, role, .. } => {
+            bounded_string(room, "room", MAX_CONTROL_STRING_BYTES)?;
+            bounded_string(role, "role", MAX_CONTROL_STRING_BYTES)
+        }
+        ClientFrame::Register { .. }
+        | ClientFrame::Remember { .. }
+        | ClientFrame::Recall { .. }
+            if serialized_len(frame) > state.max_message_bytes =>
+        {
+            Err(coded(
+                error_code::TOO_LARGE,
+                format!(
+                    "structured payload too large: {} bytes > limit {}",
+                    serialized_len(frame), state.max_message_bytes
+                ),
+            ))
+        }
+        ClientFrame::Register { .. } => Ok(()),
+        ClientFrame::Discover { query, tag, skill, status, .. } => {
+            for (value, label, max) in [
+                (query.as_deref(), "directory query", MAX_QUERY_BYTES),
+                (tag.as_deref(), "tag", MAX_CONTROL_STRING_BYTES),
+                (skill.as_deref(), "skill", MAX_CONTROL_STRING_BYTES),
+                (status.as_deref(), "status", MAX_CONTROL_STRING_BYTES),
+            ] {
+                if let Some(value) = value { bounded_string(value, label, max)?; }
+            }
+            Ok(())
+        }
+        ClientFrame::Lookup { id } => bounded_string(id, "agent id", MAX_CONTROL_STRING_BYTES),
+        ClientFrame::MintDirectoryToken { .. } => Ok(()),
+        ClientFrame::MintWatch { room, .. } => bounded_string(room, "room", MAX_CONTROL_STRING_BYTES),
+        ClientFrame::Send { target, parts, mentions, reply_to, client_id } => {
+            bounded_target(target)?;
+            let parts_bytes = serde_json::to_vec(parts).map(|v| v.len()).unwrap_or(usize::MAX);
+            if parts_bytes > state.max_message_bytes {
+                return Err(coded(
+                    error_code::TOO_LARGE,
+                    format!("message too large: {parts_bytes} bytes > limit {}", state.max_message_bytes),
+                ));
+            }
+            if let Some(values) = mentions {
+                if values.len() > 256 {
+                    return Err(coded(error_code::TOO_LARGE, "too many mentions (limit 256)"));
+                }
+                for value in values { bounded_string(value, "mention", MAX_CONTROL_STRING_BYTES)?; }
+            }
+            if let Some(value) = reply_to { bounded_string(value, "reply id", MAX_CONTROL_STRING_BYTES)?; }
+            if let Some(value) = client_id { bounded_string(value, "client id", MAX_CONTROL_STRING_BYTES)?; }
+            Ok(())
+        }
+        ClientFrame::Pull { room, .. } => bounded_string(room, "room", MAX_CONTROL_STRING_BYTES),
+        ClientFrame::Remember { fact, embedding_model, .. } => {
+            bounded_string(&fact.text, "fact", state.max_message_bytes)?;
+            if let Some(value) = &fact.key { bounded_string(value, "fact key", MAX_CONTROL_STRING_BYTES)?; }
+            if let Some(value) = &fact.room { bounded_string(value, "room", MAX_CONTROL_STRING_BYTES)?; }
+            if let Some(value) = embedding_model {
+                bounded_string(value, "embedding model", MAX_CONTROL_STRING_BYTES)?;
+            }
+            Ok(())
+        }
+        ClientFrame::Recall { query, room, key, .. } => {
+            bounded_string(query, "recall query", MAX_QUERY_BYTES)?;
+            if let Some(value) = room { bounded_string(value, "room", MAX_CONTROL_STRING_BYTES)?; }
+            if let Some(value) = key { bounded_string(value, "fact key", MAX_CONTROL_STRING_BYTES)?; }
+            Ok(())
+        }
+        ClientFrame::Rooms => Ok(()),
+        ClientFrame::Presence { status, activity, .. } => {
+            bounded_string(status, "presence status", MAX_CONTROL_STRING_BYTES)?;
+            if let Some(value) = activity { bounded_string(value, "presence activity", MAX_CONTROL_STRING_BYTES)?; }
+            Ok(())
+        }
+        ClientFrame::SetAttention { .. } => Ok(()),
+        ClientFrame::PutBlob { target, sha256, media_type, .. } => {
+            bounded_target(target)?;
+            bounded_string(sha256, "content id", 128)?;
+            if let Some(value) = media_type { bounded_string(value, "media type", 256)?; }
+            Ok(())
+        }
+        ClientFrame::GetBlob { id } => bounded_string(id, "content id", 128),
+        ClientFrame::Subscribe | ClientFrame::Ping => Ok(()),
+    }
 }
 
 /// Serve a **long-poll** `Pull { wait_secs }`: reply as soon as the room has new messages past the
@@ -1924,6 +2155,22 @@ fn handle_put_blob(
             format!("blob too large: {size} bytes > limit {}", state.max_blob_bytes),
         ));
     }
+    // Reserve the maximum binary frame, not the claimed `size`: otherwise a hostile client could
+    // under-declare one byte and still make tungstenite assemble a max-sized frame before the size
+    // mismatch is detected.
+    let permits = u32::try_from(state.max_blob_bytes.max(1)).map_err(|_| {
+        coded(error_code::TOO_LARGE, "blob is too large for the in-flight upload budget")
+    })?;
+    let permit = state
+        .inflight_blob_bytes
+        .clone()
+        .try_acquire_many_owned(permits)
+        .map_err(|_| {
+            coded(
+                error_code::AT_CAPACITY,
+                "hub upload capacity is busy — retry after current uploads finish",
+            )
+        })?;
     if !state.rate_allows(&me.id, RateKind::Blob, now_ms()) {
         return Err(coded(error_code::RATE_LIMITED, "rate limit: too many blob uploads — slow down"));
     }
@@ -1943,7 +2190,14 @@ fn handle_put_blob(
             format!("rate limit: room '{room}' has too many uploads — slow down"),
         ));
     }
-    conn.pending = Some(PendingUpload { id: sha256.clone(), room, author: me.id.clone(), size, media_type });
+    conn.pending = Some(PendingUpload {
+        id: sha256.clone(),
+        room,
+        author: me.id.clone(),
+        size,
+        media_type,
+        _permit: permit,
+    });
     Ok(Reply::Frame(ServerFrame::BlobReady { id: sha256 }))
 }
 
@@ -2011,6 +2265,19 @@ fn handle_hello(
     sig: Option<String>,
     secret: Option<String>,
 ) -> ServerFrame {
+    for (value, label, max) in [
+        (Some(id.as_str()), "agent id", 256),
+        (Some(name.as_str()), "agent name", 256),
+        (role.as_deref(), "agent role", 256),
+        (sig.as_deref(), "signature", 512),
+        (secret.as_deref(), "join secret", MAX_CONTROL_STRING_BYTES),
+    ] {
+        if let Some(value) = value {
+            if let Err(error) = bounded_string(value, label, max) {
+                return error_frame(&error);
+            }
+        }
+    }
     match sig {
         // Step 1: issue a domain-separated, hub-bound, expiring challenge to sign. `version` lets a
         // newer client warn on a protocol mismatch; both fields are additive.
@@ -2115,6 +2382,13 @@ fn handle_authed(state: &HubState, me: &Authed, frame: ClientFrame) -> anyhow::R
 
         ClientFrame::MintDirectoryToken { ttl_secs } => {
             let now = now_ms();
+            let _quota = state.durable_quota.lock();
+            if store.active_token_count(&me.id, now)? >= state.max_active_tokens {
+                return Err(coded(
+                    error_code::AT_CAPACITY,
+                    "active token quota reached — wait for a token to expire",
+                ));
+            }
             let expires = now + (ttl_secs.unwrap_or(3600).min(MAX_TTL_SECS) as i64) * 1000;
             let tok = gen_token();
             store.mint_directory_token(&tok, "hub", expires, &me.id, now)?;
@@ -2123,6 +2397,13 @@ fn handle_authed(state: &HubState, me: &Authed, frame: ClientFrame) -> anyhow::R
 
         ClientFrame::MintWatch { room, ttl_secs } => {
             let now = now_ms();
+            let _quota = state.durable_quota.lock();
+            if store.active_token_count(&me.id, now)? >= state.max_active_tokens {
+                return Err(coded(
+                    error_code::AT_CAPACITY,
+                    "active token quota reached — wait for a token to expire",
+                ));
+            }
             let expires = now + (ttl_secs.unwrap_or(3600).min(MAX_TTL_SECS) as i64) * 1000;
             let tok = gen_token();
             // Owner-only is enforced in the store: a leaked *join* key can't mint a viewer, and a
@@ -2133,6 +2414,7 @@ fn handle_authed(state: &HubState, me: &Authed, frame: ClientFrame) -> anyhow::R
 
         ClientFrame::Invite { kind, room, ttl_secs, max_uses, require_approval } => {
             let now = now_ms();
+            let _quota = state.durable_quota.lock();
             let expires = now + (ttl_secs.unwrap_or(24 * 3600).min(MAX_TTL_SECS) as i64) * 1000;
             let (room_name, max) = match kind {
                 RoomKind::Dm => (format!("dm.{}", gen_suffix()), 1),
@@ -2153,10 +2435,17 @@ fn handle_authed(state: &HubState, me: &Authed, frame: ClientFrame) -> anyhow::R
             // not in: a session room's name is surfaced to joiners (and a topic name is guessable), so
             // otherwise a non-member could "invite itself" into an existing room and walk straight past
             // its approval gate. A brand-new room is owned by its creator, below.
-            if store.room_kind(&room_name)?.is_some() && !store.is_member(&room_name, &me.id)? {
+            let existing_kind = store.room_kind(&room_name)?;
+            if existing_kind.is_some() && !store.is_member(&room_name, &me.id)? {
                 anyhow::bail!(
                     "room '{room_name}' already exists — only a member can mint an invite for it"
                 );
+            }
+            if existing_kind.is_none() && store.owned_room_count(&me.id)? >= state.max_owned_rooms {
+                return Err(coded(
+                    error_code::AT_CAPACITY,
+                    "room quota reached — delete an owned room before creating another",
+                ));
             }
             store.ensure_room(&room_name, kind, None, now)?;
             store.add_member(&room_name, &me.id, now)?;
@@ -2196,8 +2485,19 @@ fn handle_authed(state: &HubState, me: &Authed, frame: ClientFrame) -> anyhow::R
         ClientFrame::Serve { service } => {
             let room = format!("svc.{}", token(&service));
             let now = now_ms();
+            let _quota = state.durable_quota.lock();
+            let is_new = store.room_kind(&room)?.is_none();
+            if is_new && store.owned_room_count(&me.id)? >= state.max_owned_rooms {
+                return Err(coded(
+                    error_code::AT_CAPACITY,
+                    "room quota reached — delete an owned room before creating another",
+                ));
+            }
             store.ensure_room(&room, RoomKind::Service, None, now)?;
             store.add_member(&room, &me.id, now)?;
+            if is_new {
+                store.set_room_owner(&room, &me.id)?;
+            }
             store.serve_role(&room, &me.id, &service, now)?;
             Ok(ServerFrame::Joined { room, kind: RoomKind::Service })
         }
@@ -2334,6 +2634,20 @@ fn handle_authed(state: &HubState, me: &Authed, frame: ClientFrame) -> anyhow::R
             if let Some(room) = &fact.room {
                 if !store.is_member(room, &me.id)? {
                     return Err(coded(error_code::NOT_MEMBER, format!("not a member of '{room}'")));
+                }
+            }
+            let _quota = fact.key.as_ref().map(|_| state.durable_quota.lock());
+            if let Some(key) = fact.key.as_deref() {
+                if !store.keyed_fact_within_quota(
+                    &me.id,
+                    key,
+                    fact.room.as_deref(),
+                    state.max_keyed_facts,
+                )? {
+                    return Err(coded(
+                        error_code::AT_CAPACITY,
+                        "keyed fact quota reached — update an existing key or remove old memory",
+                    ));
                 }
             }
             store.remember(
@@ -2611,6 +2925,153 @@ mod tests {
         let l = RateLimits::default();
         assert!(l.max_room_sends_per_min > 0, "per-room send ceiling must be on by default");
         assert!(l.max_room_blobs_per_hour > 0, "per-room blob ceiling must be on by default");
+        assert!(l.max_ops_per_min > 0, "post-upgrade WebSocket operations must be bounded");
+    }
+
+    #[test]
+    fn operation_rate_limit_bounds_post_upgrade_frames() {
+        let store = Store::open(None).unwrap();
+        let mut state = HubState::new(store, "parler://x".into(), "T".into(), HubMode::Public);
+        state.limits.max_ops_per_min = 2;
+        assert!(state.rate_allows("U", RateKind::Operation, 1));
+        assert!(state.rate_allows("U", RateKind::Operation, 1));
+        assert!(!state.rate_allows("U", RateKind::Operation, 1));
+        assert!(state.rate_allows("U", RateKind::Operation, 60_001));
+    }
+
+    #[test]
+    fn public_mode_does_not_authorize_private_directory_scope() {
+        let store = Store::open(None).unwrap();
+        let state = HubState::new(store, "parler://x".into(), "T".into(), HubMode::Public);
+        assert!(!hub_scope_authorized(&state, &HeaderMap::new()));
+
+        let now = now_ms();
+        state.store.mint_directory_token("secret", "hub", now + 10_000, "U", now).unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            "Bearer secret".parse().unwrap(),
+        );
+        assert!(hub_scope_authorized(&state, &headers));
+    }
+
+    #[test]
+    fn concurrent_blob_reservations_share_one_byte_budget() {
+        let store = Store::open(None).unwrap();
+        store.ensure_room("room", RoomKind::Channel, None, 1).unwrap();
+        store.add_member("room", "U", 1).unwrap();
+        let mut state = HubState::new(store, "parler://x".into(), "T".into(), HubMode::Public);
+        state.max_blob_bytes = 6;
+        state.set_max_inflight_blob_bytes(10);
+        let me = Authed { id: "U".into(), name: "worker".into(), role: None };
+        let mut first = ConnState::default();
+        let mut second = ConnState::default();
+        let reserve = |state: &HubState, conn: &mut ConnState| {
+            handle_put_blob(
+                state,
+                conn,
+                &me,
+                Target::Room { room: "room".into() },
+                "id".into(),
+                6,
+                None,
+            )
+        };
+        assert!(reserve(&state, &mut first).is_ok());
+        let error = match reserve(&state, &mut second) {
+            Err(error) => error,
+            Ok(_) => panic!("a second six-byte upload exceeded the ten-byte aggregate budget"),
+        };
+        assert_eq!(
+            error.downcast_ref::<CodedError>().and_then(|error| error.code.as_deref()),
+            Some(error_code::AT_CAPACITY)
+        );
+        first.pending.take();
+        assert!(reserve(&state, &mut second).is_ok());
+    }
+
+    #[test]
+    fn durable_quotas_reject_without_mutating_state() {
+        let store = Store::open(None).unwrap();
+        let mut state = HubState::new(store, "parler://x".into(), "T".into(), HubMode::Public);
+        state.max_active_tokens = 0;
+        state.max_owned_rooms = 0;
+        state.max_keyed_facts = 0;
+        let me = Authed { id: "U".into(), name: "worker".into(), role: None };
+
+        let capacity = |result: anyhow::Result<ServerFrame>| {
+            let error = result.expect_err("a zero quota must reject the operation");
+            assert_eq!(
+                error.downcast_ref::<CodedError>().and_then(|error| error.code.as_deref()),
+                Some(error_code::AT_CAPACITY)
+            );
+        };
+
+        capacity(handle_authed(
+            &state,
+            &me,
+            ClientFrame::MintDirectoryToken { ttl_secs: Some(60) },
+        ));
+        assert_eq!(state.store.active_token_count(&me.id, now_ms()).unwrap(), 0);
+
+        capacity(handle_authed(
+            &state,
+            &me,
+            ClientFrame::Invite {
+                kind: RoomKind::Channel,
+                room: Some("blocked".into()),
+                ttl_secs: Some(60),
+                max_uses: Some(1),
+                require_approval: false,
+            },
+        ));
+        assert_eq!(state.store.room_kind("blocked").unwrap(), None);
+
+        capacity(handle_authed(
+            &state,
+            &me,
+            ClientFrame::Remember {
+                fact: parler_protocol::Fact {
+                    key: Some("blocked".into()),
+                    text: "must not persist".into(),
+                    room: None,
+                },
+                embedding: None,
+                embedding_model: None,
+            },
+        ));
+        assert!(state.store.recall_by_key(&me.id, "blocked", None, Some(1)).unwrap().is_empty());
+    }
+
+    #[test]
+    fn durable_quota_check_and_write_is_atomic_across_connections() {
+        let store = Store::open(None).unwrap();
+        let mut state = HubState::new(store, "parler://x".into(), "T".into(), HubMode::Public);
+        state.max_active_tokens = 1;
+        let state = Arc::new(state);
+        let barrier = Arc::new(std::sync::Barrier::new(3));
+        let mut threads = Vec::new();
+        for _ in 0..2 {
+            let state = state.clone();
+            let barrier = barrier.clone();
+            threads.push(std::thread::spawn(move || {
+                let me = Authed { id: "U".into(), name: "worker".into(), role: None };
+                barrier.wait();
+                handle_authed(
+                    &state,
+                    &me,
+                    ClientFrame::MintDirectoryToken { ttl_secs: Some(60) },
+                )
+            }));
+        }
+        barrier.wait();
+        let successes = threads
+            .into_iter()
+            .map(|thread| matches!(thread.join().unwrap(), Ok(ServerFrame::DirectoryToken { .. })))
+            .filter(|success| *success)
+            .count();
+        assert_eq!(successes, 1);
+        assert_eq!(state.store.active_token_count("U", now_ms()).unwrap(), 1);
     }
 
     #[test]
@@ -2718,7 +3179,7 @@ mod tests {
     }
 
     #[test]
-    fn client_ip_prefers_fly_then_xff_then_peer() {
+    fn client_ip_uses_forwarded_headers_only_when_proxy_trust_is_enabled() {
         let peer: IpAddr = "10.0.0.9".parse().unwrap();
         let expect = |ip: &str| -> IpAddr { ip.parse().unwrap() };
 
@@ -2726,17 +3187,18 @@ mod tests {
         let mut h = HeaderMap::new();
         h.insert("fly-client-ip", "203.0.113.7".parse().unwrap());
         h.insert("x-forwarded-for", "198.51.100.4, 10.0.0.1".parse().unwrap());
-        assert_eq!(client_ip(&h, Some(peer)), Some(expect("203.0.113.7")));
+        assert_eq!(client_ip(&h, Some(peer), true), Some(expect("203.0.113.7")));
+        assert_eq!(client_ip(&h, Some(peer), false), Some(peer));
 
         // No Fly header: the leftmost X-Forwarded-For hop (the real client) is used.
         let mut h = HeaderMap::new();
         h.insert("x-forwarded-for", "198.51.100.4, 10.0.0.1".parse().unwrap());
-        assert_eq!(client_ip(&h, Some(peer)), Some(expect("198.51.100.4")));
+        assert_eq!(client_ip(&h, Some(peer), true), Some(expect("198.51.100.4")));
 
         // No forwarded headers: fall back to the socket peer (direct/local connection).
-        assert_eq!(client_ip(&HeaderMap::new(), Some(peer)), Some(peer));
+        assert_eq!(client_ip(&HeaderMap::new(), Some(peer), false), Some(peer));
         // Nothing to key on at all: fail-open (None), so the caller lets the request through.
-        assert_eq!(client_ip(&HeaderMap::new(), None), None);
+        assert_eq!(client_ip(&HeaderMap::new(), None, false), None);
     }
 
     #[test]

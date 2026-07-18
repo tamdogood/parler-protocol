@@ -99,9 +99,15 @@ The MCP equivalent is `parler_attention`: use `mode=open|dnd|focus` globally, or
 
 Only the global mode is mirrored into presence. Quiet and muted room lists never leave the receiver.
 A held batch is not acknowledged, so opening attention later replays its durable context. A directed
-message behind held ambient traffic can wake once while the batch remains held; the connector suppresses
-repeat injection during that temporary re-read window. A non-held wake is acknowledged only after its
-host injector accepts it; a failed injection stays durable and is retried.
+message behind held ambient traffic can wake once while the batch remains held. Before any host wake
+or local runner, the connector verifies that the signed target matches the delivery context. It
+then atomically records the signed `(author, uid)` rather than the hub-assigned message id in one
+bounded ledger per receiving identity beneath `$PARLER_HOME/autonomous-replay`. This happens before
+the host acts, so another local listener or a restarted process cannot execute the same instruction
+under a new relay id. The security boundary is deliberately at-most-once: an explicit failed
+injection releases the reservation for retry, while a process crash after reservation fails closed
+instead of risking a duplicate workspace-writing turn. A non-held wake is acknowledged only after
+its host injector accepts it.
 
 ## One connector contract
 

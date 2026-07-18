@@ -1066,6 +1066,18 @@ impl Store {
         Ok(())
     }
 
+    /// Number of rooms created/owned by this agent. Used by the hub's durable room quota before it
+    /// creates another invite/service room.
+    pub fn owned_room_count(&self, owner: &str) -> Result<u64> {
+        let conn = self.r();
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM rooms WHERE owner = ?1",
+            params![owner],
+            |row| row.get(0),
+        )?;
+        Ok(count.max(0) as u64)
+    }
+
     /// Redeem `code` for `agent`. For an ordinary invite this validates expiry + remaining uses,
     /// charges a use, and joins the room. For an **approval-gated** invite it instead records a
     /// *pending request* (the agent is not admitted) the room owner must approve — see
@@ -1345,6 +1357,47 @@ impl Store {
             params![token, scope, expires, created_by, now],
         )?;
         Ok(())
+    }
+
+    /// Active directory/watch capabilities minted by one identity.
+    pub fn active_token_count(&self, created_by: &str, now: i64) -> Result<u64> {
+        let conn = self.r();
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM directory_tokens WHERE created_by = ?1 AND expires >= ?2",
+            params![created_by, now],
+            |row| row.get(0),
+        )?;
+        Ok(count.max(0) as u64)
+    }
+
+    /// Whether writing this keyed fact would update an existing row or stay under `max` distinct
+    /// keyed facts for the author. Keyed upserts remain available at the quota boundary.
+    pub fn keyed_fact_within_quota(
+        &self,
+        author: &str,
+        key: &str,
+        room: Option<&str>,
+        max: u64,
+    ) -> Result<bool> {
+        let conn = self.r();
+        let exists: i64 = conn.query_row(
+            "SELECT EXISTS(
+                 SELECT 1 FROM facts
+                  WHERE author = ?1 AND fkey = ?2
+                    AND ((room IS NULL AND ?3 IS NULL) OR room = ?3)
+             )",
+            params![author, key, room],
+            |row| row.get(0),
+        )?;
+        if exists != 0 {
+            return Ok(true);
+        }
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM facts WHERE author = ?1 AND fkey IS NOT NULL",
+            params![author],
+            |row| row.get(0),
+        )?;
+        Ok((count.max(0) as u64) < max)
     }
 
     /// `true` when `token` exists, has not expired, **and** is a directory-scoped token. The scope

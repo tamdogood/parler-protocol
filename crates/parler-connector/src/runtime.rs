@@ -5,11 +5,13 @@
 //! supervisor one vocabulary: lifecycle events publish presence, tool calls publish messages, pulls
 //! become policy-aware receives, and a host-specific adapter injects a wake when it has that seam.
 
-use crate::{verify_message, AttentionDecision, AttentionPolicy, MeshAgent, SigStatus};
-use anyhow::Result;
+use crate::{home_dir, verify_message_for_room, AttentionDecision, AttentionPolicy, MeshAgent, SigStatus};
+use anyhow::{Context, Result};
 use async_trait::async_trait;
-use parler_protocol::{Part, RoomKind, StoredMessage, Target};
+use parler_protocol::{MessageSig, Part, RoomKind, StoredMessage, Target};
 use std::collections::{HashSet, VecDeque};
+use std::fs::File;
+use std::path::PathBuf;
 use std::time::Duration;
 
 /// A host lifecycle transition mirrored into Parler presence. `offline` is intentionally absent:
@@ -78,27 +80,190 @@ pub trait HostWakeInjector: Send {
     async fn inject(&mut self, wake: WakeRequest) -> Result<()>;
 }
 
+#[derive(Default)]
+struct ReplayBucket {
+    completed: HashSet<String>,
+    order: VecDeque<String>,
+}
+
+/// Receiver-owned, bounded replay protection for messages that can start autonomous work.
+///
+/// A signed UID is stable even if an untrusted hub changes its own stored-message id. Production
+/// runtimes reserve `(sender, uid)` keys per receiving identity beneath `$PARLER_HOME` before a host
+/// acts. A stable lock file makes that check-and-write atomic across local processes sharing an
+/// identity; an explicit pre-action failure can release its reservation for retry.
+pub struct AutonomousReplayGuard {
+    path: Option<PathBuf>,
+    bucket: ReplayBucket,
+    pending: HashSet<String>,
+    loaded: bool,
+}
+
+const REPLAY_CAP: usize = 16_384;
+
+impl AutonomousReplayGuard {
+    /// An in-memory guard for tests and embedded callers that do not want local persistence.
+    pub fn ephemeral() -> AutonomousReplayGuard {
+        AutonomousReplayGuard {
+            path: None,
+            bucket: ReplayBucket::default(),
+            pending: HashSet::new(),
+            loaded: true,
+        }
+    }
+
+    /// A durable guard scoped to one local identity.
+    pub fn persistent(agent_id: &str) -> AutonomousReplayGuard {
+        let identity = parler_auth::content_id(agent_id.as_bytes());
+        AutonomousReplayGuard {
+            path: Some(home_dir().join("autonomous-replay").join(format!("{identity}.json"))),
+            bucket: ReplayBucket::default(),
+            pending: HashSet::new(),
+            loaded: false,
+        }
+    }
+
+    /// Verify the signature's delivery context and reserve its stable signed UID for one local
+    /// execution attempt. Returns `false` for invalid, misrouted, completed, or already-pending work.
+    pub fn admit(&mut self, message: &StoredMessage, recipient_id: &str) -> Result<bool> {
+        if verify_message_for_room(message, recipient_id) != SigStatus::Valid {
+            return Ok(false);
+        }
+        let Some(key) = replay_key(message) else { return Ok(false) };
+        let _lock = self.lock_file()?;
+        self.refresh()?;
+        if self.bucket.completed.contains(&key) {
+            return Ok(false);
+        }
+        self.remember(key.clone());
+        self.save()?;
+        self.pending.insert(key);
+        Ok(true)
+    }
+
+    /// Mark accepted host actions complete before their hub cursor is committed. Admission already
+    /// persisted the signed UID, so completion only closes the local releasable state.
+    pub fn complete(&mut self, messages: &[StoredMessage]) -> Result<()> {
+        for message in messages {
+            let Some(key) = replay_key(message) else { continue };
+            self.pending.remove(&key);
+        }
+        Ok(())
+    }
+
+    /// Release an uncompleted reservation after a host injection fails so the durable pull can retry.
+    pub fn release(&mut self, messages: &[StoredMessage]) -> Result<()> {
+        let _lock = self.lock_file()?;
+        self.refresh()?;
+        let mut dirty = false;
+        for message in messages {
+            if let Some(key) = replay_key(message) {
+                if self.pending.remove(&key) && self.bucket.completed.remove(&key) {
+                    self.bucket.order.retain(|entry| entry != &key);
+                    dirty = true;
+                }
+            }
+        }
+        if dirty {
+            self.save()?;
+        }
+        Ok(())
+    }
+
+    fn refresh(&mut self) -> Result<()> {
+        if self.path.is_none() && self.loaded {
+            return Ok(());
+        }
+        let mut bucket = ReplayBucket::default();
+        if let Some(path) = &self.path {
+            match std::fs::read(path) {
+                Ok(bytes) => {
+                    let keys: Vec<String> = serde_json::from_slice(&bytes)
+                        .with_context(|| format!("parsing autonomous replay ledger {}", path.display()))?;
+                    for key in keys.into_iter().rev().take(REPLAY_CAP).collect::<Vec<_>>().into_iter().rev() {
+                        if bucket.completed.insert(key.clone()) {
+                            bucket.order.push_back(key);
+                        }
+                    }
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    return Err(error).with_context(|| format!("reading autonomous replay ledger {}", path.display()));
+                }
+            }
+        }
+        self.bucket = bucket;
+        self.loaded = true;
+        Ok(())
+    }
+
+    fn remember(&mut self, key: String) {
+        if self.bucket.completed.insert(key.clone()) {
+            self.bucket.order.push_back(key);
+        }
+        while self.bucket.order.len() > REPLAY_CAP {
+            if let Some(old) = self.bucket.order.pop_front() {
+                self.bucket.completed.remove(&old);
+            }
+        }
+    }
+
+    fn save(&self) -> Result<()> {
+        let Some(path) = &self.path else { return Ok(()) };
+        let body = serde_json::to_vec(&self.bucket.order)?;
+        parler_auth::write_private_file(path, &body)
+            .with_context(|| format!("writing autonomous replay ledger {}", path.display()))
+    }
+
+    fn lock_file(&self) -> Result<Option<File>> {
+        let Some(path) = &self.path else { return Ok(None) };
+        let parent = path.parent().context("autonomous replay ledger has no parent directory")?;
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("creating autonomous replay directory {}", parent.display()))?;
+        let lock_path = path.with_extension("lock");
+        let mut options = std::fs::OpenOptions::new();
+        options.read(true).write(true).create(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let file = options
+            .open(&lock_path)
+            .with_context(|| format!("opening autonomous replay lock {}", lock_path.display()))?;
+        file.lock()
+            .with_context(|| format!("locking autonomous replay ledger {}", path.display()))?;
+        Ok(Some(file))
+    }
+}
+
+fn replay_key(message: &StoredMessage) -> Option<String> {
+    let signature = MessageSig::from_parts(&message.parts)?;
+    Some(format!("{}:{}", message.from.id, signature.uid))
+}
+
 /// A continuously connected connector with local attention enforcement. It deliberately owns no
 /// process manager: spawning and observing a runner belongs to the optional CLI supervisor, keeping
 /// the messaging hot path small and usable by ordinary MCP hosts.
 pub struct ConnectorRuntime {
     agent: MeshAgent,
     attention: AttentionPolicy,
-    /// Message ids already handed to a host while a held batch is re-read. The hub cursor is left
-    /// untouched during a hold, so this prevents a directed message behind ambient traffic from
-    /// injecting the same model turn over and over. A restart may re-deliver once, preserving the
-    /// protocol's at-least-once rather than silently losing work.
-    seen: HashSet<String>,
-    seen_order: VecDeque<String>,
+    replay: AutonomousReplayGuard,
 }
 
-const SEEN_CAP: usize = 1_024;
 const PUSH_RECHECK: Duration = Duration::from_secs(25);
 const POLL_RECHECK: Duration = Duration::from_secs(2);
 
 impl ConnectorRuntime {
+    /// Construct an embedded/test runtime with process-local replay protection.
     pub fn new(agent: MeshAgent, attention: AttentionPolicy) -> ConnectorRuntime {
-        ConnectorRuntime { agent, attention, seen: HashSet::new(), seen_order: VecDeque::new() }
+        ConnectorRuntime { agent, attention, replay: AutonomousReplayGuard::ephemeral() }
+    }
+
+    /// Construct a production runtime whose completed signed UIDs survive host restarts.
+    pub fn persistent(agent: MeshAgent, attention: AttentionPolicy) -> ConnectorRuntime {
+        let replay = AutonomousReplayGuard::persistent(&agent.id);
+        ConnectorRuntime { agent, attention, replay }
     }
 
     pub fn agent(&self) -> &MeshAgent {
@@ -140,8 +305,8 @@ impl ConnectorRuntime {
     ///
     /// A room cursor is contiguous. If ambient traffic is held before a later directed message, the
     /// later message may wake once but the batch remains unacknowledged so opening attention later
-    /// can still surface the ambient context. `seen` suppresses repeat wake injection during that
-    /// temporary re-read window.
+    /// can still surface the ambient context. The replay guard suppresses repeat wake injection
+    /// during that temporary re-read window and across later relay replays.
     pub async fn receive(
         &mut self,
         room: &str,
@@ -165,14 +330,16 @@ impl ConnectorRuntime {
             }
             // An autonomous wake can lead to a workspace-writing model turn. Legacy unsigned
             // messages remain renderable through ordinary pull tools, but never cross this boundary.
-            if !is_authentic(&message) {
+            if verify_message_for_room(&message, &me) != SigStatus::Valid {
                 dropped += 1;
                 continue;
             }
             match self.attention.decide(room, kind, &message, &name, role.as_deref()) {
                 AttentionDecision::Wake => {
-                    if self.remember_wake(&message.id) {
+                    if self.replay.admit(&message, &me)? {
                         messages.push(message);
+                    } else {
+                        dropped += 1;
                     }
                 }
                 AttentionDecision::Hold => held = true,
@@ -199,19 +366,17 @@ impl ConnectorRuntime {
         if received.messages.is_empty() {
             return Ok(false);
         }
-        let ids: Vec<String> = received.messages.iter().map(|message| message.id.clone()).collect();
+        let messages = received.messages;
         if let Err(error) = injector
-            .inject(WakeRequest { room: received.room.clone(), messages: received.messages })
+            .inject(WakeRequest { room: received.room.clone(), messages: messages.clone() })
             .await
         {
-            self.forget_wakes(&ids);
+            self.replay.release(&messages)?;
             return Err(error);
         }
+        self.replay.complete(&messages)?;
         if !received.held {
-            if let Err(error) = self.agent.commit_reads(&received.room).await {
-                self.forget_wakes(&ids);
-                return Err(error);
-            }
+            self.agent.commit_reads(&received.room).await?;
         }
         Ok(true)
     }
@@ -257,29 +422,21 @@ impl ConnectorRuntime {
         }
     }
 
-    fn remember_wake(&mut self, id: &str) -> bool {
-        if !self.seen.insert(id.to_string()) {
-            return false;
-        }
-        self.seen_order.push_back(id.to_string());
-        if self.seen_order.len() > SEEN_CAP {
-            if let Some(old) = self.seen_order.pop_front() {
-                self.seen.remove(&old);
-            }
-        }
-        true
+    /// Admit one queue-delivered message through the same room-binding and signed-UID replay gate
+    /// used by ordinary receives. Role queues bypass `receive`, so supervisors call this explicitly.
+    pub fn admit_autonomous(&mut self, message: &StoredMessage) -> Result<bool> {
+        self.replay.admit(message, &self.agent.id)
     }
 
-    fn forget_wakes(&mut self, ids: &[String]) {
-        for id in ids {
-            self.seen.remove(id);
-        }
-        self.seen_order.retain(|id| !ids.iter().any(|forgotten| forgotten == id));
+    /// Record that the host action for these admitted messages has occurred.
+    pub fn complete_autonomous(&mut self, messages: &[StoredMessage]) -> Result<()> {
+        self.replay.complete(messages)
     }
-}
 
-fn is_authentic(message: &StoredMessage) -> bool {
-    verify_message(&message.from.id, &message.parts, message.reply_to.as_deref()) == SigStatus::Valid
+    /// Release admitted messages that did not reach a host action.
+    pub fn release_autonomous(&mut self, messages: &[StoredMessage]) -> Result<()> {
+        self.replay.release(messages)
+    }
 }
 
 #[cfg(test)]
@@ -341,5 +498,88 @@ mod tests {
         assert!(received.messages.is_empty());
         assert_eq!(received.dropped, 1);
         assert!(!received.held);
+    }
+
+    #[test]
+    fn completed_signed_uid_is_rejected_under_a_new_hub_id() {
+        let sender = parler_auth::new_identity().unwrap();
+        let recipient = parler_auth::new_identity().unwrap();
+        let target = Target::Dm { agent: recipient.id.clone() };
+        let mut parts = vec![Part::text("run this once")];
+        let ts = 1_710_000_000_000;
+        let uid = "stable-author-uid";
+        let bytes = parler_protocol::canonical_message_bytes(
+            &sender.id,
+            &target,
+            &parts,
+            None,
+            ts,
+            uid,
+        );
+        let sig = parler_auth::sign(&sender.seed, &bytes).unwrap();
+        parts.push(MessageSig { sig, ts, uid: uid.into(), target }.to_part());
+        let mut message = StoredMessage {
+            seq: 1,
+            id: "hub-id-1".into(),
+            room: "dm.first".into(),
+            from: EndpointRef { id: sender.id, name: "sender".into(), role: None },
+            parts,
+            mentions: None,
+            reply_to: None,
+            ts: 1,
+        };
+        let mut replay = AutonomousReplayGuard::ephemeral();
+        assert!(replay.admit(&message, &recipient.id).unwrap());
+        replay.complete(std::slice::from_ref(&message)).unwrap();
+        message.id = "hub-id-2".into();
+        message.seq = 99;
+        message.room = "dm.second".into();
+        assert!(!replay.admit(&message, &recipient.id).unwrap());
+        replay.release(std::slice::from_ref(&message)).unwrap();
+        assert!(!replay.admit(&message, &recipient.id).unwrap());
+    }
+
+    #[test]
+    fn durable_admission_is_visible_to_another_local_listener_and_releasable() {
+        let sender = parler_auth::new_identity().unwrap();
+        let recipient = parler_auth::new_identity().unwrap();
+        let target = Target::Dm { agent: recipient.id.clone() };
+        let mut parts = vec![Part::text("run once")];
+        let bytes = parler_protocol::canonical_message_bytes(
+            &sender.id,
+            &target,
+            &parts,
+            None,
+            1,
+            "shared-uid",
+        );
+        let sig = parler_auth::sign(&sender.seed, &bytes).unwrap();
+        parts.push(MessageSig { sig, ts: 1, uid: "shared-uid".into(), target }.to_part());
+        let message = StoredMessage {
+            seq: 1,
+            id: "hub-id".into(),
+            room: "dm.first".into(),
+            from: EndpointRef { id: sender.id, name: "sender".into(), role: None },
+            parts,
+            mentions: None,
+            reply_to: None,
+            ts: 1,
+        };
+
+        let directory = std::env::temp_dir().join(format!("parler-replay-{}", uuid::Uuid::new_v4()));
+        let path = directory.join("receiver.json");
+        let guard = || AutonomousReplayGuard {
+            path: Some(path.clone()),
+            bucket: ReplayBucket::default(),
+            pending: HashSet::new(),
+            loaded: false,
+        };
+        let mut first = guard();
+        let mut second = guard();
+        assert!(first.admit(&message, &recipient.id).unwrap());
+        assert!(!second.admit(&message, &recipient.id).unwrap());
+        first.release(std::slice::from_ref(&message)).unwrap();
+        assert!(second.admit(&message, &recipient.id).unwrap());
+        std::fs::remove_dir_all(directory).unwrap();
     }
 }

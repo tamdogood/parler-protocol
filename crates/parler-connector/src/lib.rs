@@ -15,11 +15,17 @@ pub mod client;
 pub mod config;
 pub mod runtime;
 
-pub use agent::{verify_message, BundleMeta, Invite, JoinOutcome, MeshAgent, PushReceipt, SigStatus};
+pub use agent::{
+    verify_message, verify_message_for_room, BundleMeta, Invite, JoinOutcome, MeshAgent, PushReceipt,
+    SigStatus,
+};
 pub use attention::{AttentionDecision, AttentionPolicy, RoomAttention};
 pub use client::HubClient;
 pub use config::{home_dir, Config};
-pub use runtime::{ConnectorRuntime, HostWakeInjector, Lifecycle, Received, ToolSend, ToolSendReceipt, WakeRequest};
+pub use runtime::{
+    AutonomousReplayGuard, ConnectorRuntime, HostWakeInjector, Lifecycle, Received, ToolSend,
+    ToolSendReceipt, WakeRequest,
+};
 
 use anyhow::Result;
 use async_trait::async_trait;

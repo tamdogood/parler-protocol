@@ -416,3 +416,16 @@ Format: `- **<short trigger>:** <the rule>. <why, in a clause>`
   immediate admission with explicit `--approval` / `approval: true`. For any default, command, host
   support, or security change, review the protocol README, `docs/getting-started.md`, and website
   quickstart together before editing the deep reference. (2026-07-18 onboarding consolidation.)
+
+- **A valid message signature is not delivery authorization:** autonomous receivers must bind the
+  signed `Target` to the delivery context and deduplicate the signed `(author, uid)`, not the
+  relay-assigned message id. Otherwise a compromised relay can move or replay an authentic task and
+  trigger workspace-writing work without forging anything. Persist admission atomically before the
+  host acts, across all rooms and local processes for that identity; release only an explicit
+  pre-action failure. This fails closed after a crash instead of risking duplicate workspace writes.
+  (2026-07-18 security audit.)
+
+- **zsh does not split scalar loop values for `set --` by default:** when a loop item contains
+  `<repo> <ref>`, extract it with `${spec%% *}` / `${spec#* }` (or `${=spec}` deliberately). Assuming
+  Bourne-style word splitting silently made the whole pair part of a Git URL while resolving pinned
+  action SHAs. (2026-07-18 CI hardening.)

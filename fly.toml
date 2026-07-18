@@ -27,6 +27,7 @@ primary_region = "dfw"          # matches the parler_data volume's region
   # The image is private by default; this reference instance opts into a world-readable directory.
   # (Same effect as the `--public` flag — see deploy/Dockerfile.)
   PARLER_HUB_PUBLIC = "true"
+  PARLER_HUB_TRUST_PROXY_HEADERS = "true"
   # Advertised in invite links + shown in the landing page's publish snippet. Use your app's domain.
   PARLER_HUB_URL  = "wss://parler-hub.fly.dev"
   # Optional: link the directory website from the hub's landing page.

@@ -944,9 +944,9 @@ pub fn is_message_sig_part(p: &Part) -> bool {
 /// The signature covers [`canonical_message_bytes`] of the message's *content* — the author id, the
 /// routing `target` the author chose, the non-signature `parts`, the optional `replyTo`, and the
 /// author-stamped `ts`/`uid`. It deliberately does **not** cover hub-assigned routing metadata
-/// (`seq`, the resolved room name, the hub's own `ts`): those are the relay's to set, and binding the
-/// delivered room (anti-misrouting) and ordering (anti-reorder) ride the per-room hash chain layered
-/// on top of this. `mentions` are excluded because the hub normalizes them in flight.
+/// (`seq`, the resolved room name, the hub's own `ts`): those are the relay's to set. Autonomous
+/// receivers bind the signed target to the delivered room and durably reject a repeated signed
+/// `(author, uid)` before acting. `mentions` are excluded because the hub normalizes them in flight.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MessageSig {
     /// Base64 nkey/Ed25519 signature over [`canonical_message_bytes`].

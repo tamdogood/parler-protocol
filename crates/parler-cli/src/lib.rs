@@ -148,7 +148,7 @@ struct HubArgs {
     /// Display name for this hub (the workspace name shown in the directory/site).
     #[arg(long, env = "PARLER_HUB_NAME", default_value = "Parler Protocol Hub")]
     name: String,
-    /// Run a public hub (world-readable directory). Omit for a private, token-gated hub.
+    /// Run a public hub (public cards are world-readable; private cards remain token-gated).
     #[arg(long, env = "PARLER_HUB_PUBLIC")]
     public: bool,
     /// Require this shared secret on connect. Strongly recommended for a private hub exposed on a
@@ -156,6 +156,9 @@ struct HubArgs {
     /// `PARLER_JOIN_SECRET`.
     #[arg(long, env = "PARLER_HUB_JOIN_SECRET")]
     join_secret: Option<String>,
+    /// Trust proxy-provided client IP headers. Enable only behind a proxy that overwrites them.
+    #[arg(long, env = "PARLER_HUB_TRUST_PROXY_HEADERS")]
+    trust_proxy_headers: bool,
     /// Disconnect an authenticated agent after this many seconds of silence (it can reconnect and
     /// resume from its durable cursor). `0` disables the timeout. Default: 1800 (30 min).
     #[arg(long, env = "PARLER_HUB_IDLE_TIMEOUT_SECS", default_value_t = 1800)]
@@ -1023,6 +1026,16 @@ async fn cmd_hub(a: HubArgs) -> Result<()> {
         state.blob_dir = std::path::PathBuf::from(format!("{db}.blobs"));
     }
     state.join_secret = a.join_secret.filter(|s| !s.is_empty());
+    state.trust_proxy_headers = a.trust_proxy_headers;
+    if mode == parler_hub::HubMode::Private
+        && state.join_secret.is_none()
+        && !hub_bind_is_loopback(&a.addr)
+    {
+        bail!(
+            "refusing to expose a private hub on '{}' without a join secret; pass --join-secret or bind to loopback",
+            a.addr
+        );
+    }
     state.idle_timeout =
         (a.idle_timeout_secs != 0).then(|| std::time::Duration::from_secs(a.idle_timeout_secs));
     let state = Arc::new(state);
@@ -1035,6 +1048,16 @@ async fn cmd_hub(a: HubArgs) -> Result<()> {
         db.as_deref().unwrap_or(":memory:")
     );
     parler_hub::serve(listener, state).await
+}
+
+fn hub_bind_is_loopback(addr: &str) -> bool {
+    addr.parse::<std::net::SocketAddr>()
+        .map(|addr| addr.ip().is_loopback())
+        .unwrap_or_else(|_| {
+            addr.rsplit_once(':')
+                .map(|(host, _)| host.eq_ignore_ascii_case("localhost"))
+                .unwrap_or(false)
+        })
 }
 
 /// The hub-selection inputs to [`resolve_connect_hub`] — the `--hub`/`--shared`/`--team`/`--local`
@@ -1452,7 +1475,7 @@ async fn cmd_supervise(a: SuperviseArgs) -> Result<()> {
     }
     let policy = if Config::exists() { Config::load()?.attention } else { mcp::load_or_bootstrap_config()?.attention };
     let ag = connect().await?;
-    let mut runtime = ConnectorRuntime::new(ag, policy);
+    let mut runtime = ConnectorRuntime::persistent(ag, policy);
     let (room, kind, role) = match (a.role, a.room) {
         (Some(role), None) => {
             let role = role.trim().to_string();
@@ -2772,7 +2795,7 @@ async fn cmd_hook(kind: String) -> Result<()> {
 
     let policy = Config::load().map(|cfg| cfg.attention).unwrap_or_default();
     let ag = connect().await?;
-    let mut runtime = ConnectorRuntime::new(ag, policy);
+    let mut runtime = ConnectorRuntime::persistent(ag, policy);
     let lifecycle = match kind.as_str() {
         "session-start" | "SessionStart" => Lifecycle::Started,
         "session-end" | "SessionEnd" => Lifecycle::Waiting { activity: Some("session ended".into()) },
@@ -2912,7 +2935,7 @@ async fn wake_hook() -> Result<()> {
 
     let policy = Config::load().map(|cfg| cfg.attention).unwrap_or_default();
     let ag = connect().await?;
-    let mut runtime = ConnectorRuntime::new(ag, policy);
+    let mut runtime = ConnectorRuntime::persistent(ag, policy);
     // The Stop hook is the moment the host becomes interruptible again. Mirror that transition so
     // role routing sees a waiting worker rather than a stale last tool status.
     runtime
@@ -3137,6 +3160,17 @@ mod tests {
         );
         // A trailing `@` with no hub is not portable.
         assert_eq!(split_portable_key("A3KELDJR@"), ("A3KELDJR@".into(), None));
+    }
+
+    #[test]
+    fn private_hub_bind_detection_accepts_only_loopback_hosts() {
+        assert!(hub_bind_is_loopback("127.0.0.1:7070"));
+        assert!(hub_bind_is_loopback("[::1]:7070"));
+        assert!(hub_bind_is_loopback("localhost:7070"));
+        assert!(!hub_bind_is_loopback("0.0.0.0:7070"));
+        assert!(!hub_bind_is_loopback("[::]:7070"));
+        assert!(!hub_bind_is_loopback("hub.example:7070"));
+        assert!(!hub_bind_is_loopback("not-an-address"));
     }
 
     #[test]

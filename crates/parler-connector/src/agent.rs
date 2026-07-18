@@ -1027,6 +1027,30 @@ pub fn verify_message(from_id: &str, parts: &[Part], reply_to: Option<&str>) -> 
     }
 }
 
+/// Verify a stored message and bind the author's signed routing intent to the room where the hub
+/// delivered it. This is the verification boundary for any action that can wake a host or run a
+/// local worker: a valid signature alone does not stop an untrusted relay from copying that valid
+/// message into a different room.
+///
+/// Channel targets name their concrete room. Service targets resolve deterministically to
+/// `svc.<token>`. DM rooms have random names, so their binding is the signed recipient plus the
+/// authenticated sender; the receiver also requires the hub record to be a DM room name.
+pub fn verify_message_for_room(message: &StoredMessage, recipient_id: &str) -> SigStatus {
+    let status = verify_message(&message.from.id, &message.parts, message.reply_to.as_deref());
+    if status != SigStatus::Valid {
+        return status;
+    }
+    let Some(signature) = MessageSig::from_parts(&message.parts) else {
+        return SigStatus::Invalid;
+    };
+    let routed_here = match signature.target {
+        Target::Room { room } => room == message.room,
+        Target::Service { service } => message.room == format!("svc.{}", parler_protocol::token(&service)),
+        Target::Dm { agent } => agent == recipient_id && message.room.starts_with("dm."),
+    };
+    if routed_here { SigStatus::Valid } else { SigStatus::Invalid }
+}
+
 /// Current epoch time in milliseconds (the author-stamped `ts` carried in the signature).
 fn now_ms() -> i64 {
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -1039,6 +1063,7 @@ fn now_ms() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use parler_protocol::EndpointRef;
 
     /// Hand-roll a signed message exactly as `MeshAgent::send` would, so we can test `verify_message`
     /// (the receive side) in isolation, without a hub or a transport.
@@ -1101,6 +1126,73 @@ mod tests {
         let mut tampered: Vec<Part> = parts.into_iter().filter(|p| !is_message_sig_part(p)).collect();
         tampered.push(tampered_sig.to_part());
         assert_eq!(verify_message(&alice.id, &tampered, None), SigStatus::Invalid);
+    }
+
+    #[test]
+    fn autonomous_verification_rejects_cross_room_replay() {
+        let alice = parler_auth::new_identity().unwrap();
+        let parts = signed(
+            &alice,
+            Target::Room { room: "room-a".into() },
+            &[Part::text("run the task")],
+            None,
+        );
+        let mut message = StoredMessage {
+            seq: 1,
+            id: "m1".into(),
+            room: "room-a".into(),
+            from: EndpointRef { id: alice.id.clone(), name: "alice".into(), role: None },
+            parts,
+            mentions: None,
+            reply_to: None,
+            ts: 1,
+        };
+        assert_eq!(verify_message_for_room(&message, "UBOB"), SigStatus::Valid);
+        message.room = "room-b".into();
+        assert_eq!(verify_message_for_room(&message, "UBOB"), SigStatus::Invalid);
+    }
+
+    #[test]
+    fn autonomous_verification_binds_service_and_dm_targets() {
+        let alice = parler_auth::new_identity().unwrap();
+        let bob = parler_auth::new_identity().unwrap();
+        let endpoint = EndpointRef { id: alice.id.clone(), name: "alice".into(), role: None };
+        let service = StoredMessage {
+            seq: 1,
+            id: "service".into(),
+            room: "svc.code_review".into(),
+            from: endpoint.clone(),
+            parts: signed(
+                &alice,
+                Target::Service { service: "code review".into() },
+                &[Part::text("review")],
+                None,
+            ),
+            mentions: None,
+            reply_to: None,
+            ts: 1,
+        };
+        assert_eq!(verify_message_for_room(&service, &bob.id), SigStatus::Valid);
+
+        let mut dm = StoredMessage {
+            seq: 2,
+            id: "dm".into(),
+            room: "dm.random".into(),
+            from: endpoint,
+            parts: signed(
+                &alice,
+                Target::Dm { agent: bob.id.clone() },
+                &[Part::text("private")],
+                None,
+            ),
+            mentions: None,
+            reply_to: None,
+            ts: 1,
+        };
+        assert_eq!(verify_message_for_room(&dm, &bob.id), SigStatus::Valid);
+        assert_eq!(verify_message_for_room(&dm, "UMALLORY"), SigStatus::Invalid);
+        dm.room = "team".into();
+        assert_eq!(verify_message_for_room(&dm, &bob.id), SigStatus::Invalid);
     }
 
     #[test]

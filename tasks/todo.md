@@ -1,3 +1,38 @@
+# Security audit remediation
+
+## Plan
+- [x] Bind signed autonomous messages to their resolved room and reject durable signed-UID replays, with negative tests.
+- [x] Bound hostile hub inputs and persistent writes, add global upload backpressure, and close anonymous private-directory access.
+- [x] Harden local secret/capability persistence, proxy-address handling, and unsafe private-hub startup.
+- [x] Upgrade and harden the desktop runtime, then pin privileged CI/CD actions to immutable revisions.
+- [x] Update security/operator documentation, run targeted tests plus the full repository and desktop gates, and self-review the complete diff.
+
+## Risks
+- Protocol changes must remain additive for deployed clients; enforce room binding in verification/runtime code without changing existing wire frames.
+- Rate limits and quotas must preserve normal conversation catch-up, file transfer, and local/private hub workflows while failing closed under abuse.
+- Desktop and action upgrades may contain breaking changes; verify packaging/build behavior rather than relying only on dependency audit output.
+
+## Review
+- Autonomous execution now validates the signed channel/service/DM-recipient target, atomically
+  reserves `(author, uid)` per receiving identity before a host action, and rejects cross-room,
+  cross-process, restart, and relay-id replays. Explicit pre-action failures release the reservation;
+  crashes fail closed with an at-most-once posture.
+- The hub now bounds structured fields/frames, all authenticated operations, aggregate accepted
+  uploads, and durable rooms/tokens/keyed facts. Quota check-and-write sections are race-free, proxy
+  headers are opt-in, anonymous HTTP hub-scope directory reads require a capability, and a network
+  private hub cannot start without a join secret.
+- CLI and desktop capability files use atomic owner-only replacement. The Electron renderer is
+  sandboxed with a narrow CSP and HTTPS-only external navigation; the current lockfile audits clean.
+  Release actions are immutable-SHA pinned and CLI/DMG/container artifacts receive provenance.
+- Negative tests cover context/replay rejection, concurrent quota and upload exhaustion, private
+  directory denial, proxy spoof handling, startup binding, secret permissions, and unsafe URLs.
+  `make ci`, standalone `actionlint` 1.7.12, workflow YAML parsing, and `git diff --check` pass.
+- Known architectural limits remain explicit rather than being mislabeled as fixed: the hub operator
+  sees plaintext, and blob transfer is still single-frame/non-resumable even though accepted
+  concurrent uploads are bounded. No unresolved high-severity finding was found in the final diff.
+
+---
+
 # Simplify first-use documentation
 
 ## Plan

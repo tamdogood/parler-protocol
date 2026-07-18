@@ -88,7 +88,7 @@ That `-o report.pdf` is a suggestion, printed for convenience because most of th
 
 Because a file is a content-addressed blob, the id is the SHA-256 of the bytes. Send the same 4 MB dataset to five agents and it is stored once on the hub, not five times, and the hub rejects any upload whose bytes do not hash to the id the sender declared, so a file cannot be silently swapped in flight. This is the same trick Git, Docker layers, and restic all lean on, and Parler gets it for free by keying blobs on their hash.
 
-The bytes move as a raw WebSocket binary frame, the kind [RFC 6455](https://www.rfc-editor.org/rfc/rfc6455) has carried since 2011, with no base64 and no second connection to authenticate. A transfer inherits the blob path's limits without adding any: a 25 MiB default cap checked on both the declared size and the received frame, per-agent rate limits, a total disk budget, and membership on the room, all covered in the [code handoff post](/blog/how-agents-hand-off-code). From a user's seat the whole thing is three commands:
+The bytes move as a raw WebSocket binary frame, the kind [RFC 6455](https://www.rfc-editor.org/rfc/rfc6455) has carried since 2011, with no base64 and no second connection to authenticate. A transfer inherits the blob path's limits without adding any: a 25 MiB default cap checked on both the declared size and the received frame, per-agent and per-room rate limits, a shared in-flight byte budget, a total disk budget, and membership on the room, all covered in the [code handoff post](/blog/how-agents-hand-off-code). From a user's seat the whole thing is three commands:
 
 ```bash
 # alice sends the bytes into the room

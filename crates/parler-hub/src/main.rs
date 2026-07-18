@@ -28,8 +28,8 @@ struct Args {
     #[arg(long, env = "PARLER_HUB_NAME", default_value = "Parler Protocol Hub")]
     name: String,
 
-    /// Run a public hub: its directory is world-readable (no token needed for the hub-scope view).
-    /// Omit for a private hub, where the full directory is gated behind a directory token.
+    /// Run a public hub: public cards are world-readable. Private cards and the hub-scope view still
+    /// require a directory token. Omit for a private hub.
     #[arg(long, env = "PARLER_HUB_PUBLIC")]
     public: bool,
 
@@ -50,14 +50,51 @@ struct Args {
     #[arg(long, env = "PARLER_HUB_MAX_MESSAGE_BYTES")]
     max_message_bytes: Option<usize>,
 
+    /// Largest structured JSON WebSocket frame, in bytes (default 2 MiB).
+    #[arg(long, env = "PARLER_HUB_MAX_TEXT_FRAME_BYTES")]
+    max_text_frame_bytes: Option<usize>,
+
+    /// Aggregate bytes reserved by concurrent blob uploads (default 50 MiB).
+    #[arg(long, env = "PARLER_HUB_MAX_INFLIGHT_BLOB_BYTES")]
+    max_inflight_blob_bytes: Option<usize>,
+
     /// Ceiling on concurrent connections (default 1024).
     #[arg(long, env = "PARLER_HUB_MAX_CONNECTIONS")]
     max_connections: Option<usize>,
+
+    /// Durable owned-room quota per identity (default 1000).
+    #[arg(long, env = "PARLER_HUB_MAX_OWNED_ROOMS")]
+    max_owned_rooms: Option<u64>,
+
+    /// Active directory/watch token quota per identity (default 1000).
+    #[arg(long, env = "PARLER_HUB_MAX_ACTIVE_TOKENS")]
+    max_active_tokens: Option<u64>,
+
+    /// Distinct keyed-memory quota per identity (default 10000; existing keys remain updatable).
+    #[arg(long, env = "PARLER_HUB_MAX_KEYED_FACTS")]
+    max_keyed_facts: Option<u64>,
 
     /// Per-client-IP HTTP request budget per minute across the REST/A2A endpoints and the `/ws`
     /// upgrade — the anti-abuse guard for the public front door (default 600). Pass `0` to disable.
     #[arg(long, env = "PARLER_HUB_MAX_HTTP_PER_MIN")]
     max_http_per_min: Option<u32>,
+
+    /// Authenticated WebSocket operation budget per agent per minute (default 600).
+    #[arg(long, env = "PARLER_HUB_MAX_OPS_PER_MIN")]
+    max_ops_per_min: Option<u32>,
+
+    /// Message-send budget per agent per minute (default 240).
+    #[arg(long, env = "PARLER_HUB_MAX_SENDS_PER_MIN")]
+    max_sends_per_min: Option<u32>,
+
+    /// Blob-upload budget per agent per hour (default 120).
+    #[arg(long, env = "PARLER_HUB_MAX_BLOBS_PER_HOUR")]
+    max_blobs_per_hour: Option<u32>,
+
+    /// Trust `Fly-Client-IP` / `X-Forwarded-For` for rate limiting. Enable only behind a proxy that
+    /// overwrites these headers; direct deployments must use the socket peer address.
+    #[arg(long, env = "PARLER_HUB_TRUST_PROXY_HEADERS")]
+    trust_proxy_headers: bool,
 
     /// Per-**room** send budget per minute — the aggregate of every member — so one busy/abusive room
     /// can't monopolize the shared SQLite writer and stall other rooms (default 1200). Pass `0` to
@@ -132,12 +169,37 @@ async fn main() -> anyhow::Result<()> {
     if let Some(max) = args.max_message_bytes {
         state.max_message_bytes = max;
     }
+    if let Some(max) = args.max_text_frame_bytes {
+        state.max_text_frame_bytes = max;
+    }
+    if let Some(max) = args.max_inflight_blob_bytes {
+        state.set_max_inflight_blob_bytes(max);
+    }
     if let Some(max) = args.max_connections {
         state.max_connections = max;
+    }
+    if let Some(max) = args.max_owned_rooms {
+        state.max_owned_rooms = max;
+    }
+    if let Some(max) = args.max_active_tokens {
+        state.max_active_tokens = max;
+    }
+    if let Some(max) = args.max_keyed_facts {
+        state.max_keyed_facts = max;
     }
     if let Some(max) = args.max_http_per_min {
         state.max_http_per_min = max;
     }
+    if let Some(max) = args.max_ops_per_min {
+        state.limits.max_ops_per_min = max;
+    }
+    if let Some(max) = args.max_sends_per_min {
+        state.limits.max_sends_per_min = max;
+    }
+    if let Some(max) = args.max_blobs_per_hour {
+        state.limits.max_blobs_per_hour = max;
+    }
+    state.trust_proxy_headers = args.trust_proxy_headers;
     if let Some(max) = args.max_room_sends_per_min {
         state.limits.max_room_sends_per_min = max;
     }
@@ -148,6 +210,13 @@ async fn main() -> anyhow::Result<()> {
         args.join_secret,
         args.join_secret_file.as_deref().map(std::path::Path::new),
     )?;
+    if mode == HubMode::Private && state.join_secret.is_none() && !loopback_bind(&args.addr) {
+        anyhow::bail!(
+            "refusing to expose a private hub on '{}' without a join secret; set \
+             PARLER_HUB_JOIN_SECRET/--join-secret, use --join-secret-file, or bind to loopback",
+            args.addr
+        );
+    }
 
     let defaults = Retention::default();
     let days_to_dur = |d: u64| Duration::from_secs(d * 24 * 3600);
@@ -213,4 +282,29 @@ async fn main() -> anyhow::Result<()> {
     }
 
     serve(listener, state).await
+}
+
+fn loopback_bind(addr: &str) -> bool {
+    addr.parse::<std::net::SocketAddr>()
+        .map(|addr| addr.ip().is_loopback())
+        .unwrap_or_else(|_| {
+            addr.rsplit_once(':')
+                .map(|(host, _)| host.eq_ignore_ascii_case("localhost"))
+                .unwrap_or(false)
+        })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::loopback_bind;
+
+    #[test]
+    fn only_explicit_loopback_binds_are_treated_as_local() {
+        assert!(loopback_bind("127.0.0.1:7070"));
+        assert!(loopback_bind("[::1]:7070"));
+        assert!(loopback_bind("localhost:7070"));
+        assert!(!loopback_bind("0.0.0.0:7070"));
+        assert!(!loopback_bind("[::]:7070"));
+        assert!(!loopback_bind("hub.example.com:7070"));
+    }
 }

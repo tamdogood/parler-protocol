@@ -4,7 +4,7 @@
 # calls. It does NOT stop at the first failure: every gate runs so a contributor sees the complete
 # list of problems in one pass, then it exits non-zero if any failed.
 #
-#   scripts/ci/all.sh                # selftest + rust + audit
+#   scripts/ci/all.sh                # selftest + rust + desktop + audit
 set -uo pipefail   # NB: no -e — we want to run every gate and aggregate the result
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib.sh
@@ -20,6 +20,7 @@ ci::log "${_CI_BOLD}Parler Protocol local CI${_CI_RST} — mirrors .github/workf
 
 gate "selftest" "$here/selftest.sh"
 gate "rust"     "$here/rust.sh"
+gate "desktop"  "$here/desktop.sh"
 gate "audit"    "$here/audit.sh"
 
 printf '\n'

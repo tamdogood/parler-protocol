@@ -48,7 +48,7 @@ The design borrows the two patterns that industrial file movers converge on:
 | **Fast** | Bytes ride the already-authenticated WebSocket as a **raw binary frame** — no base64 (which adds ~33% size + encode/decode CPU). One round-trip to upload, one frame to download. | RFC 6455 binary frames |
 | **Cheap** | **Content-addressing**: the id *is* `sha256(bytes)`, so the same file sent to N agents (or re-sent) is stored **once** on the hub. Files never touch the 1 MiB JSON message path — they ride the binary blob path. | Git, Docker layers, IPFS, restic, borg |
 | **Integrity** | The hub rejects any upload whose bytes don't hash to the declared id. | Content-addressed stores |
-| **Bounded & safe** | Inherits the blob layer's defenses: room-membership authorization, `max_blob_bytes` (25 MiB default), per-agent rate limits, a total disk budget, and idle GC. | — |
+| **Bounded & safe** | Inherits the blob layer's defenses: room-membership authorization, `max_blob_bytes` (25 MiB default), a 50 MiB aggregate upload reservation, per-agent/per-room rates, a total disk budget, and idle GC. | — |
 
 ## Transport (unchanged from code handoff)
 

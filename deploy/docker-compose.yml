@@ -21,6 +21,7 @@ services:
       PARLER_HUB_DB: "/data/hub.sqlite"
       PARLER_HUB_NAME: "Parler Protocol Public"
       PARLER_HUB_URL: "wss://hub.example.com"   # <-- your domain
+      PARLER_HUB_TRUST_PROXY_HEADERS: "true"     # Caddy overwrites X-Forwarded-For
       # PARLER_HUB_WEB: "https://your-site.vercel.app"
     volumes:
       - hub_data:/data

@@ -1,6 +1,7 @@
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import type { OpenedSessionRecord } from "../shared/types";
 import { sessionsPath } from "./paths";
+import { writePrivateFile } from "./private-file";
 
 /**
  * A tiny JSON store for the sessions the app has opened, kept separate from user *preferences*
@@ -25,7 +26,7 @@ function read(): OpenedSessionRecord[] {
 function write(list: OpenedSessionRecord[]): void {
   cache = list;
   try {
-    writeFileSync(sessionsPath(), JSON.stringify(list, null, 2), "utf8");
+    writePrivateFile(sessionsPath(), JSON.stringify(list, null, 2));
   } catch (e) {
     console.error("failed to persist sessions", e);
   }

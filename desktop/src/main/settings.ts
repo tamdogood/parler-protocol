@@ -1,9 +1,10 @@
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { userInfo } from "node:os";
 import { app } from "electron";
 import type { Settings } from "../shared/types";
 import { settingsPath } from "./paths";
 import { defaultSettings } from "./settings-defaults";
+import { writePrivateFile } from "./private-file";
 
 function defaults(): Settings {
   let who = "My";
@@ -48,7 +49,7 @@ export function saveSettings(patch: Partial<Settings>): Settings {
   const next = { ...loadSettings(), ...patch };
   cache = next;
   try {
-    writeFileSync(settingsPath(), JSON.stringify(next, null, 2), "utf8");
+    writePrivateFile(settingsPath(), JSON.stringify(next, null, 2));
   } catch (e) {
     console.error("failed to persist settings", e);
   }

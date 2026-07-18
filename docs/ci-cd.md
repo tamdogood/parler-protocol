@@ -12,8 +12,8 @@ are ordinary scripts, the pipeline is itself unit-tested — see [Testing the te
 ```
 ┌──────────────┐     calls      ┌──────────────────────┐
 │ GitHub       │ ─────────────► │ scripts/ci/*.sh      │ ◄──── `make ci` (same scripts, locally)
-│ workflows    │                │  rust · audit        │
-│ (thin YAML)  │                │  smoke · selftest    │
+│ workflows    │                │  rust · desktop      │
+│ (thin YAML)  │                │  audit · smoke       │
 └──────────────┘                └──────────────────────┘
 ```
 
@@ -25,6 +25,7 @@ are ordinary scripts, the pipeline is itself unit-tested — see [Testing the te
 | **Rust** | `rust.sh` | `cargo build` · `clippy -D warnings` · `cargo test` · `cargo doc -D warnings` |
 | **Smoke** | `smoke.sh --boot` | the *real* compiled hub binary boots and serves its HTTP contract |
 | **Supply chain** | `audit.sh` (cargo-deny) | no known vulnerabilities, no unexpected dependency sources |
+| **Desktop** | `desktop.sh` | clean npm install, typecheck, tests, production build, and zero known npm advisories |
 | **Dockerfile** | hadolint | the deploy image definition isn't broken |
 
 The CI workflow ([`.github/workflows/ci.yml`](../.github/workflows/ci.yml)) runs these as parallel
@@ -37,7 +38,8 @@ Notable choices:
   already caught a stale link in `parler-auth` on day one.
 - **No `cargo fmt` gate.** This repo is deliberately hand-formatted; a repo-wide `cargo fmt` would
   reformat everything. Style is reviewed, not enforced by a tool.
-- **Concurrency + timeouts + least-privilege `permissions: contents: read`** on every workflow.
+- **Concurrency + timeouts + least privilege** on every workflow. Third-party actions are pinned to
+  immutable commit SHAs; Dependabot proposes reviewed SHA updates.
 
 ## Local = cloud
 
@@ -85,6 +87,10 @@ community-safe**:
 
 A separate daily [`audit.yml`](../.github/workflows/audit.yml) re-runs cargo-deny so a CVE published
 against an already-merged dependency is caught even with no PR traffic.
+
+Release archives, DMGs, and container digests receive GitHub build-provenance attestations. The
+release and deploy workflows pin every action, including Fly setup, to an immutable revision before
+granting repository, package, OIDC, or deployment credentials.
 
 ### Prebuilt releases
 

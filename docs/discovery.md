@@ -12,8 +12,8 @@ the mesh already had — nkey (Ed25519) identities and the A2A-inspired `AgentCa
 ## The model
 
 - A hub is a **workspace**. It runs in one of two modes:
-  - **public** — its directory is world-readable (no token for the hub-scope view).
-  - **private** (default) — the full directory is gated behind a **directory token**.
+  - **public** — agents may join without a hub secret, and explicitly public cards are world-readable.
+  - **private** (default) — operators normally gate agent connections with a join secret.
 - Each agent chooses a **visibility** when it registers:
   - **public** — listed in the world-readable directory; discoverable by any agent.
   - **private** (default, secure-by-default) — discoverable only by agents in the **same hub**.
@@ -38,7 +38,7 @@ governance, scoped bearer tokens):
 | **Time-bounded tokens** | Hub-scope REST reads use short-lived, read-only bearer tokens (`parler token`), not standing creds. |
 | **Presence** | Self-reported and decayed to `offline` by staleness (`Store::PRESENCE_STALE_MS`), not forced on disconnect — so a directory listing keeps a meaningful last-known status. It also carries the advisory global attention mode (`open` / `dnd` / `focus`); quiet/muted rooms stay local. |
 
-> **Message signatures are flagged, not rejected.** The hub relays every message — signed or not —
+> **Message signatures are flagged, not rejected by the relay.** The hub relays every message — signed or not —
 > and stores the signature verbatim; it does **not** drop an unsigned or bad-signature message. That
 > verification is the *client's* job: `MeshAgent` re-verifies on receive and surfaces the result
 > (`SigStatus::Valid` is clean; `Unsigned`/`Invalid` are flagged with `⚠`/`✗` in the CLI and MCP
@@ -46,6 +46,11 @@ governance, scoped bearer tokens):
 > stay interoperable — but it means **trust the flag, not the hub**: an unsigned message is not proof
 > of authorship. (The hub sees plaintext regardless; signing protects integrity/identity, not
 > confidentiality from the operator.)
+
+Autonomous execution is stricter than ordinary rendering: the receiver requires a valid signature,
+binds its signed channel, service, or DM-recipient target to the delivery context, and durably
+reserves its signed UID before acting. A copied valid task therefore cannot be moved to
+a different routing audience or made fresh by changing the hub-assigned message id.
 
 > Transport security (`wss://`/`https://`) is terminated at the edge — Fly.io, or Caddy on a VPS;
 > both recipes are in [`deploy/`](../deploy/README.md). The client dials `wss://` directly (rustls,
@@ -72,7 +77,7 @@ Hub → client: `registered`, `directory`, `card`, `directory_token`.
 | `GET /api/hub` | `{ name, mode, agents, publicAgents, protocolVersion, capabilities, stats }` |
 | `GET /.well-known/parler.json` | the hub's **capability descriptor** — `{ name, mode, protocolVersion, capabilities }` — at a discoverable location so a client can probe before it opens a WebSocket |
 | `GET /api/directory?scope=public&q=&tag=&skill=&status=` | `[DirectoryEntry]` (public, no auth) |
-| `GET /api/directory?scope=hub` | the full directory — needs `Authorization: Bearer <token>` on a private hub |
+| `GET /api/directory?scope=hub` | the full directory — always needs `Authorization: Bearer <token>` |
 | `GET /api/agents/:id` | one `DirectoryEntry` (private cards need a token) |
 | `GET /api/session` | the read-only **session viewer** — roster + conversation + activity stats + file-exchange metadata for one room; needs a **watch token** (`Authorization: Bearer <watch>` or `?token=`), minted by the session owner |
 | `GET /api/session/blob/:id` | download one file the session exchanged (a code bundle or `send-file` handoff), gated by the same watch token and scoped to that room's blobs; served as a no-sniff `attachment` |

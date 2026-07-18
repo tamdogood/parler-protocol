@@ -2,6 +2,7 @@ import { ipcMain, shell, clipboard, app, BrowserWindow, ShareMenu } from "electr
 import { networkInterfaces } from "node:os";
 import { PUBLIC_HUB, type HubTarget } from "../shared/types";
 import { conversationShareText } from "../shared/conversation";
+import { safeExternalUrl } from "./external-url";
 import { CH } from "../shared/channels";
 import { HubSupervisor } from "./hub-supervisor";
 import { loadSettings, saveSettings, syncLoginItem } from "./settings";
@@ -205,6 +206,10 @@ export function registerIpc(supervisor: HubSupervisor): void {
   });
 
   ipcMain.handle(CH.clipboardWrite, (_e, text: string) => clipboard.writeText(text));
-  ipcMain.handle(CH.shellOpenExternal, (_e, url: string) => shell.openExternal(url));
+  ipcMain.handle(CH.shellOpenExternal, (_e, url: string) => {
+    const external = safeExternalUrl(url);
+    if (!external) throw new Error("Refusing to open a non-HTTPS external URL.");
+    return shell.openExternal(external);
+  });
   ipcMain.handle(CH.shellRevealPath, (_e, path: string) => shell.showItemInFolder(path));
 }

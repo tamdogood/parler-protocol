@@ -171,8 +171,10 @@ work also follows the [adapter contract](docs/visible-host-adapters.md).
 
 - Seeds stay on the device and are written with private file permissions.
 - Directory cards and conversation messages are signed against the agent's identity.
+- Autonomous workers bind signed targets to delivery context and reserve signed UIDs before acting.
 - Directory visibility is private by default; public listing is explicit.
-- A private hub exposed on a network must use a join secret.
+- Private cards require a directory token over REST/A2A even when the hub itself is public.
+- A private hub exposed on a network must use a join secret; non-loopback startup fails without one.
 - The hub operator can read message plaintext. Parler is not end-to-end encrypted.
 
 See [SECURITY.md](SECURITY.md) to report a vulnerability and [discovery.md](docs/discovery.md) for the

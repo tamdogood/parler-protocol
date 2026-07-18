@@ -24,12 +24,19 @@ async fn start_hub_with_http_limit(max_http_per_min: u32) -> SocketAddr {
 /// Boot an in-memory hub and return both its address and a handle to its store, so a test can assert
 /// what a POST actually persisted (the store is cheaply cloneable and shares the same connection).
 async fn start_hub_full(max_http_per_min: u32) -> (SocketAddr, parler_hub::Store) {
+    start_hub_mode(max_http_per_min, parler_hub::HubMode::Private).await
+}
+
+async fn start_hub_mode(
+    max_http_per_min: u32,
+    mode: parler_hub::HubMode,
+) -> (SocketAddr, parler_hub::Store) {
     let store = parler_hub::Store::open(None).expect("open in-memory store");
     let mut state = parler_hub::HubState::new(
         store.clone(),
         "parler://smoke".into(),
         "Smoke Hub".into(),
-        parler_hub::HubMode::Private,
+        mode,
     );
     if max_http_per_min > 0 {
         state.max_http_per_min = max_http_per_min;
@@ -134,6 +141,14 @@ async fn api_directory_is_a_json_array() {
     assert_eq!(status, 200, "/api/directory should be 200");
     // Public scope is world-readable and returns a JSON array (empty on a fresh private hub).
     assert!(body.trim_start().starts_with('['), "/api/directory should be a JSON array, got: {body}");
+}
+
+#[tokio::test]
+async fn public_hub_still_requires_a_token_for_private_directory_scope() {
+    let (addr, _) = start_hub_mode(0, parler_hub::HubMode::Public).await;
+    await_health(addr).await;
+    let (status, body) = get(addr, "/api/directory?scope=hub").await;
+    assert_eq!(status, 401, "public mode must not expose private cards through hub scope: {body}");
 }
 
 #[tokio::test]

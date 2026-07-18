@@ -20,6 +20,12 @@ A native macOS app that makes Parler Protocol one download away:
 
 It ships the compiled Rust binaries inside the app, so users need nothing else installed.
 
+The renderer runs with Chromium sandboxing and context isolation, a packaged-build CSP permits only
+the public Parler hub and loopback API connections, and external navigation accepts HTTPS only. Settings and remembered
+conversation capabilities are atomically replaced with owner-only permissions. CI performs a full
+dependency audit because Electron is packaged into the app even though npm classifies it as a build
+dependency.
+
 ## Architecture
 
 ```
@@ -38,6 +44,8 @@ Electron main (Node)                         Renderer (Vite + React + Tailwind v
 - `resources/bin/` — the bundled `parler` + `parler-hub` (built by `scripts/build-binaries.sh`).
 
 ## Develop
+
+Development requires Node.js 22.12 or newer (plus Rust when rebuilding the bundled binaries).
 
 ```bash
 cd desktop

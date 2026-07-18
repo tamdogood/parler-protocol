@@ -40,7 +40,7 @@ jobs:
       FLY_APP: ${{ vars.FLY_APP || 'parler-hub' }}
       HUB_URL: ${{ vars.PARLER_HUB_URL || 'https://parler-hub.fly.dev' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       # Forks have no secret → skip everything gracefully. Every later step keys off `guard.outputs.skip`.
       - name: Guard — require a deploy token
@@ -55,7 +55,7 @@ jobs:
 
       - name: Set up flyctl
         if: steps.guard.outputs.skip == '0'
-        uses: superfly/flyctl-actions/setup-flyctl@master
+        uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1 # master
 
       # Remember the currently-deployed image so we can pin a rollback to it if the new one is bad.
       - name: Capture current image (for rollback)

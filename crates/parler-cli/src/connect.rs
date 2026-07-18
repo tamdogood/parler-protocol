@@ -510,16 +510,8 @@ fn install_json_trust(
 /// Create parents, write, and lock to `0600` — configs we author can carry a join secret (team mode),
 /// so we hold them to the same least-privilege posture as the identity seed.
 fn write_secure(path: &Path, contents: &str) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
-    }
-    std::fs::write(path, contents).with_context(|| format!("writing {}", path.display()))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
-    }
-    Ok(())
+    parler_auth::write_private_file(path, contents.as_bytes())
+        .with_context(|| format!("writing {}", path.display()))
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -2139,6 +2131,13 @@ mod tests {
         // `existing_team_secret` finds the secret wired for the target hub by scanning host configs.
         // Drive it through a real JSON host write so we also prove the config we author is 0600.
         let path = tmp("team-reuse").join("mcp.json");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "{}").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        }
         let mut with_secret = env();
         // Wire this host to a specific hub with a known secret.
         with_secret.retain(|(k, _)| k != "PARLER_HUB");

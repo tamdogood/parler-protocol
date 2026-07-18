@@ -6,7 +6,9 @@
 //! workers cannot turn acknowledgements into an infinite conversation.
 
 use anyhow::{bail, Result};
-use parler_connector::{verify_message, MeshAgent, SigStatus};
+use parler_connector::{
+    verify_message_for_room, AutonomousReplayGuard, MeshAgent, SigStatus,
+};
 use parler_protocol::{HandoffRef, Part, StoredMessage, Target, TaskRef, TaskStatus};
 use std::collections::{HashSet, VecDeque};
 use std::ffi::OsString;
@@ -166,10 +168,14 @@ pub async fn run(
     let cwd = std::env::current_dir()?;
     let mut rate = RateGate::new(options.max_per_hour);
     let mut report = WorkReport::default();
+    let mut replay = AutonomousReplayGuard::persistent(&agent.id);
     loop {
         let (messages, _, _) = agent.pull_wait(room, Some(1), WAIT_CHUNK_SECS).await?;
         for message in messages {
-            let trusted = verify_message(&message.from.id, &message.parts, message.reply_to.as_deref());
+            let mut trusted = verify_message_for_room(&message, &agent.id);
+            if trusted == SigStatus::Valid && !replay.admit(&message, &agent.id)? {
+                trusted = SigStatus::Invalid;
+            }
             let selection = select_message(
                 &message,
                 trusted,
@@ -187,6 +193,7 @@ pub async fn run(
                             message.id, message.from.name
                         );
                     }
+                    replay.release(std::slice::from_ref(&message))?;
                     agent.commit_reads(room).await?;
                     continue;
                 }
@@ -210,6 +217,7 @@ pub async fn run(
                     },
                 )
                 .await?;
+                replay.complete(std::slice::from_ref(&message))?;
                 agent.commit_reads(room).await?;
                 report.handled += 1;
                 report.last_response_room = Some(response_room);
@@ -224,6 +232,9 @@ pub async fn run(
             let prompt = build_prompt(&item, room, options.source);
             let started = Instant::now();
             let outcome = runner.run(&prompt, &cwd, options.timeout).await;
+            // The runner has observed the instruction. Persist its signed UID before the relay
+            // cursor or terminal receipt can fail, preventing a new hub id from executing it twice.
+            replay.complete(std::slice::from_ref(&message))?;
             let elapsed_ms = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
             let (status, body, continuation) = match outcome {
                 Ok(output) => {

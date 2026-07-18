@@ -103,3 +103,7 @@ a network it doesn't fully trust **must** gate connections — so this recipe tu
 hands you the secret, instead of leaving you to invent and distribute one. (The crypto still protects
 *identity*, not confidentiality from the operator — the hub sees plaintext. See the security model in
 [`../../AGENTS.md`](../../AGENTS.md).)
+
+The binary also fails closed: private mode without a join secret is accepted only on an explicit
+loopback bind. A direct `0.0.0.0`/LAN/public bind without `--join-secret` or `--join-secret-file`
+refuses to start.
