@@ -28,7 +28,7 @@ async-trait = "0.1"
 
 # NATS / crypto
 nkeys = "0.4"
-sha2 = "0.10"
+sha2 = "0.11"
 data-encoding = "2"
 async-nats = "0.49"
 futures = "0.3"
