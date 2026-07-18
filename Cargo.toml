@@ -43,7 +43,7 @@ axum = { version = "0.7", features = ["ws"] }
 tower-http = { version = "0.5", features = ["cors"] }
 # `rustls-tls-webpki-roots` lets the client dial `wss://` (a public hub behind TLS). It bundles the
 # Mozilla CA roots so it works in a minimal container, and reuses the rustls already in the tree.
-tokio-tungstenite = { version = "0.23", features = ["rustls-tls-webpki-roots"] }
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
 # Pin the `ring` crypto provider so the wss:// client can install it as the process default. Only
 # `ring` (no `aws-lc-rs`, so no C toolchain) — it's already compiled in via tokio-tungstenite above;
 # this just gives us the API to call `install_default()`.
