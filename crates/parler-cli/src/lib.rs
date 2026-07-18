@@ -50,11 +50,9 @@ enum Cmd {
     Init(InitArgs),
     /// Mint an invite code/link to hand to another agent (default: a 1:1 DM).
     Invite(InviteArgs),
-    /// Redeem a pasted invite code/link.
-    Join {
-        /// The code (or full link) the other agent gave you.
-        code: String,
-    },
+    /// Redeem a pasted invite code/link. In a Codex/Claude agent terminal, a channel or DM join
+    /// starts a safe handoff worker automatically; use --passive to only join.
+    Join(JoinArgs),
     /// Join a legacy broadcast service room as a worker, then `recv` it for tasks.
     Serve {
         service: String,
@@ -258,16 +256,28 @@ enum SessionCmd {
         #[arg(long)]
         max_uses: Option<u32>,
     },
-    /// Join a shared session with a key, print the context so far, then STAY in the room —
-    /// visible as `online` to the host and receiving messages live — until Ctrl-C.
+    /// Join a shared session with a key, print the context so far, then stay active. In a
+    /// Codex/Claude agent terminal this starts a safe handoff worker; otherwise it remains a live
+    /// display listener until Ctrl-C.
     Join {
         /// The session key (or full link) you were given.
         key: String,
         /// Join, print the context, and exit immediately instead of holding the connection open.
         /// Use this for scripts/CI; a live agent should stay connected (the default) or use the MCP
         /// server so the host actually sees it in the room.
-        #[arg(long)]
+        #[arg(long, conflicts_with_all = ["active", "runner"])]
         once: bool,
+        /// Start a bounded local worker after joining, even outside a detected Codex/Claude agent
+        /// host. It executes only valid signed handoffs.
+        #[arg(long, conflicts_with = "passive")]
+        active: bool,
+        /// Headless worker used by --active. Supplying it also activates the worker.
+        #[arg(long, value_parser = ["codex", "claude"], conflicts_with = "passive")]
+        runner: Option<String>,
+        /// Do not auto-start a worker in a detected agent terminal; retain the display-only
+        /// listener. Useful when another activation consumer owns this room.
+        #[arg(long, conflicts_with_all = ["active", "runner"])]
+        passive: bool,
     },
     /// List the agents waiting for your approval to join a session you opened.
     Requests {
@@ -304,6 +314,23 @@ enum SessionCmd {
         #[arg(long)]
         ttl: Option<u64>,
     },
+}
+
+#[derive(Args)]
+struct JoinArgs {
+    /// The code (or full link) the other agent gave you.
+    code: String,
+    /// Start a bounded local worker after joining, even outside a detected Codex/Claude agent host.
+    /// It executes only valid signed handoffs.
+    #[arg(long, conflicts_with = "passive")]
+    active: bool,
+    /// Headless worker used by --active. Supplying it also activates the worker.
+    #[arg(long, value_parser = ["codex", "claude"], conflicts_with = "passive")]
+    runner: Option<String>,
+    /// Do not auto-start a worker in a detected agent terminal. Useful for scripts or when another
+    /// activation consumer owns this room.
+    #[arg(long, conflicts_with_all = ["active", "runner"])]
+    passive: bool,
 }
 
 #[derive(Args)]
@@ -477,7 +504,7 @@ struct WorkArgs {
     #[arg(long, default_value = "codex", value_parser = ["codex", "claude"])]
     runner: String,
     /// Treat every signed peer text message as work. Intended for a trusted two-agent room; without
-    /// this flag only signed, addressed handoffs execute.
+    /// this flag only valid signed handoffs execute.
     #[arg(long)]
     all_messages: bool,
     /// Only execute messages signed by this agent id (repeatable). Room mode otherwise trusts any
@@ -691,7 +718,7 @@ pub async fn run() -> Result<()> {
         Cmd::Connect(a) => cmd_connect(a).await,
         Cmd::Init(a) => cmd_init(a),
         Cmd::Invite(a) => cmd_invite(a).await,
-        Cmd::Join { code } => cmd_join(code).await,
+        Cmd::Join(a) => cmd_join(a).await,
         Cmd::Serve { service } => cmd_serve(service).await,
         Cmd::Supervise(a) => cmd_supervise(a).await,
         Cmd::Session(c) => cmd_session(c).await,
@@ -757,7 +784,115 @@ fn agent_shell_detected() -> bool {
         "CLAUDE_PROJECT_DIR",
     ]
     .iter()
-    .any(|key| std::env::var(key).is_ok_and(|value| !value.is_empty()))
+    .any(|key| env_is_set(key))
+}
+
+fn env_is_set(key: &str) -> bool {
+    std::env::var(key).is_ok_and(|value| !value.is_empty())
+}
+
+/// The join command stays one-shot in an ordinary shell, but an agent-hosted Codex/Claude join can
+/// own the missing activation boundary immediately. The worker defaults to valid signed handoffs, so
+/// joining a room never turns arbitrary peer text into workspace-writing model input.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum JoinActivation {
+    Passive,
+    Worker(String),
+}
+
+impl JoinActivation {
+    fn runner(&self) -> Option<&str> {
+        match self {
+            JoinActivation::Passive => None,
+            JoinActivation::Worker(runner) => Some(runner),
+        }
+    }
+}
+
+struct JoinActivationInput<'a> {
+    agent_shell: bool,
+    codex: bool,
+    claude: bool,
+    active: bool,
+    passive: bool,
+    runner: Option<&'a str>,
+}
+
+fn join_activation(input: JoinActivationInput<'_>) -> JoinActivation {
+    if input.passive {
+        return JoinActivation::Passive;
+    }
+    if let Some(runner) = input.runner {
+        return JoinActivation::Worker(runner.to_string());
+    }
+    let inferred = match (input.codex, input.claude) {
+        (true, false) => Some("codex"),
+        (false, true) => Some("claude"),
+        _ => None,
+    };
+    if input.active {
+        // `parler work` already makes Codex the documented default. Preserve that useful explicit
+        // fallback when a person asks for activation from an otherwise unidentifiable shell.
+        return JoinActivation::Worker(inferred.unwrap_or("codex").to_string());
+    }
+    if input.agent_shell {
+        return inferred
+            .map(|runner| JoinActivation::Worker(runner.to_string()))
+            .unwrap_or(JoinActivation::Passive);
+    }
+    JoinActivation::Passive
+}
+
+fn join_activation_from_environment(active: bool, passive: bool, runner: Option<&str>) -> JoinActivation {
+    join_activation(JoinActivationInput {
+        agent_shell: agent_shell_detected(),
+        codex: env_is_set("CODEX_THREAD_ID") || env_is_set("CODEX_WORKING_DIR"),
+        claude: env_is_set("CLAUDE_CODE_SESSION_ID") || env_is_set("CLAUDE_PROJECT_DIR"),
+        active,
+        passive,
+        runner,
+    })
+}
+
+fn automatic_join_work_options() -> worker::WorkOptions {
+    worker::WorkOptions {
+        source: worker::WorkSource::Room,
+        all_messages: false,
+        allow_from: Default::default(),
+        max_per_hour: 20,
+        timeout: Duration::from_secs(900),
+        once: false,
+    }
+}
+
+fn join_supports_safe_worker(kind: RoomKind) -> bool {
+    matches!(kind, RoomKind::Channel | RoomKind::Dm)
+}
+
+/// Convert an agent-hosted channel/DM join into the bounded worker users otherwise had to start in
+/// a second command. Service workers retain their explicit configuration because their trust model
+/// requires a dispatcher allowlist or `--allow-any`.
+async fn start_join_worker(
+    agent: &mut MeshAgent,
+    room: &str,
+    kind: RoomKind,
+    activation: &JoinActivation,
+) -> Result<bool> {
+    let Some(runner_name) = activation.runner() else {
+        return Ok(false);
+    };
+    if !join_supports_safe_worker(kind) {
+        eprintln!(
+            "joined service room '{room}'; use `parler work --service … --allow-from …` to choose its dispatcher policy"
+        );
+        return Ok(false);
+    }
+    let runner = worker::ProcessRunner::parse(runner_name)?;
+    println!(
+        "🤖 active {runner_name} listener started for '{room}' — future valid signed handoffs run automatically"
+    );
+    worker::run(agent, room, &automatic_join_work_options(), &runner).await?;
+    Ok(true)
 }
 
 async fn connect() -> Result<MeshAgent> {
@@ -1252,14 +1387,19 @@ async fn cmd_invite(a: InviteArgs) -> Result<()> {
     // cross-hub hand-off). The bare code still works for an agent already on this hub.
     println!("Hand it to another agent and have it run:  parler join {}@{}", inv.code, ag.hub_url);
     println!("  (already on this hub? the bare code works too:  parler join {})", inv.code);
+    if join_supports_safe_worker(inv.kind) {
+        println!("  Codex/Claude agent joins start a safe handoff listener automatically; add --passive to only join.");
+    } else {
+        println!("  Service work stays explicit: use `parler work --service … --allow-from …` to choose its dispatcher policy.");
+    }
     Ok(())
 }
 
-async fn cmd_join(code: String) -> Result<()> {
+async fn cmd_join(a: JoinArgs) -> Result<()> {
     // A portable code `<code>@<hub>` carries the hub that minted it, so a joiner whose default hub
     // differs still lands in the right room (same trick as `session join`). Dial the embedded hub for
     // this one call; a bare code redeems against the configured hub, unchanged.
-    let (bare, hub_override) = split_portable_key(&code);
+    let (bare, hub_override) = split_portable_key(&a.code);
     let mut ag = connect_with_hub(hub_override.as_deref()).await?;
     let hub = ag.hub_url.clone();
     let (room, kind) = ag
@@ -1267,6 +1407,22 @@ async fn cmd_join(code: String) -> Result<()> {
         .await
         .map_err(|e| explain_unknown_code(e, &hub, &bare, "parler join"))?;
     println!("✓ joined {} room '{}'", kind.as_str(), room);
+    let activation = join_activation_from_environment(a.active, a.passive, a.runner.as_deref());
+    if activation.runner().is_some() {
+        if join_supports_safe_worker(kind) {
+            // A generic invite has no session-style catch-up render. Drain only the initial backlog
+            // before handing the cursor to the worker, so an old handoff cannot unexpectedly run when
+            // a new agent joins; messages that land after this Pull remain durable for the listener.
+            let (backlog, _) = ag.pull(&room, None, None).await?;
+            ag.commit_reads(&room).await?;
+            if !backlog.is_empty() {
+                println!("  caught up on {} prior message(s); the active listener handles new work", backlog.len());
+            }
+        }
+        if start_join_worker(&mut ag, &room, kind, &activation).await? {
+            return Ok(());
+        }
+    }
     println!("  keep a live display:  parler recv --room {room} --watch");
     if matches!(kind, RoomKind::Channel | RoomKind::Dm) {
         println!("  act on signed handoffs: parler work --room {room} --runner codex");
@@ -1444,6 +1600,7 @@ async fn cmd_session(c: SessionCmd) -> Result<()> {
             // `session join <code>@<hub>`). The bare key still works for an agent already on this hub.
             println!("Hand the key to another agent:  parler session join {}@{}", inv.code, ag.hub_url);
             println!("  (already on this hub? the bare key works too:  parler session join {})", inv.code);
+            println!("  Codex/Claude agent joins start a safe handoff listener automatically; add --passive to only join.");
             println!("…or launch its MCP server with env  PARLER_SESSION_KEY={}", inv.code);
             println!();
             // Mint the read-only WATCH code up front (same lifetime as the key) so the host has the
@@ -1461,7 +1618,7 @@ async fn cmd_session(c: SessionCmd) -> Result<()> {
                 }
             }
         }
-        SessionCmd::Join { key, once } => {
+        SessionCmd::Join { key, once, active, runner, passive } => {
             // Strip any `@<hub>` (already applied to the connection above) before redeeming the code.
             let code = split_portable_key(&key).0;
             let hub = ag.hub_url.clone();
@@ -1499,6 +1656,10 @@ async fn cmd_session(c: SessionCmd) -> Result<()> {
                 // Fire-and-exit: membership persists, but the joiner leaves the connection — it will
                 // show `offline` to the host and won't receive messages live. Intended for scripts.
                 println!("send with:  parler send --room {room} \"…\"    receive with:  parler recv --room {room}");
+                return Ok(());
+            }
+            let activation = join_activation_from_environment(active, passive, runner.as_deref());
+            if start_join_worker(&mut ag, &room, RoomKind::Channel, &activation).await? {
                 return Ok(());
             }
             // Default: hold the connection open so "join" actually means "in the room" — the host
@@ -3005,6 +3166,78 @@ mod tests {
         assert!(!command_uses_workspace_identity(&conversation, true));
         assert!(!command_uses_workspace_identity(&Cmd::Rooms, false));
         assert!(!command_uses_workspace_identity(&Cmd::Doctor, true));
+    }
+
+    #[test]
+    fn agent_join_starts_a_safe_worker_only_when_it_can_identify_the_host() {
+        let input = |agent_shell, codex, claude, active, passive, runner| JoinActivationInput {
+            agent_shell,
+            codex,
+            claude,
+            active,
+            passive,
+            runner,
+        };
+        assert_eq!(
+            join_activation(input(true, true, false, false, false, None)),
+            JoinActivation::Worker("codex".into()),
+            "a Codex agent that runs `parler join` immediately owns a safe handoff listener"
+        );
+        assert_eq!(
+            join_activation(input(true, false, true, false, false, None)),
+            JoinActivation::Worker("claude".into())
+        );
+        assert_eq!(
+            join_activation(input(true, false, false, false, false, None)),
+            JoinActivation::Passive,
+            "an unrecognized agent host must not silently spawn an arbitrary runner"
+        );
+        assert_eq!(
+            join_activation(input(true, true, true, false, false, None)),
+            JoinActivation::Passive,
+            "an ambiguous host environment must not silently choose a runner"
+        );
+        assert_eq!(
+            join_activation(input(false, false, false, true, false, None)),
+            JoinActivation::Worker("codex".into()),
+            "an explicit --active remains useful from an ordinary terminal"
+        );
+        assert_eq!(
+            join_activation(input(false, false, false, false, false, Some("claude"))),
+            JoinActivation::Worker("claude".into()),
+            "an explicit runner also activates the worker"
+        );
+        assert_eq!(
+            join_activation(input(true, true, false, false, true, Some("claude"))),
+            JoinActivation::Passive,
+            "the passive escape hatch wins even if a caller constructs conflicting inputs"
+        );
+
+        let options = automatic_join_work_options();
+        assert!(!options.all_messages, "ordinary peer text must never run merely because of a join");
+        assert!(options.allow_from.is_empty());
+        assert_eq!(options.max_per_hour, 20);
+        assert_eq!(options.timeout, Duration::from_secs(900));
+        assert!(join_supports_safe_worker(RoomKind::Channel));
+        assert!(join_supports_safe_worker(RoomKind::Dm));
+        assert!(!join_supports_safe_worker(RoomKind::Service));
+    }
+
+    #[test]
+    fn join_cli_exposes_active_and_passive_paths_without_ambiguous_combinations() {
+        let cli = Cli::try_parse_from(["parler", "join", "KEY", "--runner", "claude"]).unwrap();
+        let Cmd::Join(args) = cli.cmd else { panic!("join command") };
+        assert_eq!(args.runner.as_deref(), Some("claude"));
+        assert!(!args.active && !args.passive);
+
+        let cli = Cli::try_parse_from(["parler", "session", "join", "KEY", "--passive"]).unwrap();
+        let Cmd::Session(SessionCmd::Join { passive, once, .. }) = cli.cmd else {
+            panic!("session join command")
+        };
+        assert!(passive && !once);
+
+        assert!(Cli::try_parse_from(["parler", "join", "KEY", "--active", "--passive"]).is_err());
+        assert!(Cli::try_parse_from(["parler", "session", "join", "KEY", "--once", "--active"]).is_err());
     }
 
     #[test]

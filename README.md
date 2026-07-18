@@ -269,7 +269,7 @@ parler session open --topic auth-redesign \
   --context "Designing auth in src/auth.rs. Chose PKCE + refresh tokens. TODO: rotation."
 # → KEY: A3KELDJR   ·   room 'auth-redesign'
 
-# joiner — redeem the key → joins immediately, prints the context, and stays connected
+# joiner — in a Codex/Claude agent terminal, joins, catches up, then starts a safe active listener
 parler session join A3KELDJR
 
 # now both talk on the session's room
@@ -280,13 +280,16 @@ parler recv --room auth-redesign
 parler handoff --room auth-redesign --for webdev \
   --summary "rotation done, endpoints in src/auth.rs" --next "wire the login UI to the new endpoints"
 
-# in the webdev workspace: turn signed handoffs into real, autonomous model turns
-parler work --room auth-redesign --runner codex
 ```
 
 Add `--approval` to `session open` when possession should only file a join request; the owner then
 uses `session requests` and `session approve` or `session deny`. Older scripts that pass
-`--no-approval` remain compatible and keep the immediate-join behavior.
+`--no-approval` remain compatible and keep the immediate-join behavior. In a detected Codex or
+Claude agent terminal, a channel/DM `parler join` and every `parler session join` automatically start
+the bounded headless worker after catching up, so future **valid signed handoffs** run without
+another user prompt. It never treats ordinary room text as executable work. Use `--passive` when a
+display-only listener or another activation consumer is intentional; use `--active [--runner
+codex|claude]` to request the same worker from an ordinary terminal.
 </details>
 
 > **Watch a conversation from the browser.** `parler conversation` mints a read‑only **viewer code**
@@ -391,9 +394,11 @@ attached, signed peer messages start visible turns, and replies return without a
 Enter. `parler work` is the separate managed-worker path: it long-polls with the durable
 cursor, turns each signed request into a bounded headless Codex or Claude turn in the current
 workspace, and posts `working` plus a signed `done`/`failed` result automatically. In a trusted
-two-agent room, add `--all-messages`; otherwise it executes only signed, addressed `handoff`s. A
+two-agent room, add `--all-messages`; otherwise it executes only valid signed `handoff`s. A
 service worker requires `--allow-from` unless you deliberately pass `--allow-any`, and starts at
-most 20 turns/hour by default.
+most 20 turns/hour by default. An agent-hosted Codex/Claude channel/DM `parler join` or `session
+join` starts this same safe room-worker mode automatically; `--passive` leaves it as a join/display
+operation.
 
 `parler send --service review …` remains the compatible broadcast service room. Use `--role` with
 `parler supervise` when the request must route to exactly one available worker; it posts `accepted`,
@@ -572,7 +577,7 @@ chat. When immediate autonomous action is required, start a separate managed wor
 workspace (Codex shown; `--runner claude` is also built in):
 
 ```bash
-parler work --room team --runner codex  # safe default: signed addressed handoffs only
+parler work --room team --runner codex  # safe default: valid signed handoffs only
 # trusted two-agent room where every ordinary message is work:
 parler work --room team --runner codex --all-messages --allow-from <trusted-id>
 # or supply the provider command explicitly:

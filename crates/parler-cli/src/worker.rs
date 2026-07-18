@@ -158,7 +158,7 @@ pub async fn run(
         room,
         match options.source {
             WorkSource::Room if options.all_messages => "all signed peer messages",
-            WorkSource::Room => "signed addressed handoffs",
+            WorkSource::Room => "valid signed handoffs",
             WorkSource::Service => "service requests",
         }
     );

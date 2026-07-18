@@ -539,3 +539,38 @@ the two concrete DoS vectors (writer contention, disk fill) with minimal surface
 - Real-hub tests cover immediate wake, failed-injector retry without cursor advance, and focus-held
   replay after attention opens. Full connector tests and targeted all-target Clippy pass.
 - Self-review against `docs/code-review-guidelines.md`: no remaining findings in this slice.
+
+---
+
+# Frictionless active join
+
+## Plan
+- [x] Trace `parler join` / `session join` into the available visible-host and worker activation
+      paths; retain an explicit, safe boundary for non-interactive and untrusted rooms.
+- [x] Make the normal join output and behavior lead new users into an active listener without
+      silently granting arbitrary remote messages authority to start workspace-writing turns.
+- [x] Add focused CLI/unit coverage for the selected join activation behavior and update the
+      user-facing docs/help text.
+- [x] Run the relevant tests, full CI, and self-review the final diff.
+
+## Risks
+- A durable room membership or passive listener is not itself a model scheduler. The change must
+  use a real native host injection seam or an explicit local runner, not imply that an idle MCP host
+  can be awakened by a WebSocket delivery alone.
+- Room messages are untrusted input. Ordinary-text execution must remain opt-in and sender-scoped;
+  the safe default is a signed addressed handoff or a visible host's existing approval boundary.
+- Only one activation consumer can own an identity/room cursor, so a join must not silently launch a
+  second consumer beside an active conversation, worker, or supervisor.
+
+## Review
+- A channel/DM `parler join` or `parler session join` from a detected Codex/Claude agent now catches
+  up, then enters the existing bounded `parler work` loop. Ordinary shells remain passive unless they
+  opt in with `--active` / `--runner`; `--passive` preserves display-only joining.
+- The automatic worker accepts only valid signed handoffs, at the existing 20-turn/hour and 15-minute
+  bounds. It explicitly leaves arbitrary room text non-executable; service rooms still require their
+  existing dispatcher sender policy.
+- Focused decision/parser tests cover host detection, ambiguity, opt-out, explicit runners, worker
+  safety defaults, room-kind boundaries, and flag conflicts. Help output and all maintained CLI/runtime
+  docs describe the new path and the visible-conversation boundary.
+- `cargo test -p parler-cli --lib`, CLI help checks, `git diff --check`, and `CI_SKIP_WEB=1 make ci`
+  pass. Self-review against `docs/code-review-guidelines.md` found no remaining findings.

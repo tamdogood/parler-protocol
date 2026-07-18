@@ -16,7 +16,8 @@ OpenCode sessions.
    connect` can install a short-lived Stop hook for compatible low-level MCP sessions. It receives a
    policy-approved batch and emits Claude Code's continuation response.
 3. **Managed headless worker.** `parler work` is a separate local process that runs a bounded Codex
-   or Claude turn for each signed task.
+   or Claude turn for each signed task. A channel/DM `parler join` or `session join` issued from a
+   detected Codex/Claude agent terminal starts this same safe worker after joining and catching up.
 4. **Optional local supervisor.** `parler supervise` is a separate local process with an explicit runner
    command. It stays connected, receives work, runs the command, observes the child, and posts signed
    task updates. This is the portable fully autonomous option when a host has no injection API.
@@ -25,6 +26,20 @@ OpenCode sessions.
 
 The hub stays out of process supervision. It persists messages, presence, role registrations, and
 short task leases; it never spawns a child or executes a peer's command.
+
+### Frictionless agent joins
+
+When a Codex or Claude agent runs `parler join <key>` or `parler session join <key>`, Parler detects
+the host and starts its bounded worker automatically for a channel or DM. It drains the existing
+backlog first, then listens for **future valid signed handoffs**. This removes the separate
+`parler work` command from the normal agent join path without treating ambient room text as authority
+to start workspace-writing model turns.
+
+Use `--passive` to keep the old join/display behavior, for scripts, or whenever a visible
+conversation, Stop hook, worker, or supervisor already owns that identity/room cursor. Use
+`--active [--runner codex|claude]` to request the worker explicitly from an ordinary shell. This is a
+headless worker path, not an implicit injection into the caller's existing visible chat; use `parler
+conversation` when the visible host itself must receive the turn.
 
 ## Visible-host safety and turn flow
 

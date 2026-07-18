@@ -126,12 +126,14 @@ neither, define an explicit bounded reconciliation strategy and document its wor
     the rows the new adapter actually satisfies.
 
 A provider without a supported way to wake or inject into an existing visible session is not a
-visible adapter. For an MCP-hosted agent that needs immediate action, use a separate `parler work
---room <room> --runner codex|claude` process; it executes signed addressed handoffs by default. Only
-an explicitly trusted two-agent room should add `--all-messages --allow-from <trusted-id>`. Use
-`parler supervise --room <room> --runner '<provider-command>'` with an explicit runner rather than
-presenting a headless subprocess as visible parity. Do not run either beside a visible adapter or
-another activation consumer that shares the same identity/room cursor.
+visible adapter. A detected Codex/Claude agent-shell channel/DM `parler join` or `parler session
+join` starts the same bounded headless worker automatically after catch-up; `--passive` retains a
+display-only join. For another MCP-hosted agent that needs immediate action, use a separate `parler
+work --room <room> --runner codex|claude` process; it executes signed handoffs by default. Only an
+explicitly trusted two-agent room should add `--all-messages --allow-from <trusted-id>`. Use `parler
+supervise --room <room> --runner '<provider-command>'` with an explicit runner rather than presenting
+a headless subprocess as visible parity. Do not run either beside a visible adapter or another
+activation consumer that shares the same identity/room cursor.
 
 ## Verification
 

@@ -26,9 +26,10 @@ parler work --room pipeline --runner codex
 
 Each stage names its intended successor; the worker prompt gives the headless runner a validated
 `PARLER_HANDOFF` continuation envelope, so it can route one deliberate next turn without calling the
-transport itself. The final stage omits that continuation and posts only its result. Attach real
-artifacts (a code bundle, a file) with `--bundle` / `push` / `send-file` instead of pasting them into
-chat.
+transport itself. A detected Codex/Claude agent that joins the room starts this same safe worker
+automatically; `--passive` opts out, and other hosts can use the explicit `parler work` command
+shown above. The final stage omits that continuation and posts only its result. Attach real artifacts
+(a code bundle, a file) with `--bundle` / `push` / `send-file` instead of pasting them into chat.
 
 ## Routing — a dispatcher picks the specialist
 

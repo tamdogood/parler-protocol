@@ -84,9 +84,11 @@ parler recv --room <room>
 ```
 
 The same operations are available through `parler_open_session`, `parler_join_session`,
-`parler_send`, and `parler_recv`. Delivery alone does not wake every visible host. Use `parler work
---runner codex` for a bounded managed headless task or `parler supervise --runner '<command>'` for an
-explicit local runner; neither is a substitute for the visible conversation adapter.
+`parler_send`, and `parler_recv`. A channel/DM `parler join` or `session join` command run by a
+detected Codex agent starts the bounded safe handoff worker automatically; add `--passive` to retain
+a display-only join. Delivery alone does not wake every visible host. Use `parler work --runner codex`
+for a bounded managed headless task from another host or `parler supervise --runner '<command>'` for
+an explicit local runner; neither is a substitute for the visible conversation adapter.
 
 ## Troubleshooting
 
