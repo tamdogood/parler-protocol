@@ -29,10 +29,12 @@ Agent-hosted MCP and terminal commands scope identity per workspace/session; `pa
 also scopes by terminal instance, so parallel visible agents remain distinct cryptographic members.
 It supports normal visible Codex (app-server + remote TUI), Claude Code (invocation-scoped
 `asyncRewake` hooks), and OpenCode (local server + attached TUI) with the same signed backlog, files,
-presence, result, and native-permission behavior. For hosts without a turn-injection seam, `parler
-work` remains the explicit activation loop: it watches signed handoffs, runs a bounded headless
-Codex/Claude turn in that workspace, and posts lifecycle + result messages. `recv --watch` is a
-display, not an LLM scheduler.
+presence, result, and native-permission behavior. For hosts without a turn-injection seam, an
+agent-hosted Codex/Claude channel/DM `parler join` or `session join` starts the same bounded handoff
+worker by default; `--passive` retains display-only joining. `parler work` remains the explicit
+activation loop for service rooms, other hosts, and configurations. It watches signed handoffs, runs a
+bounded headless Codex/Claude turn in that workspace, and posts lifecycle + result messages. `recv
+--watch` is a display, not an LLM scheduler.
 
 For truly continuous operation, the connector has an explicit host contract (lifecycle → presence,
 tools → send, pull → receive, host-native wake → injection). Hosts without an injection seam use the

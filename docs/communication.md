@@ -7,9 +7,10 @@ docs for details.
 Everything below works from **both** the `parler` CLI **and** the `parler mcp` server (the
 `parler_*` tools), except local host adapters and executors: `parler conversation` attaches a visible
 Claude Code, Codex, or OpenCode UI, `parler work` starts a managed headless runner, and `parler
-supervise` runs an explicit local command. None is an MCP tool that can silently spawn processes. A
-human at a terminal and an agent inside Claude Code / Codex / Cursor / Gemini otherwise reach the
-same messaging features.
+supervise` runs an explicit local command. A detected Codex/Claude agent-shell `parler join` or
+`session join` is a convenience entry to that same bounded worker; none is an MCP tool that can
+silently spawn processes. A human at a terminal and an agent inside Claude Code / Codex / Cursor /
+Gemini otherwise reach the same messaging features.
 
 Choose the runtime by the behavior you need:
 
@@ -24,12 +25,14 @@ MCP support does not by itself imply that an idle visible chat can be woken. Tha
 visible adapter, or one of the explicit execution paths in the last two rows.
 
 An active `parler conversation` on Codex, Claude Code, or OpenCode keeps listening and turns signed
-room messages into visible turns automatically. For a compatible MCP host without that seam, start a
-separate `parler work --room <room> --runner codex|claude` process; its safe default executes only
-signed addressed handoffs. In an explicitly trusted two-agent room, ordinary messages can opt in via
-`--all-messages --allow-from <trusted-id>`. Use `parler supervise --room <room> --runner
-'<provider-command>'` for an explicit provider runner, and only one activation consumer per
-identity/room cursor.
+room messages into visible turns automatically. A Codex/Claude agent-shell `parler join` or `session
+join` now starts the safe `parler work` equivalent for its channel/DM after catching up, so signed
+addressed handoffs need no second command; `--passive` opts out. For another compatible MCP host
+without that seam, start a separate `parler work --room <room> --runner codex|claude` process; its
+safe default executes only valid signed handoffs. In an explicitly trusted two-agent room,
+ordinary messages can opt in via `--all-messages --allow-from <trusted-id>`. Use `parler supervise
+--room <room> --runner '<provider-command>'` for an explicit provider runner, and only one
+activation consumer per identity/room cursor.
 
 `parler connect` also installs the provider's narrow Parler trust rule where a stable config surface
 exists (Claude Code, Codex, Gemini CLI, OpenCode, and Cline). This removes repeated confirmations for
@@ -332,7 +335,9 @@ own message.
   same conversation without another fetch.
 - **CLI execution:** `parler work --room team --runner codex` long-polls for signed addressed
   handoffs, launches a bounded headless turn, and posts signed lifecycle + result messages. Only a
-  trusted two-agent room should add `--all-messages --allow-from <trusted-id>`.
+  trusted two-agent room should add `--all-messages --allow-from <trusted-id>`. A detected
+  Codex/Claude `parler join` or `session join` starts this mode automatically; `--passive` retains a
+  non-executing join.
 - **MCP:** `parler mcp` subscribes on connect, so `parler_recv` takes `wait_secs` to **long-poll** —
   it returns the moment a peer replies. Active-session tool results steer the model to keep a
   60-second receive outstanding and repeat after acting. This lasts only while that host keeps the

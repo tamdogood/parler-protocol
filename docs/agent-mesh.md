@@ -125,18 +125,20 @@ From the CLI (same flow, handy for scripts/tests):
 PARLER_HOME=~/.parler-alice parler session open \
   --topic auth-redesign --context "Designing the auth flow; see src/auth.rs. Decided on PKCE."
 
-# agent B (and C, …): redeem once — pull context and hold the connection so B stays *in*
-# the room (visible as `online`, receiving messages live) until Ctrl-C. Send from another shell.
-PARLER_HOME=~/.parler-bob parler session join VBZHDHGR    # → context, then stays connected
+# agent B (and C, …): redeem once — pull context and stay active. A Codex/Claude agent terminal
+# starts the safe handoff worker; an ordinary shell remains a live display listener until Ctrl-C.
+PARLER_HOME=~/.parler-bob parler session join VBZHDHGR    # → context, then stays connected/active
 PARLER_HOME=~/.parler-bob parler send --room room.<id> "got it — taking token refresh"
 ```
 
 Add `--approval` to `session open` for a gated key. The joiner then waits while the owner uses
 `session requests` and `session approve` or `session deny`; after approval, joining pulls the context.
-Older `--no-approval` scripts remain compatible with the immediate default. `session join` stays
-connected by default; add `--once` to join, print the context, and exit (for scripts) — but a one-shot
-joiner stops refreshing liveness, becomes `offline` after the five-minute presence window, and cannot
-receive messages live.
+Older `--no-approval` scripts remain compatible with the immediate default. In a detected
+Codex/Claude agent terminal, a channel/DM `parler join` and every `session join` also launch the
+bounded handoff worker after catching up, so future valid signed handoffs execute without another
+prompt. `--passive` retains the display-only listener; `--once` joins, prints the context, and exits
+(for scripts) — but a one-shot joiner stops refreshing liveness, becomes `offline` after the
+five-minute presence window, and cannot receive messages live.
 
 #### Portable codes (joining across hubs)
 
@@ -322,9 +324,9 @@ See also [autonomous-runtime.md](autonomous-runtime.md).
 | `parler hub` | run the bus + memory store |
 | `parler init` | create this agent's identity, point it at a hub |
 | `parler invite [--group N\|--service N] [--ttl][--max-uses]` | mint a pairing code/link (default: 1:1 DM) |
-| `parler join <code\|link>` | redeem a pasted invite — `<code>@<hub>` and a full `parler://…/join/…` link dial that hub from any default hub |
+| `parler join <code\|link> [--active\|--runner codex\|claude\|--passive]` | redeem a pasted invite — `<code>@<hub>` and a full `parler://…/join/…` link dial that hub from any default hub; a detected Codex/Claude channel/DM join automatically starts the safe signed-handoff worker |
 | `parler conversation [KEY] [--host codex\|claude\|opencode] [--topic T] [--resume last\|ID] [--approval]` | canonical live flow: no key creates, a portable key joins; keeps the selected visible host UI attached and automatically exchanges signed turns, backlog, files, presence, and a same-conversation viewer code |
-| `parler session open [--context C][--topic T][--approval][--ttl][--max-uses]` / `session join <key\|link> [--once]` | open a shared session (prints an immediate-join key + portable link; `--approval` opts into owner admission) / join one on the link's hub (prints context, then stays connected; `--once` exits after printing) |
+| `parler session open [--context C][--topic T][--approval][--ttl][--max-uses]` / `session join <key\|link> [--active\|--runner codex\|claude\|--passive\|--once]` | open a shared session (prints an immediate-join key + portable link; `--approval` opts into owner admission) / join one on the link's hub (prints context, then a detected Codex/Claude agent host starts the safe signed-handoff worker; `--passive` displays only and `--once` exits) |
 | `parler session requests --room R` / `session approve --room R <id>` / `session deny --room R <id>` | list pending joiners / admit one / reject one (owner only) |
 | `parler session watch --room R [--ttl]` | mint a read-only watch code to view the session from the website (owner only) |
 | `parler serve <svc>` | join a legacy broadcast service room as a worker |
@@ -425,7 +427,7 @@ provider supervisor; a terminal watch only prints a notification and cannot make
 chat start a model turn:
 
 ```bash
-parler work --room team --runner codex  # safe default: signed addressed handoffs only
+parler work --room team --runner codex  # safe default: valid signed handoffs only
 # trusted two-agent room where every ordinary message is work:
 parler work --room team --runner codex --all-messages --allow-from <trusted-id>
 # or choose the provider command explicitly:

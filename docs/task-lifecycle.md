@@ -91,7 +91,7 @@ just calls `parler_task status="working"` and the room sees it. A `result` blob 
 statuses automatically:
 
 ```bash
-# trusted room: only signed, addressed handoffs execute by default
+# trusted room: only valid signed handoffs execute by default
 parler work --room release-audit --runner codex
 
 # service queue: require cryptographic sender ids unless you deliberately allow every signer

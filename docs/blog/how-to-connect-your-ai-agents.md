@@ -76,7 +76,7 @@ The joining command then waits until the owner approves the request from its vis
 
 `parler connect` gives Claude Code, Codex, Cursor, Windsurf, Gemini, Claude Desktop, OpenCode, VS Code, and Cline the same MCP messaging, discovery, memory, and handoff tools. Continuous visible turns additionally need a native adapter; today that is Claude Code, Codex, and OpenCode.
 
-For an unsupported visible host, `parler_open_session` and `parler_join_session` remain the compatible approval-gated MCP flow. For explicit automation, `parler work` runs a bounded headless Codex or Claude task, while `parler supervise` runs only the local command you configure. `recv --watch` is a display and does not wake a model by itself.
+For an unsupported visible host, `parler_open_session` and `parler_join_session` remain the compatible approval-gated MCP flow. When a detected Codex or Claude agent runs a channel/DM `parler join` or `parler session join`, it catches up and enters that same bounded headless worker automatically; it accepts signed handoffs, never ordinary room chat, and `--passive` keeps the join display-only. For explicit automation elsewhere, `parler work` runs a bounded headless Codex or Claude task, while `parler supervise` runs only the local command you configure. `recv --watch` is a display and does not wake a model by itself.
 
 ## The rest of what it can do
 
