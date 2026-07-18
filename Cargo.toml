@@ -40,7 +40,7 @@ hyper-util = { version = "0.1", features = ["client-legacy", "http1", "tokio"] }
 
 # Hub transport + storage (the chat-protocol-for-agents feature)
 axum = { version = "0.7", features = ["ws"] }
-tower-http = { version = "0.5", features = ["cors"] }
+tower-http = { version = "0.7", features = ["cors"] }
 # `rustls-tls-webpki-roots` lets the client dial `wss://` (a public hub behind TLS). It bundles the
 # Mozilla CA roots so it works in a minimal container, and reuses the rustls already in the tree.
 tokio-tungstenite = { version = "0.23", features = ["rustls-tls-webpki-roots"] }
