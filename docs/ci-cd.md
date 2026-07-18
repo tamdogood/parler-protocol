@@ -86,6 +86,19 @@ community-safe**:
 A separate daily [`audit.yml`](../.github/workflows/audit.yml) re-runs cargo-deny so a CVE published
 against an already-merged dependency is caught even with no PR traffic.
 
+### Prebuilt releases
+
+Before pushing a release tag, update every package version that the tag-published artifacts embed:
+
+- `Cargo.toml` `[workspace.package].version`
+- `Cargo.lock` local `parler-*` package versions, refreshed with `cargo build -p parler-bin`
+- `desktop/package.json` and `desktop/package-lock.json`
+
+Then run `scripts/verify.sh --rust-only` and confirm `./target/debug/parler --version` prints the
+same version you plan to tag. The tag workflows fail early if `vX.Y.Z` does not match those package
+versions, so a release cannot publish a `v0.5.0` asset whose binary or app metadata still says
+`0.1.0`.
+
 ### Prebuilt hub image (GHCR)
 
 [`.github/workflows/release-image.yml`](../.github/workflows/release-image.yml) publishes the hub as a

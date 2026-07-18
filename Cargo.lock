@@ -1054,7 +1054,7 @@ dependencies = [
 
 [[package]]
 name = "parler-auth"
-version = "0.1.0"
+version = "0.5.0"
 dependencies = [
  "async-nats",
  "data-encoding",
@@ -1071,7 +1071,7 @@ dependencies = [
 
 [[package]]
 name = "parler-bin"
-version = "0.1.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "parler-cli",
@@ -1080,7 +1080,7 @@ dependencies = [
 
 [[package]]
 name = "parler-cli"
-version = "0.1.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1109,7 +1109,7 @@ dependencies = [
 
 [[package]]
 name = "parler-connector"
-version = "0.1.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1130,7 +1130,7 @@ dependencies = [
 
 [[package]]
 name = "parler-hub"
-version = "0.1.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -1155,7 +1155,7 @@ dependencies = [
 
 [[package]]
 name = "parler-protocol"
-version = "0.1.0"
+version = "0.5.0"
 dependencies = [
  "serde",
  "serde_json",

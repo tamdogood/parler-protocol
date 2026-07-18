@@ -38,6 +38,22 @@ jobs:
         with:
           targets: aarch64-apple-darwin
 
+      - name: Check tag matches package versions
+        if: github.event_name == 'push'
+        run: |
+          tag_version="${GITHUB_REF_NAME#v}"
+          tag_version="${tag_version#.}"
+          cargo_version="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)"
+          desktop_version="$(node -p 'require("./desktop/package.json").version')"
+          if [ "$tag_version" != "$cargo_version" ]; then
+            echo "::error title=Version mismatch::tag $GITHUB_REF_NAME expects Cargo version $tag_version, but Cargo.toml says $cargo_version"
+            exit 1
+          fi
+          if [ "$tag_version" != "$desktop_version" ]; then
+            echo "::error title=Version mismatch::tag $GITHUB_REF_NAME expects desktop version $tag_version, but desktop/package.json says $desktop_version"
+            exit 1
+          fi
+
       - name: Cache cargo build
         uses: Swatinem/rust-cache@v2
         with:

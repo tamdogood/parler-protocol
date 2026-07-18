@@ -1,6 +1,6 @@
 {
   "name": "parler-desktop",
-  "version": "0.1.0",
+  "version": "0.5.0",
   "description": "Parler Protocol Desktop — run a private agent hub locally, browse the directory, watch live conversations, and auto-connect your agents on first launch. macOS.",
   "author": "Tam Nguyen (tamdogood)",
   "license": "Apache-2.0",

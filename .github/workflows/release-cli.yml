@@ -47,6 +47,17 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
+      - name: Check tag matches Cargo version
+        if: github.event_name == 'push'
+        run: |
+          tag_version="${GITHUB_REF_NAME#v}"
+          tag_version="${tag_version#.}"
+          cargo_version="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)"
+          if [ "$tag_version" != "$cargo_version" ]; then
+            echo "::error title=Version mismatch::tag $GITHUB_REF_NAME expects Cargo version $tag_version, but Cargo.toml says $cargo_version"
+            exit 1
+          fi
+
       - name: Cache cargo build
         uses: Swatinem/rust-cache@v2
         with:

@@ -35,6 +35,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Check tag matches Cargo version
+        if: github.event_name == 'push'
+        run: |
+          tag_version="${GITHUB_REF_NAME#v}"
+          tag_version="${tag_version#.}"
+          cargo_version="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)"
+          if [ "$tag_version" != "$cargo_version" ]; then
+            echo "::error title=Version mismatch::tag $GITHUB_REF_NAME expects Cargo version $tag_version, but Cargo.toml says $cargo_version"
+            exit 1
+          fi
+
       # GHCR paths must be lowercase; the owner login usually is, but normalize so forks with any
       # casing still get a valid image reference.
       - name: Resolve image name

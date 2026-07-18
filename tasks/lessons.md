@@ -404,3 +404,9 @@ Format: `- **<short trigger>:** <the rule>. <why, in a clause>`
   must keep its signed addressed-handoff gate in primary examples. Show `--all-messages` only for an
   explicitly trusted two-agent room and pair it with `--allow-from <trusted-id>`; otherwise ordinary
   chat can become an unintended workspace-writing model turn. (2026-07-15 security audit.)
+
+- **A release tag does not update embedded package versions:** `parler --version` comes from
+  `Cargo.toml` via `CARGO_PKG_VERSION`, and the desktop app version comes from
+  `desktop/package.json`. Before pushing `vX.Y.Z`, bump `Cargo.toml`, refresh `Cargo.lock` with
+  `cargo build -p parler-bin`, and bump `desktop/package.json` / `desktop/package-lock.json`. The
+  tag workflows now fail if the tag and package versions disagree. (2026-07-18 release mismatch.)
